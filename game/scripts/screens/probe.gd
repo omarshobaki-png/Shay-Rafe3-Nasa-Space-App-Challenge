@@ -100,6 +100,20 @@ var tex_gauge: Texture2D = null
 var tex_debris: Texture2D = null
 var tex_rocks: Array[Texture2D] = []
 var tex_near: Array[Texture2D] = []
+# multiplayer jobs (decision D7). Solo: no job is split out and the drone flies as before.
+# Online the host simulates: the Scientist flies, the Engineer sets the throttle, and after docking the
+# Comms officer picks what to send home. Others send "input"; the host sends "state".
+var jobs: bool = false
+var driver: bool = true
+var remote: Dictionary = {}     # host: the latest "input" keys from other players, by role
+var send_t: float = 0.0
+var throttle: int = 1           # index into Data.DRONE_THROTTLE (1 = NORMAL, the solo value)
+var got_kinds: Array = []       # the kind of each ice sample caught (its grain's variant)
+var dl_job: bool = false        # the Comms officer picks the downlink after docking
+var dl_sel: Array = []          # indices into _dl_items() chosen for the downlink
+var dl_t: float = 0.0
+var dl_done: bool = false
+var dl_send: bool = false       # host: the Comms officer pressed SEND
 
 func _art(n: String) -> Texture2D:
 	return Pix.img("probe/" + n)
@@ -179,6 +193,12 @@ func _ready() -> void:
 		var key: String = d[2]
 		b.button_down.connect(func() -> void: hold[key] = true)
 		b.button_up.connect(func() -> void: hold.erase(key))
+	jobs = Game.multi()
+	driver = Net.is_host()
+	if jobs:
+		auto = Game.cpu("science")   # offline testing: the computer flies the drone
+		dl_job = Game.job("comms")
+		Net.received.connect(_on_net)
 
 func _free_of_rocks(p: Vector2, mx: float, my: float) -> bool:
 	for q: Dictionary in rocks:
@@ -228,6 +248,15 @@ func _physics_process(delta: float) -> void:
 	msg_t -= delta
 	invuln -= delta
 	_tick_fx(delta)
+	if not driver:
+		# another player's game: send this player's controls, draw what the host sends
+		_send_input(delta)
+		Audio.loop("thrust", thrusting and state == "fly", -9.0)
+		return
+	_send_state(delta)
+	if state == "downlink":
+		_dl_tick(delta)
+		return
 	if state != "fly":
 		if state == "done" and docked:
 			_tick_docking(delta)
@@ -235,24 +264,35 @@ func _physics_process(delta: float) -> void:
 			vel = vel * (1.0 - minf(1.0, 2.0 * delta)) + Vector2(0, 30.0) * delta
 			pos += vel * delta
 		if t > end_t:
+			if docked and dl_job and not dl_done:
+				state = "downlink"   # the Comms officer picks what to send home first
+				dl_t = 0.0
+				_send_state(1.0)
+				return
 			set_physics_process(false)
 			Game.probe_result(got, docked, data)
+			if dl_done:
+				var pts: int = _dl_pts()
+				Game.run["downlink_pts"] = pts
+				Game.note(pts > 0, "The Comms officer sent %d of %d items home: %d science points (+%d credits)." % [dl_sel.size(), _dl_items().size(), pts, pts * int(Data.DRONE_DOWNLINK["credits_per_pt"])])
 			Game.run["mode"] = "home"
-			Game.goto("flight")
+			Game.flow("flight")
 		return
 	if auto:
 		_autopilot()
 	var g: float = float(Game.dest()["gravity"]) * GSCALE
-	var up: bool = hold.has("u") or Input.is_action_pressed("ui_up") or Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_SPACE)
-	var lft: bool = hold.has("l") or Input.is_action_pressed("ui_left") or Input.is_physical_key_pressed(KEY_A)
-	var rgt: bool = hold.has("r") or Input.is_action_pressed("ui_right") or Input.is_physical_key_pressed(KEY_D)
+	var keys: Dictionary = _fly_keys()
+	var up: bool = bool(keys.get("up", false))
+	var lft: bool = bool(keys.get("left", false))
+	var rgt: bool = bool(keys.get("right", false))
 	thrusting = up and fuel > 0.0
 	Audio.loop("thrust", thrusting, -9.0)
 	var acc: Vector2 = Vector2(0, g)
 	steer = 0
+	var thr: Dictionary = Data.DRONE_THROTTLE[throttle]
 	if thrusting:
-		acc.y -= g * 2.2
-		fuel -= delta
+		acc.y -= g * 2.2 * float(thr["thrust"])
+		fuel -= delta * float(thr["burn"])
 	if fuel > 0.0:
 		if lft:
 			acc.x -= 55.0
@@ -278,6 +318,7 @@ func _physics_process(delta: float) -> void:
 		if not s["taken"] and _drone_dist(sp) < 20.0:
 			s["taken"] = true
 			got += 1
+			got_kinds.append(int(s["v"]))
 			Audio.play("pickup", -3.0, 1.0 + got * 0.06)
 			data += gb_sample
 			_burst(sp, 8, Color("b8f4ff"), 70.0)
@@ -327,6 +368,203 @@ func _physics_process(delta: float) -> void:
 	if pos.distance_to(DOCK + Vector2(0, 46)) < 22.0 and vel.length() < 60.0 and t > 3.0:
 		_end(true, "DOCKED!", "Samples are safe on the orbiter.", "dock")
 	_spawn_trails(delta)
+
+# ---------------------------------------------------------------- multiplayer jobs
+
+## The Scientist's flight keys: this player's own (and the autopilot's) when they hold the role, else
+## the last keys that player sent.
+func _fly_keys() -> Dictionary:
+	if jobs and not Net.owns("science") and not auto:
+		return remote.get("science", {})
+	return {
+		"up": hold.has("u") or Input.is_action_pressed("ui_up") or Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_SPACE),
+		"left": hold.has("l") or Input.is_action_pressed("ui_left") or Input.is_physical_key_pressed(KEY_A),
+		"right": hold.has("r") or Input.is_action_pressed("ui_right") or Input.is_physical_key_pressed(KEY_D),
+	}
+
+func _input(ev: InputEvent) -> void:
+	if not jobs:
+		return
+	var k: InputEventKey = ev as InputEventKey
+	if k == null or not k.pressed or k.echo:
+		return
+	var n: int = k.keycode - KEY_1   # keys 1-9, then 0 for the tenth
+	if k.keycode == KEY_0:
+		n = 9
+	if state == "downlink":
+		if Net.owns("comms"):
+			if k.keycode == KEY_ENTER or k.keycode == KEY_KP_ENTER:
+				_dl_press_send()
+			elif n >= 0 and n < _dl_items().size():
+				_dl_toggle(n)
+	elif Net.owns("engineer") and n >= 0 and n < Data.DRONE_THROTTLE.size():
+		if driver:
+			throttle = n
+		else:
+			remote["throttle"] = n
+		Audio.play("ui_tab")
+
+## What the Comms officer can send: one item per ice sample caught (its kind from the grain), then the photos.
+func _dl_items() -> Array:
+	var dd: Dictionary = Data.DRONE_DOWNLINK
+	var kinds: Array = dd["samples"]
+	var out: Array = []
+	for v: Variant in got_kinds.slice(0, 8):
+		out.append(kinds[clampi(int(v), 0, kinds.size() - 1)])
+	out.append_array(dd["photos"])
+	return out
+
+func _dl_used() -> int:
+	var items: Array = _dl_items()
+	var n: int = 0
+	for i: Variant in dl_sel:
+		if int(i) < items.size():
+			n += int(items[int(i)]["size"])
+	return n
+
+func _dl_pts() -> int:
+	var items: Array = _dl_items()
+	var n: int = 0
+	for i: Variant in dl_sel:
+		if int(i) < items.size():
+			n += int(items[int(i)]["pts"])
+	return n
+
+## Comms: picks or drops an item, within the downlink limit. Online the host applies it.
+func _dl_toggle(i: int) -> void:
+	if not driver:
+		var want: Array = (remote.get("dl", dl_sel) as Array).duplicate()
+		if want.has(i):
+			want.erase(i)
+		else:
+			want.append(i)
+		remote["dl"] = want
+		Audio.play("ui_tab")
+		return
+	if dl_sel.has(i):
+		dl_sel.erase(i)
+		Audio.play("ui_close", -4.0)
+	elif _dl_used() + int(_dl_items()[i]["size"]) <= int(Data.DRONE_DOWNLINK["limit"]):
+		dl_sel.append(i)
+		Audio.play("ui_tab")
+	else:
+		Audio.play("ui_deny", -4.0)
+
+func _dl_press_send() -> void:
+	if driver:
+		dl_send = true
+	else:
+		remote["send"] = true
+	Audio.play("confirm", -4.0)
+
+## Host: waits for the Comms officer's SEND, or sends the current choice when time is up.
+func _dl_tick(delta: float) -> void:
+	dl_t += delta
+	if dl_send or dl_t >= float(Data.DRONE_DOWNLINK["secs"]):
+		dl_done = true
+		state = "done"
+		end_t = t   # leaves on the next frame, with the downlink choice
+		Audio.play("radio_blip", -4.0)
+
+## Host: applies another player's downlink choice, checked against the limit.
+func _dl_apply(want: Array) -> void:
+	var items: Array = _dl_items()
+	var sel: Array = []
+	var used: int = 0
+	for v: Variant in want:
+		var i: int = int(v)
+		if i >= 0 and i < items.size() and not sel.has(i) and used + int(items[i]["size"]) <= int(Data.DRONE_DOWNLINK["limit"]):
+			sel.append(i)
+			used += int(items[i]["size"])
+	dl_sel = sel
+
+## Not the host: this player's controls, about 20 times a second, one message per role they hold.
+func _send_input(delta: float) -> void:
+	send_t -= delta
+	if send_t > 0.0:
+		return
+	send_t = 1.0 / float(Data.NET_RATES["input_hz"])
+	if Net.owns("science") and state == "fly":
+		Net.send("input", {"role": "science", "keys": _fly_keys()})
+	if Net.owns("engineer") and remote.has("throttle"):
+		Net.send("input", {"role": "engineer", "keys": {"throttle": int(remote["throttle"])}})
+	if Net.owns("comms") and state == "downlink" and (remote.has("dl") or remote.has("send")):
+		Net.send("input", {"role": "comms", "keys": {"pick": remote.get("dl", dl_sel), "send": bool(remote.get("send", false))}})
+
+## Host: the simulation for everyone else to draw, about 15 times a second (force with delta >= 1).
+func _send_state(delta: float) -> void:
+	if not Net.is_online():
+		return
+	send_t -= delta
+	if send_t > 0.0:
+		return
+	send_t = 1.0 / float(Data.NET_RATES["state_hz"])
+	var taken: Array = []
+	for i: int in ice.size():
+		if ice[i]["taken"]:
+			taken.append(i)
+	Net.send("state", {"s": state, "t": t, "px": pos.x, "py": pos.y, "vx": vel.x, "vy": vel.y, "fuel": fuel, "hp": hp,
+		"got": got, "gk": got_kinds, "ice": taken, "inv": invuln, "thr": thrusting, "steer": steer, "th": throttle,
+		"dk": docked, "lt": latched, "sent": sent, "ek": end_kind, "et": end_title, "msg": msg, "dl": dl_sel, "dlt": dl_t})
+
+func _on_net(kind: String, d: Dictionary, from_id: int) -> void:
+	if kind == "input" and driver:
+		var role: String = String(d.get("role", ""))
+		if not Game.sender_owns(from_id, role) or not (d.get("keys") is Dictionary):
+			return
+		var keys: Dictionary = d["keys"]
+		match role:
+			"science":
+				remote["science"] = keys
+			"engineer":
+				throttle = clampi(int(keys.get("throttle", throttle)), 0, Data.DRONE_THROTTLE.size() - 1)
+			"comms":
+				if state == "downlink":
+					if keys.get("pick") is Array:
+						_dl_apply(keys["pick"])
+					if bool(keys.get("send", false)):
+						dl_send = true
+	elif kind == "state" and not driver:
+		_apply_state(d)
+
+## Not the host: take the host's simulation, with the sounds of a pickup, a hit or the end.
+func _apply_state(d: Dictionary) -> void:
+	var ns: String = String(d.get("s", state))
+	if state == "fly" and ns != "fly":
+		_end(bool(d.get("dk", false)), String(d.get("et", "")), String(d.get("msg", "")), String(d.get("ek", "")))
+	state = ns
+	t = float(d.get("t", t))
+	pos = Vector2(float(d.get("px", pos.x)), float(d.get("py", pos.y)))
+	vel = Vector2(float(d.get("vx", vel.x)), float(d.get("vy", vel.y)))
+	fuel = float(d.get("fuel", fuel))
+	var nhp: int = int(d.get("hp", hp))
+	if nhp < hp:
+		Audio.play("hit")
+		trauma = minf(1.0, trauma + 0.7)
+		flash_t = 0.12
+		hull_flash = 0.5
+	hp = nhp
+	var ngot: int = int(d.get("got", got))
+	if ngot > got:
+		Audio.play("pickup", -3.0, 1.0 + ngot * 0.06)
+		floaters.append({"p": pos, "age": 0.0, "s": "+1 ICE"})
+	got = ngot
+	if d.get("gk") is Array:
+		got_kinds = (d["gk"] as Array).map(func(v: Variant) -> int: return int(v))
+	if d.get("ice") is Array:
+		for i: Variant in d["ice"]:
+			if int(i) >= 0 and int(i) < ice.size():
+				ice[int(i)]["taken"] = true
+	invuln = float(d.get("inv", invuln))
+	thrusting = bool(d.get("thr", false))
+	steer = int(d.get("steer", 0))
+	throttle = int(d.get("th", throttle))
+	docked = bool(d.get("dk", docked))
+	latched = bool(d.get("lt", latched))
+	sent = int(d.get("sent", sent))
+	if d.get("dl") is Array:
+		dl_sel = (d["dl"] as Array).map(func(v: Variant) -> int: return int(v))   # JSON numbers come back as floats
+	dl_t = float(d.get("dlt", dl_t))
 
 ## The port reels the drone in, the latch arms close, then the samples go up one by one.
 func _tick_docking(delta: float) -> void:
@@ -659,19 +897,85 @@ func _draw_hud(cam: float) -> void:
 			_hint(320.0, "LOW FUEL: FLY BACK AND DOCK", -1, UI.RED)
 		elif goal_t >= 0.0 and t - goal_t < 7.0 and not low_fuel:
 			_hint(320.0, "FLY BACK AND DOCK", -1, UI.GREEN)
-		if t < 9.0 and get_child(0) is Button and not (get_child(0) as Button).visible:
+		if t < 9.0 and get_child(0) is Button and not (get_child(0) as Button).visible and (not jobs or Net.owns("science")):
 			var kw: float = 19.0 + 4.0 + Pix.text_w("THRUST", 10) + 10.0 + 15.0 + 17.0 + Pix.text_w("STEER", 10) + 12.0
 			Pix.panel(self, Rect2(634.0 - kw, 334, kw, 20))
 			var kx: float = 640.0 - kw
 			kx += Pix.key_hint(self, Vector2(kx, 337), "UP", "THRUST") + 10.0
 			kx += Pix.keycap(self, Vector2(kx, 337), "<") + 2.0
 			Pix.key_hint(self, Vector2(kx, 337), ">", "STEER")
+	if jobs:
+		_draw_jobs()
+	if state == "downlink":
+		_draw_downlink()
 	# end banner
 	if state != "fly":
 		var tw: float = maxf(Pix.text_w(end_title, 20), Pix.text_w(msg, 10)) + 28.0
 		Pix.panel(self, Rect2(floorf(320.0 - tw / 2.0), 58, tw, 46), UI.GREEN if docked else UI.RED)
 		Pix.text_c(self, 320, 82, end_title, 20, UI.GREEN if docked else UI.RED)
 		Pix.text_c(self, 320, 96, msg, 10, UI.TEXT)
+
+func _who(role: String) -> String:
+	if Net.owns(role):
+		return "YOU"
+	if Game.cpu(role):
+		return "COMPUTER"
+	var h: String = Game.holder(role)
+	return h.substr(0, 12) if h != "" else Game.role_name(role)
+
+## Multiplayer: who flies, and the Engineer's throttle.
+func _draw_jobs() -> void:
+	var r: Rect2 = Rect2(6, 30, 214, 32)
+	Pix.panel(self, r)
+	var thr: Dictionary = Data.DRONE_THROTTLE[throttle]
+	var rows: Array = [["science", "PILOT", _who("science"), ""],
+		["engineer", "THROTTLE", _who("engineer"), String(thr["name"]) + ("  KEYS 1-3" if Net.owns("engineer") else "")]]
+	for i: int in rows.size():
+		var row: Array = rows[i]
+		var y: float = r.position.y + 4.0 + i * 12.0
+		var rc: Color = Game.role_color(row[0])
+		draw_rect(Rect2(r.position.x + 6, y + 3, 7, 7), rc)
+		Pix.text(self, Vector2(r.position.x + 17, y + 10), row[1], 10, UI.TEXT)
+		Pix.text(self, Vector2(r.position.x + 70, y + 10), row[2], 10, rc)
+		var st: String = row[3]
+		Pix.text(self, Vector2(r.end.x - 6.0 - Pix.text_w(st, 10), y + 10), st, 10, UI.YELLOW if throttle != 1 else UI.DIM)
+
+func _dl_row(i: int) -> Rect2:
+	return Rect2(178, 140 + i * 12, 284, 12)
+
+## Multiplayer: the Comms officer's downlink choice after docking.
+func _draw_downlink() -> void:
+	var items: Array = _dl_items()
+	var dd: Dictionary = Data.DRONE_DOWNLINK
+	var r: Rect2 = Rect2(170, 112, 300, 46 + items.size() * 12)
+	Pix.panel(self, r, Game.role_color("comms"), Color(0.03, 0.04, 0.08, 0.95))
+	var left: int = ceili(maxf(0.0, float(dd["secs"]) - dl_t))
+	Pix.text(self, r.position + Vector2(8, 13), "DOWNLINK TO EARTH: %d / %d UNITS" % [_dl_used(), int(dd["limit"])], 10, Game.role_color("comms"))
+	Pix.text(self, Vector2(r.end.x - 8.0 - Pix.text_w("%d s" % left, 10), r.position.y + 13), "%d s" % left, 10, UI.DIM)
+	Pix.text(self, r.position + Vector2(8, 25), "Comms officer: %s" % _who("comms"), 10, UI.DIM)
+	for i: int in items.size():
+		var it: Dictionary = items[i]
+		var rr: Rect2 = _dl_row(i)
+		var on: bool = dl_sel.has(i)
+		if on:
+			draw_rect(rr, Color(Game.role_color("comms"), 0.18))
+		Pix.text(self, rr.position + Vector2(2, 10), "%d" % ((i + 1) % 10), 10, UI.YELLOW)
+		Pix.text(self, rr.position + Vector2(16, 10), String(it["name"]), 10, UI.TEXT if on else UI.DIM)
+		Pix.text(self, rr.position + Vector2(150, 10), "size %d" % int(it["size"]), 10, UI.DIM)
+		Pix.text(self, rr.position + Vector2(206, 10), "%d pts" % int(it["pts"]), 10, UI.GREEN if on else UI.DIM)
+		if on:
+			Pix.text(self, rr.position + Vector2(262, 10), "SEND", 10, UI.GREEN)
+	var foot: String = "KEYS 1-0 OR CLICK TO PICK.  ENTER SENDS." if Net.owns("comms") else "THE COMMS OFFICER IS PICKING."
+	Pix.text_c(self, 320, r.end.y - 6.0, foot, 10, UI.TEXT)
+
+func _gui_input(ev: InputEvent) -> void:
+	var mb: InputEventMouseButton = ev as InputEventMouseButton
+	if mb == null or not mb.pressed or mb.button_index != MOUSE_BUTTON_LEFT:
+		return
+	if state == "downlink" and Net.owns("comms") and jobs:
+		for i: int in _dl_items().size():
+			if _dl_row(i).has_point(mb.position):
+				_dl_toggle(i)
 
 func _gem_flying() -> bool:
 	for e: Dictionary in gems:
@@ -745,6 +1049,17 @@ func debug_carry() -> void:
 func debug_dock() -> void:
 	_debug_at(DOCK + Vector2(6, 52), Vector2(0, -20), goal)
 	freeze_at = t + 1.6
+
+## Multiplayer: the Comms officer's downlink choice after docking (run with -- roles=comms).
+func debug_downlink() -> void:
+	_debug_at(LATCH, Vector2.ZERO, goal)
+	got_kinds = [0, 1, 2, 1, 0]
+	docked = true
+	latched = true
+	end_title = "DOCKED!"
+	msg = "Samples are safe on the orbiter."
+	state = "downlink"
+	dl_sel = [1, 3]
 
 ## Smashed by a boulder.
 func debug_fail() -> void:

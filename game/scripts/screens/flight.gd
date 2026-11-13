@@ -107,6 +107,9 @@ var tex_clouds_near: Array[Texture2D] = []
 var tex_clouds_far: Array[Texture2D] = []
 var tex_small: Dictionary = {}
 var tex_cam: Array[Texture2D] = []
+## Online (decision D7): every player flies this screen from the same run and cruise seed, so they all
+## see the same flight. Only the host moves on; the others hold the last frame until its "goto".
+var left: bool = false
 
 func _f(name: String) -> Texture2D:
 	return Pix.img("flight/" + name)
@@ -241,8 +244,11 @@ func _next(s: String) -> void:
 		_set_stage(s)
 
 func _end() -> void:
+	if left:
+		return
+	left = true
 	Game.finish()
-	Game.goto("report")
+	Game.flow("report")
 
 # ------------------------------------------------------------- ticker and hints
 
@@ -920,8 +926,9 @@ func _step_arrive(dt: float) -> void:
 	if st > T_ARRIVE_END:
 		if _dead():
 			_end()
-		else:
-			Game.goto("probe" if Game.dest_id == "saturn" else "landing")
+		elif not left:
+			left = true
+			Game.flow("probe" if Game.dest_id == "saturn" else "landing")
 
 func _orbit_half(front: bool, done: bool) -> void:
 	var n: int = 150

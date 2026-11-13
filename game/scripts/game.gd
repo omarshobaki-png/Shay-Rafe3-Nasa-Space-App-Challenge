@@ -18,9 +18,18 @@ var signed: Dictionary = {}
 
 var run: Dictionary = {}
 
+# multiplayer (decision D7; the network contract is scripts/net.gd)
+var rng: RandomNumberGenerator = RandomNumberGenerator.new()   # the cruise's random events; seeded by the host online
+var player_name: String = "PLAYER"
+var net_error: String = ""       # why the last room ended, shown on the menu
+var team: Dictionary = {}        # team sync stats, see team_reset()
+
 func _ready() -> void:
 	randomize()
+	rng.randomize()
 	load_game()
+	team_reset()
+	call_deferred("_hook_net")   # Net is the next autoload: connect once everything is in the tree
 
 func goto(screen: String) -> void:
 	main.call("goto", screen)
@@ -366,8 +375,8 @@ func phase_cruise() -> void:
 	var evs: Array = Data.donki
 	if evs.is_empty():
 		return
-	var ev: Dictionary = evs[randi() % evs.size()]
-	if dest_id == "saturn" or randf() < 0.35:
+	var ev: Dictionary = evs[rng.randi() % evs.size()]
+	if dest_id == "saturn" or rng.randf() < 0.35:
 		ev = _strongest(evs)
 	run["storm"] = ev
 	var kp: float = float(ev["kp"])
@@ -384,7 +393,7 @@ func phase_cruise() -> void:
 			if victims.is_empty():
 				note(false, "SOLAR STORM (real event %s, Kp %s). No shielding, but nothing important broke." % [when, str(kp)])
 			else:
-				var v: String = victims[randi() % victims.size()]
+				var v: String = victims[rng.randi() % victims.size()]
 				run["broken"][v] = true
 				note(false, "SOLAR STORM (real event %s, Kp %s from NASA DONKI). No shielding: the %s was damaged by radiation." % [when, str(kp), Data.PARTS[v]["name"]])
 	else:
@@ -413,7 +422,8 @@ func phase_arrive() -> void:
 	note(true, "Orbit reached: braking burn of %s km/s used %s kg of fuel (rocket equation, Isp %d s)." % [str(cap_dv), fmt(used), int(Data.ISP)])
 
 ## Called before the landing minigame. Returns the start state for it.
-func landing_setup() -> Dictionary:
+## manual_chute (online landing job): the parachute stays packed and the Scientist opens it.
+func landing_setup(manual_chute: bool = false) -> Dictionary:
 	var s: Dictionary = {"g": float(dest()["gravity"]), "alt": 600.0, "vy": 20.0, "vx": 3.0, "drag": 0.0}
 	if dest_id == "moon":
 		# deorbit from 50 km orbit: most of the 1.89 km/s is spent before the final approach
@@ -426,7 +436,11 @@ func landing_setup() -> Dictionary:
 		if not id_has("heatshield"):
 			fail("BURNED UP. Without a heat shield, Mars' air heated the lander to thousands of degrees on entry.")
 			return s
-		if id_has("chute"):
+		if id_has("chute") and manual_chute:
+			var j: Dictionary = Data.LANDING_JOBS
+			note(true, "Entry: heat shield OK. The parachute is packed: the Scientist must open it.")
+			s = {"g": 3.71, "alt": float(j["mars_alt"]), "vy": float(j["mars_vy"]), "vx": float(j["mars_vx"]), "drag": 0.0}
+		elif id_has("chute"):
 			note(true, "Entry: heat shield OK, parachute opened (420 m/s to 90 m/s). Powered descent begins.")
 			s = {"g": 3.71, "alt": 1500.0, "vy": 90.0, "vx": 6.0, "drag": 0.0}
 		else:
@@ -440,7 +454,8 @@ func landing_setup() -> Dictionary:
 	s["touch"] = float(run["calc"]["touch"])
 	return s
 
-func landing_result(ok: bool, vy: float, prop_left: float) -> void:
+## reason: a crash cause the speeds don't explain (online: the legs were still up).
+func landing_result(ok: bool, vy: float, prop_left: float, reason: String = "") -> void:
 	run["landing_speed"] = vy
 	var used: float = float(run["prop"]) - prop_left
 	run["prop"] = prop_left
@@ -449,7 +464,9 @@ func landing_result(ok: bool, vy: float, prop_left: float) -> void:
 		run["obj"]["land"] = true
 		note(true, "TOUCHDOWN at %.1f m/s (limit %.0f m/s). %s kg of fuel left." % [vy, float(run["calc"]["touch"]), fmt(prop_left)])
 	else:
-		if prop_left <= 0.5:
+		if reason != "":
+			fail("CRASH at %.1f m/s. %s" % [vy, reason])
+		elif prop_left <= 0.5:
 			fail("CRASH at %.1f m/s. Out of fuel before touchdown: bring more propellant." % vy)
 		else:
 			fail("CRASH at %.1f m/s. The %s can survive only %.0f m/s." % [vy, "landing gear" if float(run["calc"]["touch"]) > 1.0 else "bare frame", float(run["calc"]["touch"])])
@@ -517,6 +534,8 @@ func phase_home() -> void:
 			note(true, "The ascent stage lifted off and brought %d samples back to Earth." % int(run["samples"]))
 
 func finish() -> void:
+	if Net.is_online() and not Net.is_host():
+		return   # the host's game is the truth: its finished run arrives with the "goto report"
 	var d: Dictionary = dest()
 	var obj: Dictionary = run["obj"]
 	var c: Dictionary = run["calc"]
@@ -526,6 +545,10 @@ func finish() -> void:
 		if obj[o]:
 			reward += per
 	reward += int(run["samples"]) * int(c["pts"]) * 2
+	# online jobs: the Planner's landing site and the Comms officer's downlink choice
+	if run.has("site"):
+		reward = roundi(reward * float(Data.LANDING_SITES[int(run["site"])]["credit_mult"]))
+	reward += int(run.get("downlink_pts", 0)) * int(Data.DRONE_DOWNLINK["credits_per_pt"])
 	run["reward"] = reward
 	funds += reward
 	missions_flown += 1
@@ -545,6 +568,9 @@ func finish() -> void:
 	roles["science"] = roundi(100.0 * minf(1.0, float(run["samples"]) / float(d["samples_goal"])))
 	roles["comms"] = roundi(100.0 * float(run["sent"]) / float(run["data"])) if float(run["data"]) > 0.0 else 0
 	run["roles"] = roles
+	if Net.is_online():
+		run["team_sync"] = team_sync()
+		run["team"] = team.duplicate(true)
 	save_game()
 
 # ---------------------------------------------------------------- money
@@ -584,3 +610,226 @@ func reset_save() -> void:
 	missions_flown = 0
 	best = {}
 	save_game()
+
+# ---------------------------------------------------------------- multiplayer (decision D7)
+## Net (scripts/net.gd) moves the messages; this part keeps the shared state in step:
+## the host's build, the signatures, the run, the screen changes and the team sync stats.
+
+func _hook_net() -> void:
+	Net.received.connect(_on_net)
+	Net.disconnected.connect(_on_net_lost)
+
+## True when the screens show the multiplayer parts: online, or offline testing with `-- roles=...`.
+func multi() -> bool:
+	return Net.is_online() or Net.my_roles().size() < Net.ALL_ROLES.size()
+
+## Offline, a role this player doesn't own (`-- roles=...`) is done by the computer, the solo way.
+func cpu(role: String) -> bool:
+	return not Net.is_online() and not Net.owns(role)
+
+## Is this role's flight job split out to a person? Solo: never, so solo plays as before.
+func job(role: String) -> bool:
+	return multi() and not cpu(role)
+
+## Does the player with this id own the role? The host checks this before applying their action.
+func sender_owns(from_id: int, role: String) -> bool:
+	for p: Variant in Net.lobby().get("players", []):
+		var pd: Dictionary = p
+		if int(pd.get("id", -1)) == from_id:
+			return (pd.get("roles", []) as Array).has(role)
+	return false
+
+## Name of whoever holds a role ("" offline or when nobody does).
+func holder(role: String) -> String:
+	for p: Variant in Net.lobby().get("players", []):
+		var pd: Dictionary = p
+		if (pd.get("roles", []) as Array).has(role):
+			return String(pd.get("name", ""))
+	return ""
+
+static func role_name(role: String) -> String:
+	for r: Dictionary in Data.ROLES:
+		if r["id"] == role:
+			return String(r["name"])
+	return role.to_upper()
+
+static func role_color(role: String) -> Color:
+	for r: Dictionary in Data.ROLES:
+		if r["id"] == role:
+			return r["color"]
+	return Color.WHITE
+
+## The first role this player owns: the "from" of their requests and the colour of their chat.
+func my_role() -> String:
+	var mine: Array[String] = Net.my_roles()
+	return mine[0] if not mine.is_empty() else "planner"
+
+## All 4 roles signed. Offline, roles played by the computer count as signed.
+func all_signed() -> bool:
+	for r: String in Net.ALL_ROLES:
+		if not bool(signed.get(r, false)) and not cpu(r):
+			return false
+	return true
+
+func signed_count() -> int:
+	var n: int = 0
+	for r: String in Net.ALL_ROLES:
+		if bool(signed.get(r, false)) or cpu(r):
+			n += 1
+	return n
+
+func snap() -> Dictionary:
+	return {"build": build.duplicate(), "rocket": rocket_id, "traj": traj_idx}
+
+## Applies a host build snapshot. JSON turns counts into floats: they come back as ints here.
+## Any change clears every signature. Returns true when something changed.
+func apply_snap(d: Dictionary) -> bool:
+	if not (d.get("build") is Dictionary):
+		return false
+	var b: Dictionary = {}
+	var src: Dictionary = d["build"]
+	for k: Variant in src:
+		if Data.PARTS.has(String(k)) and int(src[k]) > 0:
+			b[String(k)] = int(src[k])
+	var rk: String = String(d.get("rocket", rocket_id))
+	if not Data.ROCKETS.has(rk):
+		rk = rocket_id
+	var tr: int = clampi(int(d.get("traj", traj_idx)), 0, (dest()["traj"] as Array).size() - 1)
+	if b == build and rk == rocket_id and tr == traj_idx:
+		return false
+	build = b
+	rocket_id = rk
+	traj_idx = tr
+	signed = {}
+	return true
+
+## A screen change in the mission flow. Online only the host moves everyone; the others wait for its
+## "goto". Offline it is a plain goto.
+func flow(screen: String) -> void:
+	if not Net.is_online():
+		goto(screen)
+	elif Net.is_host():
+		host_goto(screen)
+
+## Host: sends the run, then the screen change (destination, build, cruise seed), then goes there itself.
+func host_goto(screen: String, seed_n: int = 0) -> void:
+	Net.send("run", {"run": run})
+	Net.send("goto", {"screen": screen, "dest": dest_id, "build": snap(), "seed": seed_n})
+	goto(screen)
+
+## Host and offline: starts the flight. Online every player flies the same cruise from the same seed.
+func launch() -> void:
+	var seed_n: int = randi() % 2000000000 + 1
+	rng.seed = seed_n
+	start_run()
+	run["mode"] = "out"
+	if Net.is_online():
+		host_goto("flight", seed_n)
+	else:
+		goto("flight")
+
+func _on_net(kind: String, d: Dictionary, from_id: int) -> void:
+	match kind:
+		"goto":
+			if not Net.is_host():
+				_remote_goto(d)
+		"run":
+			if not Net.is_host() and d.get("run") is Dictionary:
+				run = d["run"]
+		"build":
+			if not Net.is_host():
+				apply_snap(d)
+		"sign":
+			var role: String = String(d.get("role", ""))
+			if sender_owns(from_id, role):
+				signed[role] = bool(d.get("on", false))
+		"request":
+			team_request(String(d.get("id", "")))
+		"reply":
+			team_reply(String(d.get("id", "")))
+
+func _remote_goto(d: Dictionary) -> void:
+	var screen: String = String(d.get("screen", ""))
+	if main == null or not ["builder", "flight", "landing", "surface", "probe", "report"].has(screen):
+		return
+	var id: String = String(d.get("dest", dest_id))
+	if Data.DEST.has(id) and id != dest_id:
+		new_mission(id)
+	if d.get("build") is Dictionary:
+		apply_snap(d["build"])
+	match screen:
+		"builder":
+			signed = {}
+		"flight":
+			if int(d.get("seed", 0)) != 0:
+				rng.seed = int(d["seed"])
+				start_run()
+				run["mode"] = "out"
+		"report":
+			# the host finished the run: this player earns the same credits
+			funds += int(run.get("reward", 0))
+			missions_flown += 1
+			if int(run.get("score", 0)) > int(best.get(dest_id, 0)):
+				best[dest_id] = int(run.get("score", 0))
+			save_game()
+	goto(screen)
+
+func _on_net_lost(reason: String) -> void:
+	net_error = reason if reason != "" else "connection lost"
+	signed = {}
+	if main != null:
+		goto("menu")
+
+## Leaves the room and goes back to solo play on the menu.
+func leave_room() -> void:
+	Net.leave()
+	signed = {}
+	goto("menu")
+
+# ---------------------------------------------------------------- team sync score
+
+static func now() -> float:
+	return Time.get_ticks_msec() / 1000.0
+
+func team_reset() -> void:
+	team = {"asked": 0, "answered": 0, "reply_s": 0.0, "open": {}, "green_t": -1.0, "sign_s": -1.0}
+
+func team_request(id: String) -> void:
+	if id == "" or (team["open"] as Dictionary).has(id):
+		return
+	team["asked"] = int(team["asked"]) + 1
+	team["open"][id] = now()
+
+func team_reply(id: String) -> void:
+	var open: Dictionary = team["open"]
+	if not open.has(id):
+		return
+	team["answered"] = int(team["answered"]) + 1
+	team["reply_s"] = float(team["reply_s"]) + now() - float(open[id])
+	open.erase(id)
+
+## The builder calls this every frame: are all lamps green, and are all roles signed?
+func team_tick(all_go: bool, all_sign: bool) -> void:
+	if not all_go:
+		team["green_t"] = -1.0
+		return
+	if float(team["green_t"]) < 0.0:
+		team["green_t"] = now()
+	if all_sign and float(team["sign_s"]) < 0.0:
+		team["sign_s"] = now() - float(team["green_t"])
+
+## 0..100 from requests answered, the average reply time and the time from all-green to all-signed.
+func team_sync() -> int:
+	var w: Dictionary = Data.TEAM_SYNC
+	var asked: int = int(team["asked"])
+	var answered: int = int(team["answered"])
+	var a: float = 1.0 if asked == 0 else float(answered) / asked
+	var r: float = 1.0
+	if answered > 0:
+		var avg: float = float(team["reply_s"]) / answered
+		r = 1.0 - clampf((avg - float(w["reply_good_s"])) / (float(w["reply_bad_s"]) - float(w["reply_good_s"])), 0.0, 1.0)
+	var s: float = 0.0
+	if float(team["sign_s"]) >= 0.0:
+		s = 1.0 - clampf((float(team["sign_s"]) - float(w["sign_good_s"])) / (float(w["sign_bad_s"]) - float(w["sign_good_s"])), 0.0, 1.0)
+	var total: float = float(w["w_answered"]) + float(w["w_reply"]) + float(w["w_sign"])
+	return roundi(100.0 * (float(w["w_answered"]) * a + float(w["w_reply"]) * r + float(w["w_sign"]) * s) / total)

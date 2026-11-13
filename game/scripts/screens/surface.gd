@@ -98,6 +98,8 @@ var confirm_t: float = -10.0
 var told: Dictionary = {}   # one-time tips already shown
 var floor_mat: ShaderMaterial = null
 var front: Control = null
+var driver: bool = true         # this game drives (offline, or the room host); others watch its "state"
+var send_t: float = 0.0
 
 func _ready() -> void:
 	g = float(Game.dest()["gravity"])
@@ -212,6 +214,56 @@ func _ready() -> void:
 	add_child(front)
 	if DisplayServer.is_touchscreen_available():
 		_hold_buttons()
+	driver = Net.is_host()
+	if Net.is_online():
+		Net.received.connect(_on_net)
+
+# ---------------------------------------------------------------- multiplayer (decision D7)
+# The surface has no split jobs: the host drives and sends a light "state"; everyone else watches.
+
+## Host: where the rover is and what it has done, about 15 times a second (force with delta >= 1).
+func _send_state(delta: float) -> void:
+	if not Net.is_online():
+		return
+	send_t -= delta
+	if send_t > 0.0:
+		return
+	send_t = 1.0 / float(Data.NET_RATES["state_hz"])
+	var taken: Array = []
+	for i: int in samples.size():
+		if samples[i]["taken"]:
+			taken.append(i)
+	Net.send("state", {"s": state, "t": t, "rx": rx, "ry": ry, "face": face, "mv": moving, "gr": on_ground, "dr": drilling,
+		"dt": drill_target, "got": got, "data": data, "bat": battery, "hour": hour, "taken": taken, "msg": msg, "mt": msg_t})
+
+func _on_net(kind: String, d: Dictionary, _from_id: int) -> void:
+	if kind != "state" or driver:
+		return
+	t = float(d.get("t", t))
+	rx = float(d.get("rx", rx))
+	ry = float(d.get("ry", ry))
+	face = float(d.get("face", face))
+	moving = bool(d.get("mv", false))
+	on_ground = bool(d.get("gr", true))
+	drilling = float(d.get("dr", 0.0))
+	drill_target = int(d.get("dt", -1))
+	var ngot: int = int(d.get("got", got))
+	if ngot > got:
+		got_t = t
+		Audio.play("pickup")
+	got = ngot
+	data = float(d.get("data", data))
+	battery = float(d.get("bat", battery))
+	hour = float(d.get("hour", hour))
+	if d.get("taken") is Array:
+		for i: Variant in d["taken"]:
+			if int(i) >= 0 and int(i) < samples.size():
+				samples[int(i)]["taken"] = true
+	msg = String(d.get("msg", msg))
+	msg_t = float(d.get("mt", msg_t))
+	state = String(d.get("s", state))
+	Audio.loop("drill", drilling > 0.0, -12.0)
+	Audio.loop("rover_loop", moving and on_ground, -10.0)
 
 func _hold_buttons() -> void:
 	var defs: Array = [["<", 8, 40, "l"], [">", 52, 40, "r"], ["JUMP", 452, 80, "u"], ["DRILL", 540, 92, "e"]]
@@ -237,6 +289,8 @@ func _pressed(key: Key, act: String, h: String) -> bool:
 	return hold.has(h) or Input.is_physical_key_pressed(key) or (act != "" and Input.is_action_pressed(act))
 
 func _input(event: InputEvent) -> void:
+	if not driver:
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		var k: InputEventKey = event
 		if k.physical_keycode == KEY_E or k.keycode == KEY_ENTER:
@@ -301,12 +355,15 @@ func _physics_process(delta: float) -> void:
 	t += delta
 	msg_t -= delta
 	_particles(delta)
+	if not driver:
+		return   # watching: the host's "state" moves the rover
+	_send_state(delta)
 	if state != "explore":
 		if t > end_t:
 			set_physics_process(false)
 			Game.surface_result(got, battery, data)
 			Game.run["mode"] = "home"
-			Game.goto("flight")
+			Game.flow("flight")
 		return
 	_tips()
 	if hold.has("e"):
@@ -807,6 +864,11 @@ func _draw_hud(night: float) -> void:
 		var a: float = clampf(msg_t * 3.0, 0.0, 1.0)
 		Pix.panel(front, Rect2(floorf(320.0 - mw / 2.0), 92, mw, 20), pan_accent, Color(pan_body, pan_body.a * a))
 		Pix.text_oc(front, 320, 105, msg, 10, Color(UI.YELLOW, a))
+	if not driver:
+		var hs: String = "THE HOST IS DRIVING. YOU ARE WATCHING."
+		var hw: float = Pix.text_w(hs, 10) + 20.0
+		Pix.panel(front, Rect2(floorf(320.0 - hw / 2.0), 334, hw, 20), UI.YELLOW, pan_body)
+		Pix.text_c(front, 320, 348, hs, 10, UI.YELLOW)
 
 # ---------------------------------------------------------------- debug hooks (screenshots only)
 

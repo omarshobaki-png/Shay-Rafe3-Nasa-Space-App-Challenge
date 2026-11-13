@@ -332,13 +332,21 @@ func _activate(id: String) -> void:
 	Audio.play("click")
 	match id:
 		"again":
+			if Net.is_online() and not Net.is_host():
+				return   # online the host takes everyone back to the builder
 			Game.signed = {}
-			Game.goto("builder")
+			Game.flow("builder")
 		"menu":
-			Game.goto("menu")
+			if Net.is_online():
+				Game.leave_room()
+			else:
+				Game.goto("menu")
 		"tech":
 			MenuScript.open_tech_next = true
-			Game.goto("menu")
+			if Net.is_online():
+				Game.leave_room()
+			else:
+				Game.goto("menu")
 
 # ---------------------------------------------------------------- drawing helpers
 
@@ -523,6 +531,14 @@ func _draw_panels() -> void:
 			Pix.gauge(self, Rect2(pa.position.x + 82, ry + 3, 56, 8), float(v) / 100.0 * rf, role["color"])
 			Pix.text(self, Vector2(pa.position.x + 144, ry + 10), "%d" % roundi(v * rf), 10, UI.TEXT)
 			i += 1
+		if r.has("team_sync"):
+			# online only (decision D7): how well the team worked together in the builder
+			var sv: int = int(r["team_sync"])
+			var sy: float = ty + 17.0 + i * 15.0
+			Pix.icon(self, "comms", Vector2(pa.position.x + 8, sy))
+			Pix.text(self, Vector2(pa.position.x + 26, sy + 10), "TEAM SYNC", 10, UI.CYAN)
+			Pix.gauge(self, Rect2(pa.position.x + 82, sy + 3, 56, 8), float(sv) / 100.0 * rf, UI.CYAN)
+			Pix.text(self, Vector2(pa.position.x + 144, sy + 10), "%d" % roundi(sv * rf), 10, UI.TEXT)
 	# --- B: what happened and why (the feed is a child control)
 	if _panel_on(0.12):
 		_shift(_panel_dy(0.12))
@@ -592,7 +608,10 @@ func _draw_bottom() -> void:
 			continue
 		var p: Vector2 = (cn["from"] as Vector2).lerp(cn["to"] as Vector2, u) + Vector2(0, -sin(u * PI) * 22.0)
 		draw_texture(_tx("ic_coin"), (p - Vector2(7, 7)).floor())
-	_button(Rect2(476, 332, 156, 24), "again", "REDESIGN & FLY AGAIN", "btn_green", "ic_play")
+	if Net.is_online() and not Net.is_host():
+		Pix.text(self, Vector2(486, 348), "THE HOST PICKS WHAT'S NEXT", 10, UI.DIM)
+	else:
+		_button(Rect2(476, 332, 156, 24), "again", "REDESIGN & FLY AGAIN", "btn_green", "ic_play")
 
 # ---------------------------------------------------------------- debug (screenshots)
 
@@ -609,6 +628,10 @@ func _fake(goal_ok: Array, log: Array, scr: int, rew: int) -> void:
 	f["reward"] = rew
 	f["roles"] = {"planner": 100 if scr >= 50 else 40, "engineer": 85 if scr >= 50 else 35, "science": 66 if scr >= 50 else 0, "comms": 100 if scr >= 100 else 0}
 	_load(f)
+
+## The online-only team sync row, for a screenshot.
+func debug_team() -> void:
+	r["team_sync"] = 72
 
 func debug_success() -> void:
 	_fake([true, true, true, true, true, true], [

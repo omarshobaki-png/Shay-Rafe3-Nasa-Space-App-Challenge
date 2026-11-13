@@ -21,15 +21,18 @@ MENU ──► BUILDER ──► REVIEW BOARD ──► FLIGHT ──► LANDING
 | `scripts/data.gd` | **All numbers + sources**: `DEST` (Moon/Mars/Saturn), `ROCKETS`, `PARTS`, `ROLES`, `TECH`, `OBJ_NAMES`, `SOURCES` |
 | `scripts/donki_data.gd`, `data/donki.json` | Real NASA DONKI geomagnetic-storm snapshot (2024–25) |
 | `scripts/game.gd` | State + maths: `calc()` (totals and bar status), `role_issues()` (GO/NO-GO text), rocket equation, `phase_launch/cruise/arrive/home`, `landing_result`, `surface_result`, `probe_result`, `finish()` (score, credits, role scores), save/load (`user://save.json`), `buy_tech()` |
-| `scripts/main.gd` | Screen switching; debug args (`-- screen=builder dest=mars`) |
-| `scripts/screens/menu.gd` | Title, mission select, player count, Tech Lab, How to Play, NASA data & credits |
-| `scripts/screens/builder.gd` | Role tabs, part list (+/- counts), bars, rocket/trajectory pick, EXAMPLE SHIP, sign-off, review board |
-| `scripts/screens/flight.gd` | Launch animation, cruise map (transfer orbit), arrival, trip home |
-| `scripts/screens/landing.gd` | Lander physics with real gravity, fuel by mass flow, touchdown limits |
-| `scripts/screens/surface.gd` | Rover drive/jump/drill, parallax + perspective floor, Mars night battery drain |
-| `scripts/screens/probe.gd` | Saturn ring drone: collect ice, dodge rocks, dock to the orbiter |
-| `scripts/screens/report.gd` | Objectives, cause chain, tips, role scores, real-mission comparison, credits |
+| `scripts/main.gd` | Screen switching; debug args (`-- screen=builder dest=mars`, `roles=engineer` to test multiplayer locks offline, `mptest=host` for the scripted 2-player test) |
+| `scripts/screens/menu.gd` | Title, mission select, player count, Tech Lab, How to Play, NASA data & credits; MULTIPLAYER lobby (HOST/JOIN with code, role slots, READY, destination, START, LEAVE) |
+| `scripts/screens/builder.gd` | Role tabs, part list (+/- counts), bars, rocket/trajectory pick, EXAMPLE SHIP, sign-off, review board. Multiplayer: other roles' tabs locked (`Data.TAB_ROLE`), edits go to the host and come back as a "build" snapshot, SIGN/REQUEST/CHAT, LAUNCH needs all 4 signed (host only); undo/redo/auto-build off |
+| `scripts/screens/flight.gd` | Launch animation, cruise map (transfer orbit), arrival, trip home. Online every player flies it from the same run and cruise seed; only the host moves on |
+| `scripts/screens/landing.gd` | Lander physics with real gravity, fuel by mass flow, touchdown limits. Multiplayer jobs: Planner site, Engineer engine, Scientist parachute (Mars) + legs; host simulates, others send "input" and draw "state" |
+| `scripts/screens/surface.gd` | Rover drive/jump/drill, parallax + perspective floor, Mars night battery drain. Online the host drives and streams its state; others watch |
+| `scripts/screens/probe.gd` | Saturn ring drone: collect ice, dodge rocks, dock to the orbiter. Multiplayer jobs: Scientist flies, Engineer throttle, Comms picks the downlink after docking |
+| `scripts/screens/report.gd` | Objectives, cause chain, tips, role scores, real-mission comparison, credits. Online: TEAM SYNC row; only the host picks "fly again" |
 | `scripts/pix.gd`, `scripts/ui.gd` | Pixel text, panels, parallax helpers, UI widgets |
+| `scripts/net.gd` | Multiplayer network layer and the **contract** with the screens (relay in `server/`) |
+| `scripts/team_ui.gd` | Builder team layer in multiplayer: quick chat, REQUEST pop-ups, toasts |
+| `scripts/mp_test.gd` | Dev only: plays a scripted 2-player online mission against a relay |
 | `scripts/audio.gd` | Sound effects, engine loops, 2 music tracks |
 | `shaders/floor.gdshader` | "Mode 7" perspective ground |
 | `tools/blender/*.py` | Blender scripts that model and render the ships → `tools/art/gen_ships.py` turns them into pixel sprites |
@@ -110,6 +113,25 @@ reasons are in [`00_TEAM_NOTES.md` §9](00_TEAM_NOTES.md#9-conflicts-resolved).
 - **D4 Multiplayer (Omar, 13 Nov):** 1–4 players over the network, one role each, each on their own
   computer. No shared keyboard. A single player plays all roles offline.
 - **D6 Budgets (Omar, 13 Nov):** Moon $300M, Mars $500M, Saturn $900M, the v3 values (no code change).
+- **D7 Multiplayer scope (team, 13 Nov night):** builds on D4.
+  - **Network:** a small relay server on Fly.io; players join a room with a 4-letter code over secure
+    WebSockets. The same path works for web and Windows. The room host's game is the truth.
+  - **Lobby:** HOST / JOIN, pick a role, READY; the host starts, and free roles go to the host.
+  - **Builder:** everyone sees the ship live, but you only change your own role's parts. A REQUEST
+    button asks another role for something (accept / decline). Quick-chat presets. Each role signs;
+    any part change clears all signatures; LAUNCH needs all 4.
+  - **Flight jobs:** landing (Planner picks the site, Engineer flies the engine, Scientist the
+    parachute and legs) and the Saturn drone (Scientist flies, Engineer manages fuel, Comms picks the
+    photos to send). Other flight screens are watched by everyone.
+  - **Report:** a "team sync" score (requests answered, time to all-signed) next to the role scores.
+  - Contract between the network layer and the screens: `game/scripts/net.gd`.
+  - **Built 14 Nov. Small mechanics the code needed, waiting for team approval** (all numbers in
+    `data.gd`, src "game rule"): 3 landing sites (`LANDING_SITES`: drift, safe-speed and credit
+    multipliers); online the Mars descent starts above a packed parachute (`LANDING_JOBS`: 4,500 m at
+    420 m/s, canopy brakes at 80 m/s² to 90 m/s, cut away at 1,000 m); legs start up and take 1.5 s,
+    touching down with them up is a crash; drone throttle ECO/NORMAL/BOOST (`DRONE_THROTTLE`); the
+    downlink pick after docking (`DRONE_DOWNLINK`: 6 units, 20 s, 2 credits per point); team sync
+    weights (`TEAM_SYNC`). Online, undo/redo/auto-build are off.
 - **D5 Efficiency rating:** a separate score for resource use, reported next to the success score.
   Proposed formula: for each of budget, mass and power, full marks when 10–35% of the allotment is left
   at launch, falling off toward 0% (no margin) and toward 60%+ (waste). Average the three.

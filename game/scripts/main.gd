@@ -57,6 +57,10 @@ func _ready() -> void:
 					current.call(m)
 	else:
 		goto("menu")
+	if args.has("mptest"):
+		# dev only: a scripted 2-player online mission (scripts/mp_test.gd)
+		var mp: Node = (load("res://scripts/mp_test.gd") as GDScript).new()
+		add_child(mp)
 	if args.has("shot"):
 		await get_tree().create_timer(float(args.get("wait", "1.5"))).timeout
 		get_viewport().get_texture().get_image().save_png(String(args["shot"]))

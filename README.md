@@ -90,6 +90,7 @@ Team Shay Rafe3, NASA Space Apps Challenge 2026, challenge "Space Mission Design
   - Spacecraft parts, launch vehicles, the assembly hall, UI frames and icons, effects (flames, smoke, explosions) and all planets: Blender renders and numpy/PIL generators (`tools/blender/parts.py`, `tools/art/gen_*.py`).
   - All 67 sounds and the five music tracks: synthesized with numpy (`tools/audio/make_sounds.py`, `tools/audio/make_music.py`). No recordings, no samples.
   - The pixel font comes from our earlier game, Rotorfall.
+- The multiplayer scope is the team's (decision D7). Where it left gaps, Claude proposed small mechanics (a landing-site choice, the Scientist opening the parachute and lowering the legs, a drone throttle, the Comms downlink pick, the team sync weights). They are marked "game rule" in `data.gd` and wait for the team to approve or change them.
 - No NASA logos are used.
 - No AI image or video generators were used: every picture is made by code you can re-run.
 

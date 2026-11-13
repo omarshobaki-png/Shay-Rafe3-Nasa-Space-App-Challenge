@@ -195,6 +195,89 @@ const ROLES: Array = [
 		"job": "Make sure all the DATA fits in storage and gets sent to Earth."},
 ]
 
+# ---------------------------------------------------------------- multiplayer (decision D7)
+
+## Which role may change each builder tab. Lookups use the tab name; "src" is not a tab.
+const TAB_ROLE: Dictionary = {
+	"launcher": "planner",
+	"power": "engineer", "fuel": "engineer", "landing": "engineer", "protect": "engineer",
+	"science": "science", "robot": "science", "return": "science",
+	"comms": "comms",
+	"src": "game rule",
+}
+
+## Quick-chat presets (keys 1-8 in the builder). Index = the number sent in a "chat" message.
+const QUICK_CHAT: Array[String] = [
+	"OK!", "WAIT, I'M CHANGING SOMETHING", "MY PART IS DONE", "WHO IS OVER BUDGET?",
+	"WE NEED MORE POWER", "TOO HEAVY FOR THE ROCKET", "READY TO SIGN", "GOOD JOB, TEAM!",
+]
+
+## REQUEST presets: what one role can ask another for.
+const REQUESTS: Array[String] = [
+	"NEED MORE POWER", "WE ARE OVER BUDGET", "NEED MORE DATA STORAGE", "OVER ROCKET MASS",
+	"CAN I ADD AN INSTRUMENT?", "PLEASE SIGN OFF",
+]
+
+## Network send rates for flight controls and the host's simulation state.
+const NET_RATES: Dictionary = {"input_hz": 20.0, "state_hz": 15.0, "src": "game rule"}
+
+## Team sync score on the report: weights of the three parts, and the times that score full and zero marks.
+const TEAM_SYNC: Dictionary = {
+	"w_answered": 0.4, "w_reply": 0.3, "w_sign": 0.3,
+	"reply_good_s": 5.0, "reply_bad_s": 30.0,     # average time to answer a REQUEST
+	"sign_good_s": 10.0, "sign_bad_s": 90.0,      # all lamps green -> all 4 roles signed
+	"src": "game rule",
+}
+
+## Landing jobs online: the Scientist opens the Mars parachute and lowers the legs.
+## The descent then starts above the parachute: 420 m/s is the no-parachute entry speed already in game.gd,
+## 90 m/s the speed under the canopy (Perseverance, see the "chute" part).
+const LANDING_JOBS: Dictionary = {
+	"site_secs": 12.0,       # time the Planner has to pick a site; then the first site is used
+	"gear_secs": 1.5,        # legs (or airbags) take this long to deploy
+	"chute_decel": 80.0,     # m/s2 the open canopy removes while faster than chute_vy
+	"chute_vy": 90.0,        # m/s under the canopy
+	"chute_cut_alt": 1000.0, # m: the canopy is cut away here, opened or not
+	"mars_alt": 4500.0,      # m: start of the descent when the parachute is still packed
+	"mars_vy": 420.0,        # m/s
+	"mars_vx": 8.0,          # m/s
+	"src": "game rule",
+}
+
+## Landing sites the Planner picks from before the descent. drift: extra sideways speed (m/s) to cancel;
+## touch_mult: rough ground lowers the safe touchdown speed; credit_mult: more interesting rocks pay more.
+const LANDING_SITES: Array = [
+	{"name": "FLAT PLAIN", "drift": 0.0, "touch_mult": 1.0, "credit_mult": 1.0,
+		"desc": "Safe and dull.", "src": "game rule"},
+	{"name": "CRATER RIM", "drift": 3.0, "touch_mult": 0.75, "credit_mult": 1.25,
+		"desc": "Drift and rocks. +25% credits.", "src": "game rule"},
+	{"name": "BOULDER FIELD", "drift": 5.0, "touch_mult": 0.6, "credit_mult": 1.5,
+		"desc": "Hard landing. +50% credits.", "src": "game rule"},
+]
+
+## Saturn drone: the Engineer sets the throttle. thrust and burn multiply the solo values (NORMAL = solo).
+const DRONE_THROTTLE: Array = [
+	{"name": "ECO", "thrust": 0.8, "burn": 0.6, "src": "game rule"},
+	{"name": "NORMAL", "thrust": 1.0, "burn": 1.0, "src": "game rule"},
+	{"name": "BOOST", "thrust": 1.3, "burn": 1.6, "src": "game rule"},
+]
+
+## Saturn downlink online: after docking, the Comms officer picks what to send home within `limit` units.
+## Each ice sample's kind follows the grain it came from; the orbiter adds two photos.
+const DRONE_DOWNLINK: Dictionary = {
+	"limit": 6, "secs": 20.0, "credits_per_pt": 2,
+	"samples": [
+		{"name": "ICE GRAIN", "size": 1, "pts": 1},
+		{"name": "ICE CRYSTAL", "size": 2, "pts": 3},
+		{"name": "DIRTY ICE", "size": 3, "pts": 4},
+	],
+	"photos": [
+		{"name": "RING CLOSE-UP", "size": 2, "pts": 2},
+		{"name": "SATURN LIMB", "size": 1, "pts": 1},
+	],
+	"src": "game rule",
+}
+
 const TECH: Dictionary = {
 	"solar2": {"name": "Light solar arrays", "cost": 60, "desc": "Unlocks 2 kW arrays at 100 W/kg."},
 	"batt2": {"name": "High-energy batteries", "cost": 40, "desc": "Unlocks 4 kWh batteries at 270 Wh/kg."},
