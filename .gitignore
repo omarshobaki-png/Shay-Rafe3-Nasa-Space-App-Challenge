@@ -11,9 +11,10 @@ build/
 *.exe
 *.pck
 !docs/index.pck
+.import.lock
 # OS
 Thumbs.db
 .DS_Store
 
-# local builds (upload SpaceMissionDesigner-windows-v3.zip as a GitHub Release instead)
+# local builds (upload the Windows zip as a GitHub Release instead)
 builds/

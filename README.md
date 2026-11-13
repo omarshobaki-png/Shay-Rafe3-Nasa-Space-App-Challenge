@@ -2,10 +2,10 @@
 
 Team Shay Rafe3, NASA Space Apps Challenge 2026, challenge "Space Mission Design Game".
 
-![Mars surface](screenshots/v3_surface_mars.png)
+![The ship builder](screenshots/builder_mars_example.png)
 
 > **New to the project? Read [`context/README.md`](context/README.md) first** (about 15 min). It covers
-> what we're building, the current state (v3), the to-do list, open team decisions and every NASA
+> what we're building, the current state, the to-do list, open team decisions and every NASA
 > resource we use. Using Claude Code? It reads [`CLAUDE.md`](CLAUDE.md) automatically.
 
 ## Play it
@@ -13,7 +13,7 @@ Team Shay Rafe3, NASA Space Apps Challenge 2026, challenge "Space Mission Design
 - **In a browser:** the web build is in `docs/`. Turn on GitHub Pages for this repository
   (Settings > Pages > Deploy from a branch > `main`, folder `/docs`) and the game runs at
   `https://<your-user>.github.io/<this-repo>/`. No download and no login.
-- **On Windows:** download `SpaceMissionDesigner-windows.zip` from this repository's Releases, unzip it and
+- **On Windows:** download the Windows build from this repository's Releases, unzip it and
   run `SpaceMissionDesigner.exe` (keep the `.pck` file next to it).
 - **From source:** open `game/project.godot` in Godot 4.7.2 and press F5.
 
@@ -22,24 +22,27 @@ Team Shay Rafe3, NASA Space Apps Challenge 2026, challenge "Space Mission Design
 - `game/`: the Godot 4.7 project (GDScript). `game/tools/` holds the scripts that generate every sprite,
   background and sound.
 - `docs/`: the exported web build (what GitHub Pages serves).
+- `screenshots/`: pictures of every screen.
+- `research/`: our study of the challenge, the real numbers and their sources.
 - `context/`: the team's merged notes (the vision), the project brief, status and roadmap, game design
   and decisions, the NASA resources guide, and the build history.
 - `CLAUDE.md`: working rules for AI assistants and teammates.
 - `builds/` (not in git): put the Windows zip here locally; publish it as a GitHub Release.
-- `screenshots/`: pictures of every screen.
-- `research/`: our study of the challenge, the real numbers and their sources.
+
+| | |
+|---|---|
+| ![Launch](screenshots/flight_moon_liftoff.png) | ![Cruise](screenshots/final_cruise_all_planets.png) |
+| ![Mars at night](screenshots/surface_mars_night.png) | ![Saturn drone](screenshots/probe_saturn_mid.png) |
 
 ## How a mission goes
 
 1. **Menu.** Pick the Moon (easy), Mars (medium) or Saturn (hard), and 1 to 4 players.
-2. **Builder.** There are four role tabs; with several players, each player takes one:
-   - **Planner:** rocket, flight path, budget, time.
-   - **Engineer:** mass, power, fuel.
-   - **Scientist:** instruments, rover, drone, return stage.
-   - **Comms:** antenna, storage, downlink.
-
-   Seven bars turn green, yellow or red. Hover any bar or part to see the formula and the NASA source. **EXAMPLE SHIP** loads a ship that works.
-3. **Review board.** It gives GO or NO-GO per resource. You can still launch a NO-GO ship to see what breaks.
+2. **Builder.** It works like Kerbal Space Program's assembly building:
+   - Pick a part from the bin on the left and drop it on the ship standing in the hangar. The ship grows with every part.
+   - Mission Control on the right has one lamp per station (booster, power, fuel, landing, science, data, comms, budget, time, risk). A red lamp says in plain words what is wrong, why (the real physics), and which part fixes it. **SHOW ME** points at that part.
+   - Each station belongs to one of four roles (planner, engineer, scientist, comms), so 2 to 4 players each watch their own lamps.
+   - **AUTO-BUILD** assembles a ship that works. Undo, redo, and "fill to need" for fuel are there too.
+3. **Launch poll.** LAUNCH runs a GO / NO-GO poll station by station, like a real flight director. You can still launch a NO-GO ship to see what breaks.
 4. **Flight.** Launch, cruise map, orbit arrival:
    - Power falls with distance from the Sun squared.
    - Fuel follows the rocket equation (Isp 300 s).
@@ -84,7 +87,8 @@ Team Shay Rafe3, NASA Space Apps Challenge 2026, challenge "Space Mission Design
 - Claude (AI) wrote the GDScript code and the scripts that make the art and sound, and the team reviewed it:
   - Spacecraft sprites (rocket, lander, rover, drone, orbiter): simple 3D models built by a Python script in Blender, rendered and turned into palette pixel art (`tools/blender/ships.py`, `tools/art/gen_ships.py`).
   - Planets, backgrounds, ground, rocks and clouds: generated with numpy noise and dithering (`tools/art/gen_bg.py`).
-  - Sound effects and the two music loops: synthesized by code (`tools/audio/`, the Godot skill's sfx/music generators).
+  - Spacecraft parts, launch vehicles, the assembly hall, UI frames and icons, effects (flames, smoke, explosions) and all planets: Blender renders and numpy/PIL generators (`tools/blender/parts.py`, `tools/art/gen_*.py`).
+  - All 67 sounds and the five music tracks: synthesized with numpy (`tools/audio/make_sounds.py`, `tools/audio/make_music.py`). No recordings, no samples.
   - The pixel font comes from our earlier game, Rotorfall.
 - No NASA logos are used.
 - No AI image or video generators were used: every picture is made by code you can re-run.
@@ -95,6 +99,8 @@ Team Shay Rafe3, NASA Space Apps Challenge 2026, challenge "Space Mission Design
 - `scripts/donki_data.gd`: real NASA DONKI storm snapshot.
 - `scripts/game.gd`: ship maths, simulation, money, save.
 - `scripts/screens/*.gd`: menu, builder, flight, landing, surface, probe, report.
+- `scripts/preflight.gd`: the GO / NO-GO rules and hints. `scripts/ship_kit.gd`: assembles the ship from part sprites.
+- `scripts/fx.gd`: shared sprite effects. `scripts/ui.gd`: the UI kit.
 - `scripts/pix.gd`: loads the art, draws pixel text, HUD panels and parallax layers.
 - `scripts/audio.gd`: sound effects, engine loops and music.
 - `art/`, `audio/`: generated assets. Re-make them with `tools/` (Blender 4+/5, Python with numpy and Pillow).

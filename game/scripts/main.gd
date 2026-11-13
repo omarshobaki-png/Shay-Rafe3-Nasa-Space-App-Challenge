@@ -10,6 +10,8 @@ const SCREENS: Dictionary = {
 	"surface": preload("res://scripts/screens/surface.gd"),
 	"probe": preload("res://scripts/screens/probe.gd"),
 	"report": preload("res://scripts/screens/report.gd"),
+	"kit": preload("res://scripts/screens/kit_test.gd"),  # dev-only contact sheet
+	"fx": preload("res://scripts/screens/fx_test.gd"),    # dev-only contact sheet
 }
 
 var current: Node = null
@@ -33,7 +35,7 @@ func _ready() -> void:
 		Game.new_mission(String(args.get("dest", "moon")))
 		Game.example_build()
 		var sc: String = args["screen"]
-		if sc != "menu" and sc != "builder":
+		if sc != "menu" and sc != "builder" and sc != "kit" and sc != "fx":
 			Game.start_run()
 			Game.run["mode"] = String(args.get("mode", "out"))
 			if sc != "flight":
@@ -48,6 +50,11 @@ func _ready() -> void:
 		if args.has("tab"):
 			current.set("tab", String(args["tab"]))
 			current.call("refresh")
+		# call=debug_x[,debug_y] runs methods of the screen, to set up a state for a screenshot
+		if args.has("call"):
+			for m: String in String(args["call"]).split(","):
+				if current.has_method(m):
+					current.call(m)
 	else:
 		goto("menu")
 	if args.has("shot"):
@@ -71,7 +78,10 @@ func goto(screen: String) -> void:
 	fade.modulate.a = 1.0
 	create_tween().tween_property(fade, "modulate:a", 0.0, 0.35)
 	Audio.stop_loops()
-	Audio.music(String(MUSIC.get(screen, "mission")))
+	if Audio.has_method("scene"):
+		Audio.call("scene", screen)  # audio.gd picks the music and ambience for this screen
+	else:
+		Audio.music(String(MUSIC.get(screen, "mission")))
 
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), UI.BG)

@@ -55,16 +55,16 @@ func example_build() -> void:
 	match dest_id:
 		"moon":
 			rocket_id = "falcon9"
-			build.merge({"solar": 1, "battery": 2, "mga": 1, "camera": 1, "drill": 1, "rover": 1,
+			build.merge({"solar": 1, "battery": 2, "mga": 1, "camera": 1, "spectro": 1, "drill": 1, "rover": 1,
 				"legs": 1, "ascent": 1, "prop": 24})
 		"mars":
 			rocket_id = "falcon9"
-			build.merge({"solar": 2, "battery": 3, "hga": 1, "camera": 1, "spectro": 1, "drill": 1,
-				"rover": 1, "heatshield": 1, "chute": 1, "airbags": 1, "prop": 5, "recorder": 1})
+			build.merge({"solar": 2, "battery": 2, "mga": 1, "camera": 1, "spectro": 1, "drill": 1,
+				"rover": 1, "heatshield": 1, "chute": 1, "airbags": 1, "prop": 4})
 		"saturn":
 			rocket_id = "heavy"
-			build.merge({"rtg": 3, "battery": 2, "hga": 1, "dust": 1, "mag": 1, "drone": 1,
-				"shield": 1, "prop": 4, "recorder": 1})
+			build.merge({"rtg": 3, "hga": 1, "dust": 1, "mag": 1, "drone": 1,
+				"shield": 1, "prop": 4})
 
 func count(id: String) -> int:
 	return int(build.get(id, 0))
@@ -414,7 +414,7 @@ func phase_arrive() -> void:
 
 ## Called before the landing minigame. Returns the start state for it.
 func landing_setup() -> Dictionary:
-	var s: Dictionary = {"g": float(dest()["gravity"]), "alt": 600.0, "vy": 20.0, "vx": 8.0, "drag": 0.0}
+	var s: Dictionary = {"g": float(dest()["gravity"]), "alt": 600.0, "vy": 20.0, "vx": 3.0, "drag": 0.0}
 	if dest_id == "moon":
 		# deorbit from 50 km orbit: most of the 1.89 km/s is spent before the final approach
 		var used: float = burn(1.75)
@@ -428,10 +428,10 @@ func landing_setup() -> Dictionary:
 			return s
 		if id_has("chute"):
 			note(true, "Entry: heat shield OK, parachute opened (420 m/s to 90 m/s). Powered descent begins.")
-			s = {"g": 3.71, "alt": 1500.0, "vy": 90.0, "vx": 15.0, "drag": 0.0}
+			s = {"g": 3.71, "alt": 1500.0, "vy": 90.0, "vx": 6.0, "drag": 0.0}
 		else:
 			note(false, "Entry: heat shield OK but NO PARACHUTE. Still falling at 420 m/s.")
-			s = {"g": 3.71, "alt": 3000.0, "vy": 420.0, "vx": 20.0, "drag": 0.0}
+			s = {"g": 3.71, "alt": 3000.0, "vy": 420.0, "vx": 8.0, "drag": 0.0}
 		var dropped: float = float(Data.PARTS["heatshield"]["mass"]) + float(Data.PARTS["chute"]["mass"]) * count("chute")
 		run["mass"] = float(run["mass"]) - dropped
 		note(true, "Heat shield and parachute dropped away (%s kg lighter)." % fmt(dropped))
