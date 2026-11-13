@@ -4,7 +4,7 @@
 # screen: menu | builder | flight | landing | surface | probe | report      dest: moon | mars | saturn
 # extra args are passed to the game's debug hook (scripts/main.gd), e.g.  call=debug_night  mode=home
 # Prints script errors if there are any. Imports new assets first (locked, safe to call in parallel).
-GODOT="${GODOT:-godot}"   # set GODOT to your Godot 4.7 binary
+GODOT="${GODOT:-godot}"
 PROJ="$(cd "$(dirname "$0")/../.." && pwd)"
 screen="$1"; dest="$2"; out="$3"; wait="${4:-1.5}"; shift 4 2>/dev/null
 bash "$PROJ/tools/dev/godot_import.sh" >/dev/null

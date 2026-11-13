@@ -57,6 +57,10 @@ PARTS = {
     "kadish": ((255, 128, 255), ["jet1", "jet3", "metal1", "metal2"], 5),
     "tdome":  ((128, 255, 255), ["metal0", "metal1", "metal2", "metal3"], 4),
     "slot":   ((64, 128, 255), ["jet1", "jet2", "jet3", "jet3"], 7),
+    "cloth":  ((64, 0, 64), ["cloth0", "cloth1", "cloth2", "cloth3", "cloth4"], 5),
+    "quilt":  ((0, 64, 64), ["cloth0", "cloth1", "cloth1", "cloth2"], 4),
+    "hull":   ((64, 64, 0), ["hull0", "hull1", "hull2", "hull3", "hull4"], 5),
+    "bolt":   ((255, 64, 64), ["hull1", "hull3", "hull4", "hull5"], 9),
     "hold":   ((255, 255, 255), ["jet0"], 0),      # occluder: cut out of the sprite
 }
 
@@ -135,6 +139,34 @@ def torus(part, loc, R, r, rot=(0, 0, 0)):
         p.use_smooth = True
     o.parent = ROOT_OBJ
     return o
+
+
+def mesh(part, verts, faces, inside, inward=False, smooth=True):
+    """A surface from pixel-space verts; each face is turned to point away from `inside` (toward
+    it when inward)."""
+    me = bpy.data.meshes.new(part)
+    me.from_pydata([P3(v) for v in verts], [], faces)
+    me.update()
+    c = Vector(P3(inside))
+    for p in me.polygons:
+        if ((p.normal.dot(p.center - c) < 0) != inward):
+            p.flip()
+    me.update()
+    o = bpy.data.objects.new(part, me)
+    bpy.context.collection.objects.link(o)
+    return _finish(o, part, smooth)
+
+
+def lathe(part, prof, c, segs=40, inward=False):
+    """Surface of revolution about the vertical axis through c: prof = [(r, dz), ...]."""
+    verts, faces, n = [], [], len(prof)
+    for i in range(segs):
+        a = math.tau * i / segs
+        verts += [(c[0] + r * math.cos(a), c[1] + r * math.sin(a), c[2] + z) for r, z in prof]
+    for i in range(segs):
+        i2 = (i + 1) % segs
+        faces += [(i * n + j, i2 * n + j, i2 * n + j + 1, i * n + j + 1) for j in range(n - 1)]
+    return mesh(part, verts, faces, (c[0], c[1], c[2] + sum(z for _, z in prof) / n), inward)
 
 
 def strut(part, a, b, r, verts=8):
@@ -663,6 +695,115 @@ def m_engine():
         strut("metal", (sx * 7, -2, ZB - 0.5), (sx * 9, -2, ZB - 9), 0.7)
 
 
+SH_C = (0.0, 6.0)         # sunshade: centre of its arc (x, z), radius, arc span, half width, turn
+SH_R = 60.0
+SH_A = (128.0, 232.0)
+SH_V = 18.0
+SH_TURN = rad(35)
+SH_W = Vector((-math.sin(SH_TURN), math.cos(SH_TURN), 0))   # across the band: back and to the left
+
+
+def _sh(a, v, dr=0.0):
+    """Point on the shade: a = degrees round the arc (180 = straight left of the bus), v across it
+    (negative = the near edge, toward the bus), dr = out of the cloth."""
+    a = rad(a)
+    n = Vector((math.cos(a) * math.cos(SH_TURN), math.cos(a) * math.sin(SH_TURN), math.sin(a)))
+    p = Vector((SH_C[0] + SH_R * math.cos(a), 0, SH_C[1] + SH_R * math.sin(a))) + SH_W * v + n * dr
+    return tuple(p)
+
+
+def m_sunshade():
+    """MESSENGER-style ceramic-cloth sunshade on the Sun (left) side: a quilted band bent round the
+    craft like a parenthesis, turned to show its sunny face, on a light tube frame with tie-down lugs,
+    held off the bus wall by standoffs."""
+    begin()
+    a0, a1 = SH_A
+    na, nv = 9, 3                                # quilt cells along and across
+    sa, sv = 4, 4                                # mesh steps per cell
+    verts, faces = [], []
+    for i in range(na * sa + 1):
+        for j in range(nv * sv + 1):
+            fa, fv = (i % sa) / sa, (j % sv) / sv
+            bulge = 0.9 * math.sin(math.pi * fa) * math.sin(math.pi * fv)   # each cell puffs out
+            verts.append(_sh(a0 + (a1 - a0) * i / (na * sa), -SH_V + 2 * SH_V * j / (nv * sv), bulge))
+    m = nv * sv + 1
+    for i in range(na * sa):
+        for j in range(nv * sv):
+            faces.append((i * m + j, (i + 1) * m + j, (i + 1) * m + j + 1, i * m + j + 1))
+    inside = (SH_C[0], 0, SH_C[1])
+    mesh("cloth", verts, faces, inside)
+    w = 1.1                                      # stitched seams between the cells
+    for i in range(1, na):
+        a = a0 + (a1 - a0) * i / na
+        da = math.degrees(w / SH_R) / 2
+        mesh("quilt", [_sh(a - da, -SH_V, 0.3), _sh(a + da, -SH_V, 0.3), _sh(a + da, SH_V, 0.3), _sh(a - da, SH_V, 0.3)],
+             [(0, 1, 2, 3)], inside)
+    for j in range(1, nv):
+        v = -SH_V + 2 * SH_V * j / nv
+        vs = [_sh(a0 + (a1 - a0) * k / 24, v + dv, 0.3) for k in range(25) for dv in (-w, w)]
+        mesh("quilt", vs, [(2 * k, 2 * k + 2, 2 * k + 3, 2 * k + 1) for k in range(24)], inside)
+    fr = 0.8                                     # light tube frame round the edge
+    for v in (-SH_V, SH_V):
+        for k in range(16):
+            strut("metal", _sh(a0 + (a1 - a0) * k / 16, v, 0.3), _sh(a0 + (a1 - a0) * (k + 1) / 16, v, 0.3), fr)
+    for a in (a0, a1):
+        strut("metal", _sh(a, -SH_V, 0.3), _sh(a, SH_V, 0.3), fr)
+    for a in (a0, (a0 + a1) / 2, a1):            # tie-down lugs on the frame
+        for v in (-SH_V, SH_V):
+            box("chrome", _sh(a, v, 0.8), (2.2, 2.2, 2.2))
+    for a in (a0 + (a1 - a0) / 4, a1 - (a1 - a0) / 4):
+        box("orange", _sh(a, -SH_V, 0.8), (1.8, 1.8, 1.8))
+    for a, z in ((158, 17), (204, -10)):         # standoffs from the bus wall to the near edge
+        root = face(-90, 6, z, 0.3)
+        box("jet", root, (2.5, 4, 4))
+        strut("metal", root, _sh(a, -SH_V + 1, -0.6), 1.1)
+    strut("metal", (-30, -6, ZD), _sh(136, -SH_V + 1, -0.6), 0.9)        # brace from the deck to the top
+    box("jet", (-30, -6, ZD + 0.5), (3, 3, 2))
+
+
+def m_hull():
+    """Venera-style titanium pressure vessel: a heavy bowl round the lower bus with a bolted rim
+    flange, a rivet row, weld seams and a small thick porthole. The bus itself is an occluder."""
+    begin()
+    R, ZR, zc = 47.5, 44.0, 0.0
+    bus_body("hold")
+    cyl("hold", (0, 0, 21.0), 38, 1, rot=R22, verts=8, smooth=False)
+    prof = [(R * math.cos(rad(a)), -ZR * math.sin(rad(a))) for a in range(0, 91, 6)]
+    prof[-1] = (0.01, prof[-1][1])
+    lathe("hull", prof, (0, 0, zc), segs=48)
+    lathe("hsin", [(r - 1.4, z) for r, z in prof[:8]], (0, 0, zc), segs=48, inward=True)
+    lathe("hull", [(R - 1.2, 1.6), (R + 2.2, 1.6), (R + 2.2, -1.4), (R + 0.2, -2.4)], (0, 0, zc), segs=48)  # rim flange
+    lathe("dark", [(R + 0.4, -3.0), (R + 0.6, -3.6), (R - 0.2, -4.4)], (0, 0, zc), segs=48)                 # weld bead
+    for k in range(24):                                                   # ring of bolts on the flange
+        a = rad(k * 15 + 7.5)
+        box("bolt", (math.cos(a) * (R + 2.4), math.sin(a) * (R + 2.4), zc + 0.1), (1.6, 1.6, 1.6), (0, 0, a))
+    lat = 34.0                                                            # a lower rivet row
+    rr, zz = R * math.cos(rad(lat)), zc - ZR * math.sin(rad(lat))
+    lathe("dark", [(rr + 0.15, zz + 0.4), (rr - 0.3, zz - 0.6)], (0, 0, zc), segs=48)
+    for k in range(18):
+        a = rad(k * 20 + 10)
+        box("bolt", (math.cos(a) * (rr + 0.5), math.sin(a) * (rr + 0.5), zz - 2.0), (1.2, 1.2, 1.2), (0, 0, a))
+    for az in (-62, 62):                                                  # meridian weld seams
+        a = rad(az - 90)
+        pts = [(math.cos(a) * (R * math.cos(rad(l)) + 0.25), math.sin(a) * (R * math.cos(rad(l)) + 0.25),
+                zc - ZR * math.sin(rad(l))) for l in range(6, 80, 8)]
+        for p, q in zip(pts, pts[1:]):
+            strut("dark", p, q, 0.45, verts=6)
+    # porthole: thick frame, glass, bolts round it (front, below the battery rack)
+    az, l = rad(-3 - 90), rad(19)
+    n = Vector((math.cos(l) * math.cos(az) * ZR / R, math.cos(l) * math.sin(az) * ZR / R, -math.sin(l))).normalized()
+    c = Vector((R * math.cos(l) * math.cos(az), R * math.cos(l) * math.sin(az), zc - ZR * math.sin(l)))
+    rot = n.to_track_quat("Z", "Y").to_euler()
+    pr_ = 4.4
+    cyl("hull", c + n * 0.6, pr_, 2.6, rot=rot, verts=16)
+    cyl("dark", c + n * 1.95, pr_ * 0.68, 0.3, rot=rot, verts=16)
+    cyl("glass", c + n * 2.0, pr_ * 0.6, 0.4, rot=rot, verts=16)
+    m3 = rot.to_matrix()
+    for k in range(6):
+        a = rad(k * 60 + 30)
+        box("bolt", c + n * 1.95 + m3 @ Vector((math.cos(a) * pr_ * 0.84, math.sin(a) * pr_ * 0.84, 0)), (0.9, 0.9, 0.9))
+
+
 def m_core(k):
     """Core propellant tank holding k units (1..8): 3 px of barrel per unit."""
     begin()
@@ -834,6 +975,8 @@ def sprites():
         "rover_big": (m_rover_big, -80, 22, 60, 50, False),
         "drone": (m_drone, -70, 22, 48, 36, False),
         "engine": (m_engine, -18, 18, 36, 30, False),
+        "sunshade": (m_sunshade, -96, -76, 76, 124, False),
+        "hull": (m_hull, -60, -20, 120, 76, False),
     }
     for i in range(4):
         out["recorder_%d" % i] = (lambda i=i: m_recorder(i), -40, -8, 30, 36, False)

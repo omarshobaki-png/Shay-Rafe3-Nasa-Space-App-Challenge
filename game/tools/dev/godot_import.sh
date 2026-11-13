@@ -2,7 +2,7 @@
 # Import new or changed assets (PNG, WAV, shaders) into the project.
 # Several agents share this project: the lock makes sure only one import runs at a time.
 #   bash tools/dev/godot_import.sh
-GODOT="${GODOT:-godot}"   # set GODOT to your Godot 4.7 binary
+GODOT="${GODOT:-godot}"
 PROJ="$(cd "$(dirname "$0")/../.." && pwd)"
 LOCK="$PROJ/../.import.lock"
 for i in $(seq 1 240); do

@@ -1,7 +1,12 @@
 extends Control
-## Landing minigame. Real gravity, rocket-equation fuel use, touchdown speed limits.
-## The HUD teaches the landing: a BRAKE light computed from the physics, the burn start marked on
-## the altitude tape, a speed gauge with a green safe zone and a drift arrow. The player still flies.
+## Landing minigame on every "land" world. Real gravity, rocket-equation fuel use, touchdown limits from
+## the build and the difficulty (Game.landing_setup()). The kind of air sets the physics:
+##   none  (Moon, Mercury) the engine does all the braking;
+##   thin  (Mars) the parachute is cut away, then a powered descent;
+##   thick (Venus) the lander sinks at the terminal speed the core gives ("vterm"); the engine is hardly
+##         needed and the job is to steer onto a flat slab before touchdown.
+## Art is looked up by skin (SKIN). The HUD teaches: a BRAKE light from the real stopping distance, the
+## burn start on the altitude tape, one fall-speed gauge with a green zone, and one direction at a time.
 
 const UI = preload("res://scripts/ui.gd")
 const Pix = preload("res://scripts/pix.gd")
@@ -10,16 +15,43 @@ const FLOOR_SHADER = preload("res://shaders/floor.gdshader")
 
 const GROUND_Y: float = 312.0
 const LX: float = 320.0      # the lander stays in the middle; the ground slides under it
-const HX: float = 0.5        # px per metre sideways
 const SIDE_ACC: float = 2.5  # m/s2 from the side thrusters (game rule)
-const REACT: float = 0.6     # s of pilot reaction time built into the BRAKE light (game rule)
+const REACT: float = 0.6     # s of pilot reaction time built into the BRAKE light at NORMAL (game rule)
 const ZOOM: float = 0.6      # altitude -> screen exponent: the last metres get more of the screen
 const TAPE_TOP: float = 62.0
 const TAPE_H: float = 236.0
+const X_DRAG: float = 0.35   # 1/s: thick air soaks up sideways speed (game rule)
+const SLAB_X: float = -36.0  # m from the entry point to the flat slab, thick air (game rule)
+const SLAB_R: float = 8.0    # m: half-width of the slab at NORMAL (game rule)
+const OFF_SLAB_MIN: float = 20.0  # surface minutes lost levelling a lander that sits tilted on rough rock (game rule)
+const FACT_S: float = 9.0    # s each fact stays in the fact box
 const PEBBLE_W: Array[int] = [6, 9, 14, 20, 30, 44]
 const CRATER_W: Array[int] = [18, 26, 40, 64, 98]
+const C_SAFE: Color = Color("1f7a3a")
+const C_RISK: Color = Color("4a1a1e")
+const C_INK: Color = Color("05070d")
 
-var state: String = "fly"
+## Art and colours per skin (research/v5/skins.md). "" = this world has no such layer.
+const SKIN: Dictionary = {
+	"moon": {"haze": "6c7088", "haze_max": 0.8, "fog": "6c7088", "dust": "c4c4d2", "fill": "04050a",
+		"sky": "", "sun": "", "fx_sun": false, "body": "", "clouds": "", "sheet": "", "devil": "", "bolt": "",
+		"earth": true, "stars": true, "long_shadow": false, "craters": 0.6, "boulders": 0,
+		"pan_body": "141a2e", "pan_hi": "4a5c96"},
+	"mercury": {"haze": "141210", "haze_max": 0.7, "fog": "4a443c", "dust": "a49684", "fill": "100e0b",
+		"sky": "surface/mercury_sky_day", "sun": "surface/mercury_sun", "fx_sun": false, "body": "", "clouds": "",
+		"sheet": "", "devil": "", "bolt": "", "earth": false, "stars": true, "long_shadow": true, "craters": 0.7,
+		"boulders": 0, "pan_body": "16140f", "pan_hi": "7a6c58"},
+	"venus": {"haze": "d8a650", "haze_max": 0.95, "fog": "d8a650", "dust": "c08848", "fill": "d8a650",
+		"sky": "surface/venus_sky_day", "sun": "", "fx_sun": false, "body": "", "clouds": "surface/venus_cloud_%d",
+		"sheet": "surface/venus_haze", "devil": "", "bolt": "surface/venus_lightning", "earth": false, "stars": false,
+		"long_shadow": false, "craters": 0.15, "boulders": 9, "pan_body": "24120a", "pan_hi": "a0703a"},
+	"mars": {"haze": "b06a48", "haze_max": 0.8, "fog": "b06a48", "dust": "e0a070", "fill": "e8c49c",
+		"sky": "surface/mars_sky_day", "sun": "", "fx_sun": true, "body": "surface/phobos", "clouds": "surface/mars_cloud_%d",
+		"sheet": "surface/dust_sheet", "devil": "surface/dust_devil", "bolt": "", "earth": false, "stars": false,
+		"long_shadow": false, "craters": 0.3, "boulders": 0, "pan_body": "2a1410", "pan_hi": "8a5a3c"},
+}
+
+var state: String = "fly"     # fly | landed | crashed | burned
 var t: float = 0.0
 var end_t: float = 0.0
 var g: float = 1.62
@@ -38,7 +70,21 @@ var side: float = 0.0
 var hold_up: bool = false
 var hold_l: bool = false
 var hold_r: bool = false
-var moon: bool = true
+# the world
+var skin: String = "moon"
+var sk: Dictionary = {}
+var air: String = "none"
+var vterm: float = 0.0
+var hx: float = 0.5           # screen px per metre sideways
+var pad_x: float = 0.0        # m: the flat slab (thick air); elsewhere the target ring rides under the lander
+var slab_r: float = SLAB_R
+var forgive: float = 1.0
+var react: float = REACT
+var need_hull: bool = false
+var hull_ok: bool = true
+var crushed: bool = false
+var on_slab: bool = true
+var facts: Array = []
 # the braking cue
 var cue: String = "fall"      # fall | soon | brake | release | safe | empty
 var brake: bool = false       # the BRAKE light is latched on until the speed is down
@@ -48,7 +94,13 @@ var drift_warn: bool = false
 var last_count: int = 9
 var burns: int = 0
 var vmax: float = 40.0
-# debug autopilot: obeys the lights and nothing else
+# directions: each stays until the player has done it
+var eng_time: float = 0.0
+var did_drift: bool = false
+var did_green: bool = false
+var did_slab: bool = false
+var help_on: bool = false
+# debug autopilot: obeys the cues and nothing else
 var auto: bool = false
 var auto_lag: float = 0.0
 var auto_want: bool = false
@@ -62,19 +114,21 @@ var tex_dist: Texture2D = null
 var tex_far: Texture2D = null
 var tex_mid: Texture2D = null
 var tex_sky: Texture2D = null
+var tex_sun: Texture2D = null
+var tex_body: Texture2D = null
 var tex_cloud: Array[Texture2D] = []
-var tex_phobos: Texture2D = null
 var tex_devil: Texture2D = null
+var tex_bolt: Texture2D = null
 var tex_sheet: Texture2D = null
 var tex_chute: Texture2D = null
 var tex_shield: Texture2D = null
 var tex_scorch: Texture2D = null
-var tex_beacon: Array[Texture2D] = []
 var tex_marker: Texture2D = null
 var tex_arrow: Texture2D = null
-var tex_icon: Dictionary = {}
+var tex_drift: Texture2D = null
 var tex_pebble: Array[Texture2D] = []
 var tex_crater: Array[Texture2D] = []
+var tex_boulder: Array[Texture2D] = []
 var decor: Array = []
 var dust: Array = []
 var smoke: Array = []
@@ -89,52 +143,72 @@ var floor_mat: ShaderMaterial = null
 var floor_rect: ColorRect = null
 var front: Control = null
 var msg: String = ""
-var msg_col: Color = Color.WHITE
+var msg2: String = ""
+var msg_bad: bool = false
 var haze_tint: Color = Color.WHITE
 var dust_col: Color = Color.WHITE
 var pan_body: Color = Color("141a2e")
 var pan_hi: Color = Color("4a5c96")
+# thick air: far lightning and a hull that creaks
+var bolt_t: float = 2.5
+var bolt_x: float = 420.0
+var thunder: bool = false
+var creak_t: float = 3.0
 
 func _ready() -> void:
 	var s: Dictionary = Game.landing_setup()
-	moon = Game.dest_id == "moon"
-	var kind: String = "moon" if moon else "mars"
+	var d: Dictionary = Game.dest()
+	skin = String(d["skin"])
+	sk = SKIN.get(skin, SKIN["moon"])
+	air = String(s["air"])
+	vterm = float(s["vterm"])
+	facts = d["facts"]
+	forgive = Game.diff("landing_forgive")
+	react = REACT * forgive * forgive        # EASY gives a slower pilot more warning, HARD less
+	slab_r = SLAB_R * forgive * forgive
+	hx = 3.0 if air == "thick" else 0.5
+	pad_x = SLAB_X if air == "thick" else 0.0
+	need_hull = Game.has_hazard("pressure")
+	hull_ok = not need_hull or Game.id_has("hull")
 	tex = Pix.img("lander")
-	tex_earth = Pix.planet(22, "earth")
-	tex_halo = Pix.img("surface/earth_halo")
-	tex_dist = Pix.img("surface/%s_range_dist" % kind)
-	tex_far = Pix.img(kind + "_range_far")
-	tex_mid = Pix.img(kind + "_range_near")
+	if bool(sk["earth"]):
+		tex_earth = Pix.planet(22, "earth")
+		tex_halo = Pix.img("surface/earth_halo")
+	tex_dist = Pix.img("surface/%s_range_dist" % skin)
+	tex_far = Pix.img(skin + "_range_far")
+	tex_mid = Pix.img(skin + "_range_near")
+	tex_sky = _opt(sk["sky"])
+	tex_sun = _opt(sk["sun"])
+	tex_body = _opt(sk["body"])
+	tex_devil = _opt(sk["devil"])
+	tex_bolt = _opt(sk["bolt"])
+	tex_sheet = _opt(sk["sheet"])
+	if String(sk["clouds"]) != "":
+		for i: int in 3:
+			tex_cloud.append(Pix.img(String(sk["clouds"]) % i))
 	tex_scorch = Pix.img("surface/scorch")
-	tex_beacon = [Pix.img("surface/beacon0"), Pix.img("surface/beacon1")]
 	tex_marker = Pix.img("surface/marker")
 	tex_arrow = Pix.img("surface/arrow_r")
-	for n: String in ["ic_down", "ic_fuel", "ic_drift"]:
-		tex_icon[n] = Pix.img("surface/" + n)
+	tex_drift = Pix.img("surface/ic_drift")
+	tex_chute = Pix.img("surface/chute")
+	tex_shield = Pix.img("surface/heatshield")
 	for i: int in PEBBLE_W.size():
-		tex_pebble.append(Pix.img("pebble_%s_%d" % [kind, i]))
+		tex_pebble.append(Pix.img("pebble_%s_%d" % [skin, i]))
 	for i: int in CRATER_W.size():
-		tex_crater.append(Pix.img("surface/crater_%s_%d" % [kind, i]))
-	if not moon:
-		tex_sky = Pix.img("surface/mars_sky_day")
-		tex_cloud = [Pix.img("surface/mars_cloud_0"), Pix.img("surface/mars_cloud_1"), Pix.img("surface/mars_cloud_2")]
-		tex_phobos = Pix.img("surface/phobos")
-		tex_devil = Pix.img("surface/dust_devil")
-		tex_sheet = Pix.img("surface/dust_sheet")
-		tex_chute = Pix.img("surface/chute")
-		tex_shield = Pix.img("surface/heatshield")
-		pan_body = Color("2a1410")
-		pan_hi = Color("8a5a3c")
-	haze_tint = Color("6c7088") if moon else Color("b06a48")
-	dust_col = Color("c4c4d2") if moon else Color("e0a070")
-	has_chute = not moon and Game.id_has("chute")
-	has_shield = not moon and Game.id_has("heatshield")
+		tex_crater.append(Pix.img("surface/crater_%s_%d" % [skin, i]))
+	tex_boulder = [Pix.img("boulder_%s_23" % skin), Pix.img("boulder_%s_50" % skin)]
+	haze_tint = Color(String(sk["fog"]))
+	dust_col = Color(String(sk["dust"]))
+	pan_body = Color(String(sk["pan_body"]))
+	pan_hi = Color(String(sk["pan_hi"]))
+	has_chute = air == "thin" and Game.id_has("chute")
+	has_shield = air != "none" and Game.id_has("heatshield")
 	# layers: this node draws sky and mountains; then the perspective floor; then the rest
 	floor_mat = ShaderMaterial.new()
 	floor_mat.shader = FLOOR_SHADER
-	floor_mat.set_shader_parameter("floor_tex", Pix.img("floor_" + kind))
-	floor_mat.set_shader_parameter("haze", haze_tint)
-	floor_mat.set_shader_parameter("haze_max", 0.8)
+	floor_mat.set_shader_parameter("floor_tex", Pix.img("floor_" + skin))
+	floor_mat.set_shader_parameter("haze", Color(String(sk["haze"])))
+	floor_mat.set_shader_parameter("haze_max", float(sk["haze_max"]))
 	floor_rect = ColorRect.new()
 	floor_rect.material = floor_mat
 	floor_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -144,17 +218,13 @@ func _ready() -> void:
 	front.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	front.draw.connect(_draw_front)
 	add_child(front)
-	# craters and rocks on the plain, at many depths (s = 1 at the pad, larger = farther)
-	var rd: RandomNumberGenerator = RandomNumberGenerator.new()
-	rd.seed = 31 if moon else 32
-	for i: int in 90:
-		var ds: float = exp(rd.randf_range(log(0.6), log(9.0)))
-		var dx: float = rd.randf_range(-420.0, 420.0) * ds
-		if ds > 0.75 and ds < 1.5 and absf(dx) < 90.0:
-			continue
-		var is_crater: bool = rd.randf() < (0.6 if moon else 0.3)
-		decor.append({"x": dx, "s": ds, "b": rd.randf_range(30.0, 110.0) if is_crater else rd.randf_range(8.0, 40.0), "c": is_crater})
-	decor.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["s"]) > float(b["s"]))
+	_make_decor()
+	var help: Button = UI.button("?", func() -> void: help_on = not help_on)
+	help.focus_mode = Control.FOCUS_NONE
+	help.tooltip_text = "Controls"
+	add_child(help)
+	help.position = Vector2(606, 322)
+	help.size = Vector2(28, 32)
 	if bool(Game.run["dead"]):
 		_burn_up()
 		return
@@ -168,12 +238,43 @@ func _ready() -> void:
 	mass = float(s["mass"])
 	touch = float(s["touch"])
 	thrust_acc = maxf(3.0 * g, 7.0)  # game rule: engine sized to 3x local gravity
-	vmax = maxf(sqrt(vy * vy + 2.0 * g * alt0) * 0.75, touch * 4.0)
+	if air == "thick":
+		vmax = maxf(vterm, touch) * 1.6
+	else:
+		vmax = maxf(sqrt(vy * vy + 2.0 * g * alt0) * 0.75, touch * 4.0)
 	# touch buttons only where there is a touch screen
 	if DisplayServer.is_touchscreen_available():
-		_hold_button("<", Rect2(8, 322, 44, 30), func(on: bool) -> void: hold_l = on)
-		_hold_button(">", Rect2(58, 322, 44, 30), func(on: bool) -> void: hold_r = on)
-		_hold_button("ENGINE", Rect2(540, 322, 92, 30), func(on: bool) -> void: hold_up = on)
+		_hold_button("<", Rect2(8, 280, 44, 30), func(on: bool) -> void: hold_l = on)
+		_hold_button(">", Rect2(58, 280, 44, 30), func(on: bool) -> void: hold_r = on)
+		_hold_button("ENGINE", Rect2(476, 280, 92, 30), func(on: bool) -> void: hold_up = on)
+
+## A texture by name, or null when the skin has none.
+func _opt(name: String) -> Texture2D:
+	if name == "" or not ResourceLoader.exists("res://art/%s.png" % name):
+		return null
+	return Pix.img(name)
+
+## Craters, pebbles and (thick air) boulders on the plain, at many depths (s = 1 at the lane, larger = farther).
+## The landing spot stays clear: under the lander, or the slab in thick air.
+func _make_decor() -> void:
+	var rd: RandomNumberGenerator = RandomNumberGenerator.new()
+	rd.seed = hash(skin)
+	var pad_px: float = pad_x * hx
+	var clear_w: float = slab_r * hx + 50.0 if air == "thick" else 90.0
+	for i: int in 90:
+		var ds: float = exp(rd.randf_range(log(0.6), log(9.0)))
+		var dx: float = rd.randf_range(-420.0, 420.0) * ds
+		if ds > 0.75 and ds < 1.5 and absf(dx / ds - pad_px) < clear_w:
+			continue
+		var is_crater: bool = rd.randf() < float(sk["craters"])
+		decor.append({"x": dx, "s": ds, "b": rd.randf_range(30.0, 110.0) if is_crater else rd.randf_range(8.0, 40.0), "c": is_crater, "k": -1})
+	for i: int in int(sk["boulders"]):
+		var ds: float = rd.randf_range(1.03, 1.7)
+		var dx: float = rd.randf_range(-360.0, 300.0) * ds
+		if absf(dx / ds - pad_px) < clear_w + 30.0:
+			continue
+		decor.append({"x": dx, "s": ds, "b": 0.0, "c": false, "k": rd.randi() % 2})
+	decor.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["s"]) > float(b["s"]))
 
 func _hold_button(txt: String, r: Rect2, cb: Callable) -> void:
 	var b: Button = Button.new()
@@ -185,34 +286,43 @@ func _hold_button(txt: String, r: Rect2, cb: Callable) -> void:
 	b.button_down.connect(cb.bind(true))
 	b.button_up.connect(cb.bind(false))
 
+func _unhandled_key_input(e: InputEvent) -> void:
+	var k: InputEventKey = e as InputEventKey
+	if k != null and k.pressed and not k.echo and k.physical_keycode in [KEY_H, KEY_F1, KEY_SLASH]:
+		help_on = not help_on
+		Audio.play("ui_open" if help_on else "ui_close")
+
 func _burn_up() -> void:
 	state = "burned"
 	end_t = t + 3.5
 	msg = "BURNED UP ON ENTRY"
-	msg_col = UI.RED
+	msg2 = "No heat shield"
+	msg_bad = true
 	Audio.play("explosion", -4.0)
 
 # ---------------------------------------------------------------- the braking cue
 
-## Sideways speed the lander survives at touchdown (game rule).
+## Sideways speed the lander survives at touchdown (game rule; the difficulty widens or narrows it).
 func side_limit() -> float:
-	return maxf(3.0, touch * 0.6)
+	return maxf(3.0 * forgive, touch * 0.6)
 
 ## Speed the BRAKE light asks you to slow down to: half the limit, or less where gravity is strong,
-## so that even REACT seconds of free fall after it stay under the limit.
+## so that even `react` seconds of free fall after it stay under the limit.
 func target_v() -> float:
-	return maxf(touch * 0.25, minf(touch * 0.5, touch * 0.95 - g * REACT))
+	return maxf(touch * 0.25, minf(touch * 0.5, touch * 0.95 - g * react))
 
 ## Altitude where a full-thrust burn must start at fall speed `v` to reach the target speed at the
-## ground: REACT seconds of free fall (a person reacting to the light), then the stopping distance
+## ground: `react` seconds of free fall (a person reacting to the light), then the stopping distance
 ## (v1*v1 - vt*vt) / (2 * (thrust_acc - g)).
 func brake_alt(v: float) -> float:
-	var v1: float = v + g * REACT
+	var v1: float = v + g * react
 	var vt: float = target_v()
-	return maxf(0.0, v1 * v1 - vt * vt) / (2.0 * (thrust_acc - g)) + maxf(0.0, v) * REACT + 0.5 * g * REACT * REACT
+	return maxf(0.0, v1 * v1 - vt * vt) / (2.0 * (thrust_acc - g)) + maxf(0.0, v) * react + 0.5 * g * react * react
 
-## Speed at the ground if the engine stays off from here.
+## Speed at the ground if the engine stays off from here. Thick air holds it at the terminal speed.
 func impact_v() -> float:
+	if air == "thick":
+		return vterm
 	return sqrt(maxf(0.0, vy * vy + 2.0 * g * alt))
 
 func _must_brake(a: float, v: float) -> bool:
@@ -221,11 +331,16 @@ func _must_brake(a: float, v: float) -> bool:
 func _update_cue() -> void:
 	burn_alt = -1.0
 	burn_in = 99.0
+	# drift: warn before the limit, stop warning once it is well inside
+	if absf(vx) > side_limit() * 0.8:
+		drift_warn = true
+	elif absf(vx) < side_limit() * 0.3:
+		drift_warn = false
 	if prop <= 0.0:
 		brake = false
 		cue = "empty"
 		return
-	var coast_ok: bool = impact_v() <= touch * 0.85
+	var coast_ok: bool = impact_v() <= touch * (1.0 if air == "thick" else 0.85)
 	if brake:
 		if vy <= target_v():
 			brake = false
@@ -257,11 +372,61 @@ func _update_cue() -> void:
 		if cue == "soon" and n < last_count:
 			Audio.play("blip", -8.0, 1.0 + 0.15 * (3 - n))
 		last_count = n if cue == "soon" else 9
-	# drift: warn before the limit, stop warning once it is well inside
-	if absf(vx) > side_limit() * 0.8:
-		drift_warn = true
-	elif absf(vx) < side_limit() * 0.3:
-		drift_warn = false
+
+## Which side jet the cue asks for: -1 left, 1 right, 0 none. Thick air: steer onto the slab and stop
+## there. Elsewhere: cancel the drift while the warning is up.
+func steer_dir() -> int:
+	if air == "thick":
+		var want: float = clampf((pad_x - x) * 0.25, -side_limit() * 0.7, side_limit() * 0.7)
+		if absf(want - vx) > 0.6:
+			return 1 if want > vx else -1
+		return 0
+	if drift_warn:
+		return -1 if vx > 0.0 else 1
+	return 0
+
+# ---------------------------------------------------------------- directions (one at a time, design 8d.3)
+
+## Latches the steps the player has done. A step is done by doing it, never by a timer.
+func _update_steps() -> void:
+	if absf(vx) < side_limit() * 0.3:
+		did_drift = true
+	if eng_time >= 0.3 and vy <= touch:
+		did_green = true
+	if absf(x - pad_x) <= slab_r * 0.8:
+		did_slab = true
+
+## The one direction on screen: [line with [KEY] caps, a short reason]. Empty when there is none.
+func _direction() -> PackedStringArray:
+	if state != "fly":
+		return PackedStringArray()
+	if air == "thick":
+		var sd: int = steer_dir()
+		var key: String = "<" if (sd < 0 if sd != 0 else pad_x < x) else ">"
+		if not did_slab or absf(x - pad_x) > slab_r:
+			return PackedStringArray(["PRESS [%s] TO STEER OVER THE FLAT SLAB" % key, "Rough rock anywhere else tilts the lander"])
+		if sd != 0:
+			return PackedStringArray(["PRESS [%s] TO STAY OVER THE SLAB" % key, "Sideways speed at touchdown: under %s m/s" % _f1(side_limit())])
+		return PackedStringArray(["SINK ONTO THE SLAB: NO ENGINE NEEDED", "The thick air holds you at %s m/s" % _f1(vterm)])
+	if prop <= 0.0:
+		return PackedStringArray(["OUT OF FUEL: NOTHING LEFT TO BRAKE WITH", "Next time, carry more propellant"])
+	var dkey: String = "<" if vx > 0.0 else ">"
+	var drift_line: PackedStringArray = PackedStringArray(["PRESS [%s] TO CANCEL THE DRIFT" % dkey, "Sliding sideways would tip the lander over"])
+	if cue == "brake":
+		# the most urgent job wins; the drift direction comes back once the light is off
+		return PackedStringArray(["HOLD [SPACE] TO FIRE THE ENGINE", "Keep it on while the light says BRAKE NOW"])
+	if eng_time < 0.3:
+		if not did_drift:
+			return drift_line
+		return PackedStringArray(["HOLD [SPACE] TO FIRE THE ENGINE", "Start when the light says BRAKE NOW"])
+	if drift_warn or not did_drift:
+		return drift_line
+	if not did_green:
+		return PackedStringArray(["HOLD [SPACE] UNTIL THE NEEDLE IS GREEN", "Safe fall speed: under %s m/s" % _f1(touch)])
+	return PackedStringArray(["TOUCH DOWN WITH THE NEEDLE IN THE GREEN", "Hold SPACE again whenever it says BRAKE NOW"])
+
+func _f1(v: float) -> String:
+	return ("%.0f" % v) if absf(v - roundf(v)) < 0.05 else ("%.1f" % v)
 
 # ---------------------------------------------------------------- simulation
 
@@ -275,6 +440,11 @@ func _physics_process(delta: float) -> void:
 		if t > end_t:
 			_leave()
 		return
+	if help_on:
+		# the controls list pauses the descent
+		Audio.loop("thrust", false)
+		Audio.loop("rcs", false)
+		return
 	_update_cue()
 	var up: bool = hold_up or Input.is_action_pressed("ui_up") or Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_SPACE)
 	var lft: bool = hold_l or Input.is_action_pressed("ui_left") or Input.is_physical_key_pressed(KEY_A)
@@ -287,9 +457,12 @@ func _physics_process(delta: float) -> void:
 		if t - auto_since >= auto_lag:
 			auto_up = auto_want
 		up = auto_up
-		lft = drift_warn and vx > 0.0
-		rgt = drift_warn and vx < 0.0
+		var sd: int = steer_dir()
+		lft = sd < 0
+		rgt = sd > 0
 	thrusting = up and prop > 0.0
+	if thrusting:
+		eng_time += delta
 	Audio.loop("thrust", thrusting, -5.0)
 	side = 0.0
 	if prop > 0.0:
@@ -299,8 +472,13 @@ func _physics_process(delta: float) -> void:
 			side += SIDE_ACC
 	Audio.loop("rcs", side != 0.0, -10.0)
 	var a_up: float = thrust_acc if thrusting else 0.0
-	vy += (g - a_up) * delta
-	vx += side * delta
+	# thick air: drag grows with the square of the speed and balances gravity at the terminal speed
+	var drag: float = g * vy * absf(vy) / (vterm * vterm) if air == "thick" else 0.0
+	vy += (g - a_up - drag) * delta
+	if air == "thick":
+		vx += (side - vx * X_DRAG) * delta
+	else:
+		vx += side * delta
 	alt -= vy * delta
 	x += vx * delta
 	var ve: float = Data.ISP * Data.G0
@@ -312,28 +490,68 @@ func _physics_process(delta: float) -> void:
 	burn = minf(burn, prop)
 	prop -= burn
 	mass -= burn
+	_update_steps()
+	if air == "thick":
+		_thick_air()
 	if alt <= 0.0:
-		alt = 0.0
-		var ok: bool = vy <= touch and absf(vx) <= side_limit()
-		state = "landed" if ok else "crashed"
-		end_t = t + 3.5
-		thrusting = false
-		side = 0.0
-		Game.landing_result(ok, vy, prop)
-		if auto:
-			print("AUTOPILOT %s on %s: limit %.0f m/s, touched at %.2f m/s down and %.2f m/s sideways (limit %.1f), fuel left %.0f of %.0f kg, %d burns, %.0f s, reaction lag %.2f s" % ["LANDED" if ok else "CRASHED", Game.dest_id, touch, vy, absf(vx), side_limit(), prop, prop0, burns, t, auto_lag])
-		if ok:
-			msg = "TOUCHDOWN!  %.1f m/s" % vy
-			msg_col = UI.GREEN
-			land_t = t
-			shake = 0.25
-			_blow_dust(26, 1.0)
-			Audio.play("land")
-			Audio.play("success", -4.0)
-		else:
-			msg = "CRASH  %.1f m/s down, %.1f m/s sideways" % [vy, absf(vx)]
-			msg_col = UI.RED
-			_boom()
+		_touchdown()
+
+func _touchdown() -> void:
+	alt = 0.0
+	var ok: bool = vy <= touch and absf(vx) <= side_limit()
+	on_slab = air != "thick" or absf(x - pad_x) <= slab_r
+	state = "landed" if ok else "crashed"
+	end_t = t + 3.5
+	thrusting = false
+	side = 0.0
+	Game.landing_result(ok, vy, prop)
+	crushed = ok and bool(Game.run["dead"])
+	if crushed:
+		state = "crashed"
+	elif ok and not on_slab:
+		# game rule: a tilted lander costs surface time (Venus: out of the minutes the heat allows)
+		Game.run["minutes_lost"] = float(Game.run.get("minutes_lost", 0.0)) + OFF_SLAB_MIN
+		Game.note(false, "Touched down on rough rock, tilted: %d minutes lost levelling the drill (game rule)." % int(OFF_SLAB_MIN))
+	if auto:
+		print("AUTOPILOT %s on %s (%s): limit %s m/s, touched at %.2f m/s down and %.2f m/s sideways (limit %.1f), %s, fuel left %.0f of %.0f kg, %d burns, %.0f s, lag %.2f s" % [
+			"CRUSHED" if crushed else ("LANDED" if ok else "CRASHED"), Game.dest_id, Game.difficulty_name(), _f1(touch), vy, absf(vx),
+			side_limit(), "on the slab" if on_slab else "OFF THE SLAB", prop, prop0, burns, t, auto_lag])
+	if crushed:
+		msg = "CRUSHED"
+		msg2 = "No pressure hull: the air folded the lander"
+		msg_bad = true
+		shake = 0.6
+		boom_t = t
+		Audio.play("hit", -2.0, 0.5)
+		_blow_dust(20, 0.8)
+		_break_up()
+	elif ok:
+		msg = "TOUCHDOWN"
+		msg2 = "%.1f m/s, limit %s m/s" % [vy, _f1(touch)] if on_slab else "On rough rock: %d minutes lost" % int(OFF_SLAB_MIN)
+		land_t = t
+		shake = 0.25
+		_blow_dust(26, 1.0)
+		Audio.play("land")
+		Audio.play("success", -4.0)
+	else:
+		msg = "CRASH"
+		msg2 = "%.1f m/s down, %.1f m/s sideways" % [vy, absf(vx)]
+		msg_bad = true
+		_boom()
+
+## Venus: far lightning in the clouds and a hull that groans under the pressure.
+func _thick_air() -> void:
+	if tex_bolt != null and t - bolt_t > 0.5:
+		bolt_t = t + randf_range(2.5, 6.0)
+		bolt_x = randf_range(170.0, 560.0)
+		thunder = false
+	if not thunder and t > bolt_t + 1.6:
+		thunder = true
+		Audio.play("land", -24.0, 0.45)   # far thunder: a low rumble
+	if need_hull and t > creak_t:
+		creak_t = t + (randf_range(2.5, 5.0) if hull_ok else randf_range(1.0, 2.0))
+		Audio.play("hit", -18.0 if hull_ok else -10.0, randf_range(0.38, 0.5))
+		shake = maxf(shake, 0.12 if hull_ok else 0.3)
 
 func _leave() -> void:
 	set_physics_process(false)
@@ -345,34 +563,35 @@ func _leave() -> void:
 
 # ---------------------------------------------------------------- particles (drawn by the Fx kit)
 
-## Dust blown outward along the ground. No air on the Moon: it flies flat and fast on ballistic
-## arcs. Thin air on Mars: it slows down and billows.
+## Dust blown outward along the ground. No air: it flies flat and fast on ballistic arcs. Thin air:
+## it slows down and billows. Thick air: it barely gets going and hangs.
 func _blow_dust(n: int, power: float) -> void:
 	for i: int in n:
 		var a: float = randf_range(0.0, TAU)
-		var sp: float = randf_range(50.0, 170.0) * power
+		var sp: float = randf_range(50.0, 170.0) * power * (0.5 if air == "thick" else 1.0)
 		dust.append({"x": randf_range(-5.0, 5.0), "z": randf_range(-2.0, 2.0), "h": 0.0,
-			"vx": cos(a) * sp, "vz": sin(a) * sp * 0.3, "vh": randf_range(6.0, 34.0) * power * (0.5 if moon else 1.0),
-			"age": 0.0, "life": randf_range(0.5, 1.3), "size": 1 if i % 3 == 0 else 0})
+			"vx": cos(a) * sp, "vz": sin(a) * sp * 0.3, "vh": randf_range(6.0, 34.0) * power * (0.5 if air == "none" else 1.0),
+			"age": 0.0, "life": randf_range(0.5, 1.3) * (1.6 if air == "thick" else 1.0), "size": 1 if i % 3 == 0 else 0})
 
 func _particles(delta: float) -> void:
 	var gap: float = _lane() - (_feet() - 8.0)   # nozzle to ground, in screen px
 	if thrusting and gap < 80.0:
 		_blow_dust(2, 1.0 - gap / 100.0)
+	var damp: float = 0.0 if air == "none" else (2.2 if air == "thin" else 5.0)
 	for d: Dictionary in dust:
 		var vh: float = float(d["vh"]) - g * 14.0 * delta
-		if not moon:
-			d["vx"] = float(d["vx"]) * (1.0 - 2.2 * delta)
-			d["vz"] = float(d["vz"]) * (1.0 - 2.2 * delta)
-			vh += 26.0 * delta
+		if damp > 0.0:
+			d["vx"] = float(d["vx"]) * (1.0 - damp * delta)
+			d["vz"] = float(d["vz"]) * (1.0 - damp * delta)
+			vh += (26.0 if air == "thin" else 120.0) * delta
 		d["vh"] = vh
 		d["h"] = maxf(0.0, float(d["h"]) + vh * delta)
 		d["x"] = float(d["x"]) + float(d["vx"]) * delta
 		d["z"] = float(d["z"]) + float(d["vz"]) * delta
 		d["age"] = float(d["age"]) + delta
 	dust = dust.filter(func(d: Dictionary) -> bool: return float(d["age"]) < float(d["life"]))
-	# wreck smoke needs air to rise in: Mars only
-	if state == "crashed" and not moon and t - boom_t > 0.3 and randf() < 0.3:
+	# wreck smoke needs air to rise in
+	if state == "crashed" and not crushed and air != "none" and t - boom_t > 0.3 and randf() < 0.3:
 		smoke.append({"p": Vector2(LX + randf_range(-14.0, 14.0), GROUND_Y - 6.0), "age": 0.0, "life": randf_range(1.2, 2.2)})
 	for d: Dictionary in smoke:
 		d["p"] = Vector2(d["p"]) + Vector2(14.0, -26.0) * delta
@@ -394,12 +613,16 @@ func _boom() -> void:
 	boom_t = t
 	Audio.play("explosion")
 	_blow_dust(40, 1.3)
-	# the lander breaks into pieces of its own sprite
+	_break_up()
+
+## The lander breaks into pieces of its own sprite.
+func _break_up() -> void:
+	var power: float = 0.35 if crushed else 1.0
 	for i: int in 9:
 		var src: Rect2 = Rect2(8 + (i % 3) * 22, 6 + (i / 3) * 22, 22, 22)
 		var a: float = randf_range(PI * 1.1, PI * 1.9)
 		debris.append({"src": src, "p": Vector2(LX - 30.0 + (i % 3) * 22.0, GROUND_Y - 60.0 + (i / 3) * 18.0),
-			"v": Vector2(cos(a), sin(a)) * randf_range(40.0, 150.0), "rest": GROUND_Y - 20.0 + randf_range(-3.0, 5.0)})
+			"v": Vector2(cos(a), sin(a)) * randf_range(40.0, 150.0) * power, "rest": GROUND_Y - 20.0 + randf_range(-3.0, 5.0)})
 
 # ---------------------------------------------------------------- camera
 
@@ -429,7 +652,7 @@ func _process(_delta: float) -> void:
 	floor_mat.set_shader_parameter("top", hz)
 	floor_mat.set_shader_parameter("lane", hz + 76.0)
 	floor_mat.set_shader_parameter("size", floor_rect.size)
-	floor_mat.set_shader_parameter("cam", floorf(x * HX))
+	floor_mat.set_shader_parameter("cam", floorf(x * hx))
 	queue_redraw()
 	front.queue_redraw()
 
@@ -438,39 +661,60 @@ func _process(_delta: float) -> void:
 func _draw() -> void:
 	var k: float = _k()
 	var hz: float = _horizon()
-	var cam_x: float = x * HX
+	var cam_x: float = x * hx
+	var sky_y: float = -20.0 + k * 20.0
 	draw_set_transform(shake_off)
-	if moon:
-		draw_rect(Rect2(-4, -4, 648, 368), Color("04050a"))
-		Pix.stars(self, t, Vector2(640, 330), 110, 5)
+	draw_rect(Rect2(-4, -4, 648, 368), Color(String(sk["fill"])))
+	if tex_sky != null:
+		draw_texture(tex_sky, Vector2(0, sky_y))
+	if bool(sk["stars"]):
+		Pix.stars(self, t, Vector2(640, 300), 110 if tex_sky == null else 60, 5)
+	if tex_earth != null:
 		var ep: Vector2 = Vector2(476, 96.0 + k * 20.0)
 		Pix.sprite(self, tex_halo, ep)
 		Pix.sprite(self, tex_earth, ep)
-	else:
-		draw_rect(Rect2(-4, 260, 648, 108), Color("e8c49c"))
-		draw_texture(tex_sky, Vector2(0, -20.0 + k * 20.0))
-		Fx.sun(self, Vector2(150, 70.0 + k * 20.0), 1, Color("fff0d8"))
-		draw_texture(tex_phobos, Vector2(430, 52.0 + k * 20.0))
-		for i: int in 5:
-			var ct: Texture2D = tex_cloud[i % 3]
-			var cx: float = fposmod(i * 173.0 + t * (2.0 + i % 2), 780.0) - 130.0
-			draw_texture(ct, Vector2(floorf(cx), floorf(60.0 + i * 31.0 + k * 20.0)), Color(1, 1, 1, 0.7))
+	if tex_sun != null:
+		# low over the pole, 2.5-3 times wider than from Earth, with a glare around it
+		var sp: Vector2 = Vector2(200, 110.0 + k * 20.0)
+		Fx.glow(self, sp, 64.0, Color(1.0, 0.92, 0.75, 0.22), true)
+		Fx.glow(self, sp, 32.0, Color(1.0, 0.95, 0.85, 0.35), true)
+		Pix.sprite(self, tex_sun, sp)
+	if bool(sk["fx_sun"]):
+		Fx.sun(self, Vector2(206, 70.0 + k * 20.0), 1, Color("fff0d8"))
+	if tex_body != null:
+		draw_texture(tex_body, Vector2(430, 52.0 + k * 20.0))
+	for i: int in (5 if not tex_cloud.is_empty() else 0):
+		var ct: Texture2D = tex_cloud[i % 3]
+		var cx: float = fposmod(i * 173.0 + t * (2.0 + i % 2), 780.0) - 130.0
+		draw_texture(ct, Vector2(floorf(cx), floorf(60.0 + i * 31.0 + k * 20.0)), Color(1, 1, 1, 0.7))
 	Pix.tiled(self, tex_dist, hz - tex_dist.get_height() + 4, cam_x * 0.02)
+	if tex_bolt != null:
+		var age: float = t - bolt_t
+		if age >= 0.0 and age < 0.4:
+			# far lightning: bolt, fade, glow, then the empty frame
+			var f: int = 0 if age < 0.07 else (1 if age < 0.17 else 2)
+			if f == 0:
+				draw_rect(Rect2(-4, -4, 648, hz), Color(1.0, 0.92, 0.75, 0.10))
+			draw_texture_rect_region(tex_bolt, Rect2(floorf(bolt_x - cam_x * 0.04), hz - 92.0, 16, 34), Rect2(16 * f, 0, 16, 34))
 	Pix.tiled(self, tex_far, hz - tex_far.get_height() + 3, cam_x * 0.06)
-	if not moon:
+	if tex_devil != null:
 		# a dust devil wandering across the far plain
 		var dvx: float = fposmod(t * 6.0 + 380.0 - cam_x * 0.1, 760.0) - 60.0
 		draw_texture_rect_region(tex_devil, Rect2(floorf(dvx), hz - 40.0, 16, 34), Rect2(16 * (int(t * 6.0) % 4), 0, 16, 34), Color(1, 1, 1, 0.8))
 	Pix.tiled(self, tex_mid, hz - tex_mid.get_height() + 8, cam_x * 0.16)
-	if not moon:
-		Pix.tiled(self, tex_sheet, hz - 16.0, cam_x * 0.2 - t * 9.0, 640.0, Color(1, 1, 1, 0.8))
+	if tex_sheet != null:
+		Pix.tiled(self, tex_sheet, hz - 16.0, cam_x * 0.2 - t * (9.0 if air == "thin" else 4.0), 640.0, Color(1, 1, 1, 0.8))
+	if air == "thick":
+		# the haze glows where the hot ground meets the sky
+		Fx.glow(self, Vector2(320, hz - 4.0), 96.0, Color(1.0, 0.78, 0.42, 0.30))
 	draw_set_transform(Vector2.ZERO)
 
 # ---------------------------------------------------------------- front layer
 
 func _decor(lane: float, near: bool) -> void:
 	var hz: float = lane - 76.0
-	var cam_x: float = x * HX
+	var cam_x: float = x * hx
+	var long: bool = bool(sk["long_shadow"])
 	for d: Dictionary in decor:
 		var s: float = d["s"]
 		if (s < 1.0) != near:
@@ -481,9 +725,13 @@ func _decor(lane: float, near: bool) -> void:
 		var sy: float = hz + 76.0 / s
 		if sy > 380.0:
 			continue
-		var want: float = float(d["b"]) / s
 		var fog: Color = Color.WHITE.lerp(haze_tint, clampf((s - 1.0) / 9.0, 0.0, 1.0) * 0.8)
-		if bool(d["c"]):
+		var want: float = float(d["b"]) / s
+		if int(d["k"]) >= 0:
+			var bt: Texture2D = tex_boulder[int(d["k"])]
+			_shadow(sx + 4.0, sy, bt.get_width() * 1.1, 0.35, long)
+			front.draw_texture(bt, Vector2(floorf(sx - bt.get_width() * 0.5), floorf(sy - bt.get_height() + 3)), fog)
+		elif bool(d["c"]):
 			var ci: int = 0
 			while ci < CRATER_W.size() - 1 and CRATER_W[ci + 1] <= want:
 				ci += 1
@@ -494,12 +742,18 @@ func _decor(lane: float, near: bool) -> void:
 			while pi < PEBBLE_W.size() - 1 and PEBBLE_W[pi + 1] <= want:
 				pi += 1
 			var pt: Texture2D = tex_pebble[pi]
-			if pi >= 2:
-				_shadow(sx + 3.0, sy, pt.get_width() * 0.9, 0.25)
+			if pi >= 2 or long:
+				_shadow(sx + 3.0, sy, pt.get_width() * 0.9, 0.25, long)
 			front.draw_texture(pt, Vector2(floorf(sx - pt.get_width() * 0.5), floorf(sy - pt.get_height() + 2)), fog)
 
-## A soft pixel ellipse on the ground (contact shadow).
-func _shadow(cx: float, y: float, w: float, a: float) -> void:
+## A contact shadow on the ground: a soft pixel ellipse, or with the Sun low on the horizon (long = true)
+## a hard dark streak thrown away from it.
+func _shadow(cx: float, y: float, w: float, a: float, long: bool = false) -> void:
+	if long:
+		var x0: float = floorf(cx - w * 0.45)
+		front.draw_rect(Rect2(x0, floorf(y) - 1.0, floorf(w * 2.6), 2), Color(0, 0, 0, minf(0.75, a * 2.2)))
+		front.draw_rect(Rect2(x0 + 2.0, floorf(y) + 1.0, floorf(w * 1.8), 1), Color(0, 0, 0, minf(0.6, a * 1.6)))
+		return
 	for dy: int in range(-2, 3):
 		var hw: float = floorf(w * 0.5 * sqrt(1.0 - pow(dy / 2.6, 2.0)))
 		front.draw_rect(Rect2(floorf(cx - hw), floorf(y) + dy, hw * 2.0, 1), Color(0, 0, 0, a))
@@ -512,6 +766,36 @@ func _draw_dust(lane: float, behind: bool) -> void:
 		var p: Vector2 = Vector2(LX + 2.0 + float(d["x"]), lane + z - float(d["h"]))
 		Fx.puff(front, p, float(d["age"]) / float(d["life"]), int(d["size"]), dust_col)
 
+## The landing target on the floor: a flat slab in thick air, a ring under the lander elsewhere.
+func _draw_target(lane: float) -> void:
+	if air == "thick":
+		var cx: float = floorf(LX + 2.0 + (pad_x - x) * hx)
+		var hw: float = floorf(slab_r * hx + 30.0)
+		if cx + hw < -10.0 or cx - hw > 650.0:
+			return
+		for dy: int in range(-5, 6):
+			var w: float = floorf(hw * sqrt(1.0 - pow(dy / 6.0, 2.0)))
+			front.draw_rect(Rect2(cx - w, lane + dy, w * 2.0, 1), Color(1.0, 0.86, 0.6, 0.18 if dy < 0 else 0.10))
+		var lit: bool = on_slab_now()
+		if lane > 318.0 and state == "fly":
+			# the ground is still below the screen: a pointer shows where the slab lies
+			var px: float = clampf(cx, 24.0, 560.0)
+			var bob: float = floorf(absf(sin(t * 4.0)) * 3.0)
+			front.draw_texture(tex_marker, Vector2(px - 4.0, 296.0 + bob), UI.GREEN if lit else UI.YELLOW)
+			Pix.text_oc(front, px, 292.0 + bob, "SLAB %s m" % Game.fmt(absf(pad_x - x)) if not lit else "SLAB", 10, UI.TEXT)
+		for i: int in 64:
+			if i % 2 == 0:
+				var a: float = i * TAU / 64.0
+				front.draw_rect(Rect2(Vector2(cx + cos(a) * hw, lane + sin(a) * 6.0).floor(), Vector2(2, 1)), Color(UI.GREEN if lit else UI.YELLOW, 0.85))
+		return
+	for i: int in 56:
+		if i % 2 == 0:
+			var a: float = i * TAU / 56.0
+			front.draw_rect(Rect2(Vector2(LX + 2.0 + cos(a) * 56.0, lane + sin(a) * 6.0).floor(), Vector2(2, 1)), Color(UI.YELLOW, 0.6))
+
+func on_slab_now() -> bool:
+	return absf(x - pad_x) <= slab_r
+
 func _draw_front() -> void:
 	var lane: float = _lane()
 	var feet: float = _feet()
@@ -521,42 +805,35 @@ func _draw_front() -> void:
 	if state == "burned":
 		_draw_burned()
 		front.draw_set_transform(Vector2.ZERO)
-		Pix.text_c(front, 320, 150, msg, 18, msg_col)
+		_draw_msg()
 		return
-	# landing zone: a dashed ring on the floor and two blinking beacons
-	for i: int in 56:
-		if i % 2 == 0:
-			var a: float = i * TAU / 56.0
-			front.draw_rect(Rect2(Vector2(LX + 2.0 + cos(a) * 56.0, lane + sin(a) * 6.0).floor(), Vector2(2, 1)), Color(UI.YELLOW, 0.8))
-	var lit: int = 1 if fposmod(t, 1.0) < 0.25 else 0
-	for bx: float in [LX - 62.0, LX + 58.0]:
-		if lit == 1:
-			Fx.glow(front, Vector2(bx + 3.0, lane - 8.0), 7.0, Color(1.0, 0.3, 0.25, 0.7))
-		front.draw_texture(tex_beacon[lit], Vector2(bx, lane - 10.0))
+	_draw_target(lane)
 	if state == "crashed" or state == "landed":
-		front.draw_texture(tex_scorch, Vector2(LX - 34.0, lane - 8.0), Color(1, 1, 1, 1.0 if state == "crashed" else 0.45))
+		front.draw_texture(tex_scorch, Vector2(LX - 34.0, lane - 8.0), Color(1, 1, 1, 0.0 if crushed else (1.0 if state == "crashed" else 0.45)))
 	if state != "crashed":
 		# contact shadow: grows and darkens as the ground comes up
 		var near: float = clampf(1.0 - gap / 240.0, 0.0, 1.0)
-		_shadow(LX + 6.0, lane, 40.0 + 52.0 * near, 0.1 + 0.32 * near)
+		_shadow(LX + 6.0, lane, 40.0 + 52.0 * near, 0.1 + 0.32 * near, bool(sk["long_shadow"]))
 		# where you will touch down if you do nothing about the drift
-		var fall_t: float = (-vy + sqrt(maxf(0.0, vy * vy + 2.0 * g * alt))) / g
-		var px: float = clampf(LX + vx * fall_t * HX, 20.0, 620.0)
+		var fall_t: float = alt / maxf(1.0, vterm) if air == "thick" else (-vy + sqrt(maxf(0.0, vy * vy + 2.0 * g * alt))) / g
+		var drift_m: float = vx / X_DRAG * (1.0 - exp(-X_DRAG * fall_t)) if air == "thick" else vx * fall_t
+		var px: float = clampf(LX + drift_m * hx, 20.0, 620.0)
 		if state == "fly" and absf(px - LX) > 10.0:
 			front.draw_texture(tex_marker, Vector2(floorf(px - 4.0), lane - 9.0 - floorf(absf(sin(t * 5.0)) * 3.0)))
 	_draw_dust(lane, true)
 	if state == "crashed":
 		for d: Dictionary in debris:
-			front.draw_texture_rect_region(tex, Rect2(Vector2(d["p"]).floor(), Vector2(22, 22)), d["src"])
+			front.draw_texture_rect_region(tex, Rect2(Vector2(d["p"]).floor(), Vector2(22, 22)), d["src"], Color(0.7, 0.62, 0.55) if crushed else Color.WHITE)
 		for d: Dictionary in smoke:
 			Fx.puff(front, d["p"], float(d["age"]) / float(d["life"]), 2, Color("3a3440"))
-		Fx.explosion(front, Vector2(LX, lane - 16.0), t - boom_t, 2)
+		if not crushed:
+			Fx.explosion(front, Vector2(LX, lane - 16.0), t - boom_t, 2, g * 12.0)
 	else:
 		_draw_lander(feet, lane)
 	_draw_dust(lane, false)
 	_decor(lane, true)
 	front.draw_set_transform(Vector2.ZERO)
-	if state == "crashed":
+	if state == "crashed" and not crushed:
 		Fx.flash(front, t - boom_t, 0.2, Color(1.0, 0.95, 0.85))
 	_draw_hud()
 
@@ -564,7 +841,7 @@ func _draw_lander(feet: float, lane: float) -> void:
 	# legs take the touchdown: a short squash, then back up
 	var settle: float = 2.0 if t - land_t < 0.12 else 0.0
 	var top: float = feet - 71.0 + settle
-	if not moon and t < 4.0:
+	if air != "none" and t < 4.0:
 		# the build's entry hardware has done its job and drops away (already in the simulation)
 		if has_shield:
 			var sy: float = feet - 2.0 + maxf(0.0, t - 0.5) * 130.0
@@ -586,6 +863,9 @@ func _draw_lander(feet: float, lane: float) -> void:
 	elif side > 0.0:
 		Fx.flame(front, Vector2(LX - 16.0, top + 20.0), Vector2.LEFT, 9.0, 3.0, t)
 	front.draw_texture(tex, Vector2(LX - 38.0, top))
+	if air == "thick":
+		# hot air: the lander glows faintly on its lower edge
+		Fx.glow(front, Vector2(LX + 2.0, top + 60.0), 24.0, Color(1.0, 0.55, 0.2, 0.25))
 	if fposmod(t, 1.2) < 0.15:
 		front.draw_rect(Rect2(LX + 15.0, top + 18.0, 2, 2), Color("ffb0a0"))  # nav light
 
@@ -599,110 +879,162 @@ func _draw_burned() -> void:
 		Fx.flame(front, p, Vector2.UP, 46.0, 14.0, t)
 	Fx.explosion(front, p.min(Vector2(640.0, 174.0)), age - 2.2, 2)
 
-# ---------------------------------------------------------------- HUD
+# ---------------------------------------------------------------- HUD (text colours: TEXT, DIM, RED)
 
-func _text(p: Vector2, s: String, size: int, c: Color) -> void:
-	Pix.text(front, p, s, size, c)
+func _text(p: Vector2, s: String, c: Color = UI.TEXT) -> void:
+	Pix.text(front, p, s, 10, c)
 
-## The shared HUD frame from the UI kit, tinted for the place (warm on Mars).
-func _panel(r: Rect2) -> void:
-	Pix.panel(front, r, pan_hi, Color(pan_body, 0.88))
+## The shared HUD frame from the UI kit, tinted for the place.
+func _panel(r: Rect2, accent: Color = Color(0, 0, 0, 0)) -> void:
+	Pix.panel(front, r, pan_hi if accent.a == 0.0 else accent, Color(pan_body, 0.9))
 
 ## Sunken gauge well.
 func _well(r: Rect2) -> void:
-	front.draw_rect(r.grow(1.0), Color("05070d"))
+	front.draw_rect(r.grow(1.0), C_INK)
 	front.draw_rect(r, Color("0d1120"))
-
-## A key cap from the UI kit; returns its width.
-func _key(p: Vector2, label: String) -> float:
-	return Pix.keycap(front, p, label)
 
 func _tape_y(a: float) -> float:
 	return floorf(TAPE_TOP + TAPE_H * (1.0 - pow(clampf(a / maxf(1.0, alt0), 0.0, 1.0), ZOOM)))
 
 func _draw_hud() -> void:
 	var safe: bool = vy <= touch
-	var scol: Color = UI.GREEN if safe else UI.RED
-	# left cluster: fall speed (big), its gauge, fuel, drift
-	_panel(Rect2(6, 6, 140, 96))
-	_text(Vector2(13, 18), "%s LANDING" % String(Game.dest()["name"]).to_upper(), 10, UI.YELLOW)
-	front.draw_texture(tex_icon["ic_down"], Vector2(13, 25), scol)
-	_text(Vector2(27, 42), "%.1f" % maxf(0.0, vy), 20, scol)
-	_text(Vector2(100, 33), "m/s", 10, UI.DIM)
-	_text(Vector2(100, 43), "MAX %.0f" % touch, 10, UI.TEXT)
-	# speed gauge on a square-root scale, so the small safe zone stays readable
-	var gx: float = 13.0
-	var gw: float = 126.0
-	_well(Rect2(gx, 49, gw, 7))
-	var safe_w: float = floorf(gw * sqrt(touch / vmax))
-	front.draw_rect(Rect2(gx, 49, safe_w, 7), Color("1f7a3a"))
-	front.draw_rect(Rect2(gx, 49, safe_w, 2), UI.GREEN)
-	front.draw_rect(Rect2(gx + safe_w, 49, gw - safe_w, 7), Color("5a1c20"))
-	var nx: float = gx + floorf((gw - 2.0) * sqrt(clampf(vy / vmax, 0.0, 1.0)))
-	front.draw_rect(Rect2(nx - 1.0, 47, 4, 11), Color("05070d"))
-	front.draw_rect(Rect2(nx, 48, 2, 9), Color.WHITE)
-	# fuel tank
-	front.draw_texture(tex_icon["ic_fuel"], Vector2(13, 62))
+	var h: float = 106.0 if need_hull else 92.0
+	_panel(Rect2(6, 6, 150, h))
+	# fall speed: one big gauge, green up to the safe limit (square-root scale, so the small zone stays readable)
+	_text(Vector2(12, 17), "FALL SPEED", UI.DIM)
+	var lim: String = "LIMIT %s m/s" % _f1(touch)
+	_text(Vector2(150.0 - Pix.text_w(lim, 10), 17), lim, UI.DIM)
+	var num: String = "%.1f" % maxf(0.0, vy)
+	Pix.title(front, Vector2(12, 41), num, UI.TEXT if safe else UI.RED, 2)
+	_text(Vector2(16.0 + Pix.title_w(num, 2), 41), "m/s", UI.DIM)
+	var gr: Rect2 = Rect2(12, 45, 138, 12)
+	Pix.frame(front, gr, "gauge_frame")
+	var inner: Rect2 = gr.grow(-2)
+	var safe_w: float = floorf(inner.size.x * sqrt(clampf(touch / vmax, 0.0, 1.0)))
+	front.draw_rect(Rect2(inner.position, Vector2(safe_w, inner.size.y)), C_SAFE)
+	front.draw_rect(Rect2(inner.position, Vector2(safe_w, 2)), UI.GREEN)
+	front.draw_rect(Rect2(inner.position + Vector2(safe_w, 0), Vector2(inner.size.x - safe_w, inner.size.y)), C_RISK)
+	var nx: float = inner.position.x + floorf((inner.size.x - 2.0) * sqrt(clampf(vy / vmax, 0.0, 1.0)))
+	front.draw_rect(Rect2(nx - 1.0, gr.position.y - 2.0, 4, gr.size.y + 4.0), C_INK)
+	front.draw_rect(Rect2(nx, gr.position.y - 1.0, 2, gr.size.y + 2.0), Color.WHITE)
+	# fuel
 	var frac: float = clampf(prop / prop0, 0.0, 1.0)
-	Pix.gauge(front, Rect2(26, 63, 64, 9), frac, UI.ORANGE if frac > 0.2 else UI.RED)
-	_text(Vector2(94, 71), "%s kg" % Game.fmt(prop), 10, UI.TEXT)
+	Pix.icon(front, "fuel", Vector2(12, 61))
+	Pix.gauge(front, Rect2(28, 63, 72, 8), frac, UI.ORANGE if frac > 0.2 else UI.RED)
+	_text(Vector2(104, 70), "%s kg" % Game.fmt(prop), UI.TEXT if frac > 0.2 else UI.RED)
 	# drift: zero in the middle, green inside the limit
-	front.draw_texture(tex_icon["ic_drift"], Vector2(13, 82))
-	var lim: float = side_limit()
-	var span: float = lim * 2.5
-	_well(Rect2(27, 82, 62, 7))
-	var half: float = floorf(31.0 * lim / span)
-	front.draw_rect(Rect2(58.0 - half, 82, half * 2.0, 7), Color("1f7a3a"))
-	var dcol: Color = UI.GREEN if absf(vx) <= lim else UI.RED
-	var dn: float = 58.0 + floorf(clampf(vx / span, -1.0, 1.0) * 30.0)
-	front.draw_rect(Rect2(dn - 2.0, 80, 4, 11), Color("05070d"))
-	front.draw_rect(Rect2(dn - 1.0, 81, 2, 9), Color.WHITE)
-	_text(Vector2(94, 89), "%.1f" % absf(vx), 10, dcol)
-	_text(Vector2(118, 89), "m/s", 10, UI.DIM)
+	front.draw_texture(tex_drift, Vector2(12, 77))
+	var dl: float = side_limit()
+	var span: float = dl * 2.5
+	_well(Rect2(29, 78, 70, 6))
+	var half: float = floorf(35.0 * dl / span)
+	front.draw_rect(Rect2(64.0 - half, 78, half * 2.0, 6), C_SAFE)
+	var dn: float = 64.0 + floorf(clampf(vx / span, -1.0, 1.0) * 34.0)
+	front.draw_rect(Rect2(dn - 2.0, 76, 4, 10), C_INK)
+	front.draw_rect(Rect2(dn - 1.0, 77, 2, 8), Color.WHITE)
+	_text(Vector2(104, 85), "%.1f m/s" % absf(vx), UI.TEXT if absf(vx) <= dl else UI.RED)
+	if need_hull:
+		Pix.icon(front, "hull", Vector2(12, 90))
+		Pix.lamp(front, Vector2(29, 91), "ok" if hull_ok else "bad")
+		_text(Vector2(44, 100), "PRESSURE HULL" if hull_ok else "NO PRESSURE HULL", UI.TEXT if hull_ok else UI.RED)
 	_draw_tape(safe)
 	if state == "fly":
 		_draw_cue()
-	# bottom line: what to do for the first seconds, then the keys and a real-world fact
-	if state == "fly" and t < 5.0 and not auto:
-		_panel(Rect2(128, 334, 384, 20))
-		var hx: float = 136.0
-		_text(Vector2(hx, 348), "Fall freely. When the light says BRAKE, hold", 10, UI.TEXT)
-		hx += Pix.text_w("Fall freely. When the light says BRAKE, hold", 10) + 5.0
-		hx += _key(Vector2(hx, 337), "SPACE") + 5.0
-		_text(Vector2(hx, 348), "to slow down.", 10, UI.TEXT)
-	else:
-		var kx: float = 444.0 if not DisplayServer.is_touchscreen_available() else 700.0
-		_panel(Rect2(kx - 6.0, 334, 196, 20))
-		kx += _key(Vector2(kx, 337), "SPACE") + 4.0
-		_text(Vector2(kx, 348), "ENGINE", 10, UI.TEXT)
-		kx += 44.0
-		kx += _key(Vector2(kx, 337), "<") + 2.0
-		kx += _key(Vector2(kx, 337), ">") + 4.0
-		_text(Vector2(kx, 348), "STEER", 10, UI.TEXT)
-		var fact: String = "No air here: only the engine can slow you down." if moon else "Radio delay 4-24 min: real Mars landers fly themselves."
-		# a real-world fact, bottom left, framed like the drone screen's
-		var gl: String = "Gravity %s m/s2 (NASA)" % str(g)
-		_panel(Rect2(6, 326, maxf(Pix.text_w(fact, 10), Pix.text_w(gl, 10)) + 12.0, 28))
-		_text(Vector2(12, 337), fact, 10, UI.TEXT)
-		_text(Vector2(12, 347), gl, 10, UI.DIM)
-	if msg != "":
-		var mw: float = Pix.text_w(msg, 20) + 24.0
-		_panel(Rect2(floorf(320.0 - mw / 2.0), 150, mw, 30))
-		Pix.text_c(front, 320, 172, msg, 20, msg_col)
+	_draw_fact()
+	_draw_direction()
+	if help_on:
+		_draw_help()
+	_draw_msg()
+
+func _draw_msg() -> void:
+	if msg == "":
+		return
+	var mw: float = maxf(Pix.title_w(msg, 2), Pix.text_w(msg2, 10)) + 28.0
+	var mh: float = 44.0 if msg2 != "" else 32.0
+	_panel(Rect2(floorf(320.0 - mw / 2.0), 140, mw, mh), UI.RED if msg_bad else UI.GREEN)
+	Pix.title_c(front, 320, 165, msg, UI.RED if msg_bad else UI.TEXT, 2)
+	if msg2 != "":
+		Pix.text_c(front, 320, 177, msg2, 10, UI.DIM)
+
+## A real fact about this world, from Data, one at a time.
+func _draw_fact() -> void:
+	if facts.is_empty():
+		return
+	var f: String = String(facts[int(t / FACT_S) % facts.size()])
+	var lines: PackedStringArray = _wrap(f, 222.0)
+	_panel(Rect2(6, 322, 236, 32))
+	_text(Vector2(12, 334), "FACT", UI.DIM)
+	for i: int in mini(2, lines.size()):
+		_text(Vector2(42 if i == 0 else 12, 334 + i * 11), lines[i])
+
+## Greedy word wrap; the first line is shorter (the FACT label sits in front of it).
+func _wrap(s: String, w: float) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	var line: String = ""
+	for word: String in s.split(" "):
+		var cand: String = word if line == "" else line + " " + word
+		var lw: float = w - (30.0 if out.is_empty() else 0.0)
+		if Pix.text_w(cand, 10) > lw and line != "":
+			out.append(line)
+			line = word
+		else:
+			line = cand
+	if line != "":
+		out.append(line)
+	return out
+
+## The one direction: a line with key caps for [KEY], and a short reason under it.
+func _draw_direction() -> void:
+	var dir: PackedStringArray = _direction()
+	if dir.is_empty():
+		return
+	var parts: PackedStringArray = dir[0].replace("]", "[").split("[")
+	var w: float = 0.0
+	for i: int in parts.size():
+		w += (maxf(13.0, Pix.text_w(parts[i], 10) + 7.0) + 2.0) if i % 2 == 1 else Pix.text_w(parts[i], 10)
+	var r: Rect2 = Rect2(248, 322, 352, 32)
+	_panel(r, UI.YELLOW)
+	var px: float = floorf(r.position.x + (r.size.x - w) / 2.0)
+	for i: int in parts.size():
+		if i % 2 == 1:
+			px += Pix.keycap(front, Vector2(px + 1.0, 325), parts[i]) + 2.0
+		else:
+			_text(Vector2(px, 335), parts[i])
+			px += Pix.text_w(parts[i], 10)
+	Pix.text_c(front, r.position.x + r.size.x / 2.0, 349, dir[1], 10, UI.DIM)
+
+## The controls list behind the "?" button (H or F1). The descent waits while it is open.
+func _draw_help() -> void:
+	var r: Rect2 = Rect2(180, 104, 280, 104)
+	_panel(r, UI.YELLOW)
+	Pix.title(front, Vector2(192, 122), "CONTROLS", UI.TEXT)
+	_text(Vector2(372, 121), "(paused)", UI.DIM)
+	var rows: Array = [[["SPACE", "W"], "ENGINE: slows your fall"], [["A", "D"], "SIDE JETS: stop the drift"],
+		[["H"], "show or hide this list"]]
+	var y: float = 132.0
+	for row: Array in rows:
+		var kx: float = 192.0
+		for key: String in row[0]:
+			kx += Pix.keycap(front, Vector2(kx, y), key) + 3.0
+		_text(Vector2(262, y + 10.0), String(row[1]))
+		y += 18.0
+	_text(Vector2(192, y + 10.0), "Arrow keys work too.", UI.DIM)
 
 ## Altitude tape: ticks, the lander as the marker, and where the next burn has to start.
 func _draw_tape(safe: bool) -> void:
 	_panel(Rect2(576, 6, 58, 304))
-	_text(Vector2(582, 18), "ALTITUDE", 10, UI.DIM)
-	Pix.text(front, Vector2(628.0 - Pix.text_w("%s m" % Game.fmt(alt), 10), 30), "%s m" % Game.fmt(alt), 10, UI.TEXT)
+	_text(Vector2(582, 18), "ALTITUDE", UI.DIM)
+	var at: String = ("%d m" % roundi(alt)) if alt >= 10.0 else ("%.1f m" % alt)
+	_text(Vector2(628.0 - Pix.text_w(at, 10), 30), at)
 	var tx: float = 616.0
 	_well(Rect2(tx, TAPE_TOP, 10, TAPE_H))
 	var step: float = 100.0 if alt0 <= 800.0 else (250.0 if alt0 <= 2000.0 else 500.0)
 	var a: float = 0.0
 	while a <= alt0 + 1.0:
 		var ty: float = _tape_y(a)
-		front.draw_rect(Rect2(tx, ty, 10, 1), Color("4a5c96"))
-		Pix.text(front, Vector2(tx - 5.0 - Pix.text_w(Game.fmt(a), 10), ty + 4.0), Game.fmt(a), 10, UI.DIM)
+		front.draw_rect(Rect2(tx, ty, 10, 1), pan_hi)
+		var lab: String = "0" if a < 1.0 else Game.fmt(a)
+		_text(Vector2(tx - 5.0 - Pix.text_w(lab, 10), ty + 4.0), lab, UI.DIM)
 		a += step
 	front.draw_rect(Rect2(tx, TAPE_TOP + TAPE_H - 2.0, 10, 2), UI.DIM)   # the ground
 	if burn_alt > 0.0 and state == "fly":
@@ -716,62 +1048,75 @@ func _draw_tape(safe: bool) -> void:
 		front.draw_rect(Rect2(tx - 3.0, by - 1.0, 16, 2), Color.WHITE if flash else UI.RED)
 		if cue != "brake" and by > TAPE_TOP + 12.0:
 			var lw: float = Pix.text_w("BRAKE", 10) + 5.0
-			front.draw_rect(Rect2(tx - lw - 5.0, by - 6.0, lw, 11), Color("5a1c20"))
-			_text(Vector2(tx - lw - 2.0, by + 3.0), "BRAKE", 10, UI.RED)
+			front.draw_rect(Rect2(tx - lw - 5.0, by - 6.0, lw, 11), C_RISK)
+			_text(Vector2(tx - lw - 2.0, by + 3.0), "BRAKE", UI.RED)
 	# the lander marker
 	var my: float = _tape_y(alt)
 	var mcol: Color = UI.GREEN if safe else UI.YELLOW
 	for i: int in 5:
-		front.draw_rect(Rect2(tx - 2.0 + i, my - 4.0 + i, 1, 9 - i * 2), Color("05070d"))
+		front.draw_rect(Rect2(tx - 2.0 + i, my - 4.0 + i, 1, 9 - i * 2), C_INK)
 	for i: int in 4:
 		front.draw_rect(Rect2(tx - 2.0 + i, my - 3.0 + i, 1, 7 - i * 2), mcol)
 	front.draw_rect(Rect2(tx + 2.0, my, 8, 1), mcol)
 
-## The light that says what to do now. It rides next to the lander, where the eyes are.
+## The light that says how things stand now. It rides next to the lander, where the eyes are.
 func _draw_cue() -> void:
 	var feet: float = _feet()
 	var p: Vector2 = Vector2(372, clampf(feet - 64.0, 44.0, 250.0))
 	var head: String = ""
 	var sub: String = ""
-	var col: Color = UI.TEXT
-	var lamp: bool = true
+	var lamp: Color = UI.DIM
+	var hot: bool = false
+	var blink: bool = true
 	match cue:
 		"brake":
 			head = "BRAKE NOW"
-			sub = "hold the engine on"
-			col = UI.RED
-			lamp = fposmod(t, 0.3) < 0.18
+			sub = "keep the engine on"
+			lamp = UI.RED
+			hot = true
+			blink = fposmod(t, 0.3) < 0.18
 		"release":
-			head = "RELEASE"
-			sub = "slow enough, save fuel"
-			col = UI.YELLOW
+			head = "LET GO"
+			sub = "slow enough: save fuel"
+			lamp = UI.YELLOW
 		"safe":
 			head = "SAFE SPEED"
-			sub = "hands off, let it land"
-			col = UI.GREEN
+			sub = "under the limit"
+			lamp = UI.GREEN
 		"soon":
 			head = "BRAKE IN %d" % maxi(1, ceili(burn_in))
 			sub = "get ready"
-			col = UI.YELLOW
-			lamp = fposmod(burn_in, 1.0) > 0.5
+			lamp = UI.YELLOW
+			blink = fposmod(burn_in, 1.0) > 0.5
 		"empty":
 			head = "NO FUEL"
 			sub = "nothing left to brake with"
-			col = UI.RED
+			lamp = UI.RED
+			hot = true
 		_:
 			head = "FALLING" if vy > touch else "SAFE SPEED"
 			sub = "brake in %d s" % ceili(burn_in) if burn_in < 60.0 else "wait for the light"
-			col = UI.DIM if vy > touch else UI.GREEN
-	var w: float = maxf(Pix.text_w(head, 20) + 34.0, Pix.text_w(sub, 10) + 34.0)
-	_panel(Rect2(p, Vector2(w, 40)))
-	# lamp
-	front.draw_rect(Rect2(p + Vector2(7, 9), Vector2(14, 14)), Color("05070d"))
-	front.draw_rect(Rect2(p + Vector2(8, 10), Vector2(12, 12)), col if lamp else col.darkened(0.7))
-	if lamp:
-		front.draw_rect(Rect2(p + Vector2(9, 11), Vector2(4, 3)), col.lightened(0.6))
-	_text(p + Vector2(27, 24), head, 20, col if lamp or cue != "brake" else Color.WHITE)
-	_text(p + Vector2(27, 35), sub, 10, UI.TEXT)
-	# drift: an arrow that shows which way you slide, and which key stops it
+			lamp = UI.DIM if vy > touch else UI.GREEN
+	if air == "thick" and cue == "safe":
+		var over: bool = on_slab_now()
+		head = "OVER THE SLAB" if over else "OVER ROUGH ROCK"
+		sub = "sinking at %s m/s" % ("%.1f" % vy)
+		lamp = UI.GREEN if over else UI.YELLOW
+	if not hull_ok:
+		head = "NO HULL"
+		sub = "the air will crush it"
+		lamp = UI.RED
+		hot = true
+		blink = fposmod(t, 0.5) < 0.3
+	var w: float = maxf(Pix.title_w(head, 1), Pix.text_w(sub, 10)) + 34.0
+	_panel(Rect2(p, Vector2(w, 34)), UI.RED if hot else Color(0, 0, 0, 0))
+	front.draw_rect(Rect2(p + Vector2(7, 9), Vector2(14, 14)), C_INK)
+	front.draw_rect(Rect2(p + Vector2(8, 10), Vector2(12, 12)), lamp if blink else lamp.darkened(0.7))
+	if blink:
+		front.draw_rect(Rect2(p + Vector2(9, 11), Vector2(4, 3)), lamp.lightened(0.6))
+	Pix.title(front, p + Vector2(27, 17), head, UI.RED if hot else UI.TEXT)
+	_text(p + Vector2(27, 28), sub, UI.DIM)
+	# drift: an arrow that shows which way you slide
 	if absf(vx) > side_limit() * 0.3:
 		var dir: float = signf(vx)
 		var ap: Vector2 = Vector2(LX + 2.0 + dir * 50.0 - 4.0 + dir * floorf(fposmod(t * 2.0, 1.0) * 4.0), feet - 40.0)
@@ -782,18 +1127,10 @@ func _draw_cue() -> void:
 			front.draw_set_transform(ap + Vector2(8, 0), 0.0, Vector2(-1, 1))
 			front.draw_texture(tex_arrow, Vector2.ZERO, acol)
 			front.draw_set_transform(Vector2.ZERO)
-	if drift_warn:
-		var q: Vector2 = p + Vector2(0, 44)
-		var s2: String = "TO STOP THE DRIFT"
-		_panel(Rect2(q, Vector2(Pix.text_w("PRESS", 10) + Pix.text_w(s2, 10) + 38.0, 20)))
-		_text(q + Vector2(7, 14), "PRESS", 10, UI.TEXT)
-		var kx: float = q.x + 11.0 + Pix.text_w("PRESS", 10)
-		kx += _key(Vector2(kx, q.y + 3.0), "<" if vx > 0.0 else ">") + 4.0
-		_text(Vector2(kx, q.y + 14.0), s2, 10, UI.TEXT)
 
 # ---------------------------------------------------------------- debug hooks (screenshots and the landing proof)
 
-## Flies by obeying the cue lights only: engine while BRAKE is lit, steer while the drift warning is up.
+## Flies by obeying the cues only: engine while BRAKE NOW is lit, the side jet the cue asks for.
 func debug_autopilot() -> void:
 	auto = true
 
@@ -805,22 +1142,33 @@ func debug_human() -> void:
 func debug_fast() -> void:
 	Engine.time_scale = 4.0
 
+func debug_help() -> void:
+	help_on = true
+
 ## Mars with landing legs (4 m/s) in place of the example ship's airbags (12 m/s).
 func debug_legs() -> void:
-	touch = float(Data.PARTS["legs"]["touch"])
-	mass -= float(Data.PARTS["airbags"]["mass"]) - float(Data.PARTS["legs"]["mass"])
+	touch = float(Data.PARTS["legs"]["touch"]) * forgive
 	Game.run["calc"]["touch"] = touch
 
+## Falling fast, just above where BRAKE NOW comes on.
 func debug_brake() -> void:
+	if air == "thick":
+		return
+	t = 4.0
 	vy = sqrt(vy * vy + 2.0 * g * alt0 * 0.6)
 	alt = brake_alt(vy) - 2.0
+	did_drift = true
 
+## Near the ground with the engine on.
 func debug_near() -> void:
 	t = 6.0
 	alt = 13.0
-	vy = touch * 0.5 + 3.0
+	vy = touch * 0.5 + 3.0 if air != "thick" else vterm
 	vx = 0.4
-	hold_up = true
+	x = pad_x + 2.0 if air == "thick" else 0.0
+	hold_up = air != "thick"
+	did_drift = true
+	eng_time = 1.0
 
 func debug_drift() -> void:
 	vx = side_limit() * 1.6
@@ -828,13 +1176,41 @@ func debug_drift() -> void:
 func debug_crash() -> void:
 	t = 6.0
 	alt = 2.0
-	vy = 30.0
+	vy = maxf(30.0, touch * 3.0)
+	if air == "thick":
+		vterm = vy   # pretend the drag plate failed, so the fall is fast enough to crash
 
 func debug_touchdown() -> void:
 	t = 6.0
 	alt = 0.4
-	vy = touch * 0.5
+	vy = touch * 0.5 if air != "thick" else vterm
 	vx = 0.0
+	x = pad_x
+
+## Thick air: halfway down, drifting off the slab.
+func debug_descent() -> void:
+	t = 8.0
+	alt = alt0 * 0.55
+	x = pad_x + 18.0
+	vx = 1.5
+
+## Thin air with the parachute still out (the first second of the descent).
+func debug_chute() -> void:
+	t = 1.2
+
+## Thick air with no pressure hull on board.
+func debug_nohull() -> void:
+	Game.build.erase("hull")
+	hull_ok = not need_hull
+
+## Thick air: about to touch down on rough rock beside the slab.
+func debug_offslab() -> void:
+	debug_touchdown()
+	x = pad_x + slab_r + 14.0
+
+## The descent tuned for a moment in the far lightning.
+func debug_bolt() -> void:
+	bolt_t = t + 0.45
 
 func debug_burned() -> void:
 	_burn_up()

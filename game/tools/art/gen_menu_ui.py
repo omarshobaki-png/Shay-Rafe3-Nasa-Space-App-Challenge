@@ -198,9 +198,9 @@ def lettering(mask, bands, top_light, low_shade, rim, pad=3):
 
 
 def logo():
-    big = lettering(word_mask("SPACE MISSION", 3, 4, bold=2),
+    big = lettering(word_mask("ASTROPIXEL", 3, 4, bold=2),
                     ["fff4b8", "ffe27a", "ffd75e", "ffc23c", "f6a428", "e88a1c", "d87616"], "fffbe6", "a85a10", OL)
-    small = lettering(word_mask("DESIGNER", 2, 8, bold=1), ["e8f6ff", "bfeaff", "8fd8ff", "4fd6ff"], "ffffff", "2a86b8", OL)
+    small = lettering(word_mask("MISSION DESIGNER", 2, 3, bold=1), ["e8f6ff", "bfeaff", "8fd8ff", "4fd6ff"], "ffffff", "2a86b8", OL)
     bh, bw = big.shape[:2]
     sh, sw = small.shape[:2]
     w = bw + 40
@@ -220,10 +220,11 @@ def logo():
     sx = (w - sw) // 2
     sy = bh - 3
     rule_y = sy + sh // 2 - 1
-    for x0, x1 in ((sx - 58, sx - 8), (sx + sw + 8, sx + sw + 58)):
+    for x0, x1 in (((sx - 58, sx - 8), (sx + sw + 8, sx + sw + 58)) if sx >= 60 else ()):
         rect(img, x0, rule_y, x1 - x0, 2, "4fd6ff")
         rect(img, x0, rule_y + 2, x1 - x0, 1, "05070d")
         rect(img, x0 - 1, rule_y - 1, x1 - x0 + 2, 1, OL)
+    img[sy + 2:sy + sh, max(0, sx - 3):sx + sw + 3] = 0  # keep the orbit line out of the subtitle
     paste(img, small, sx, sy)
     save(img, "logo")
     return {"w": w, "h": h, "cx": cx, "cy": cy, "a": a, "b": b}
