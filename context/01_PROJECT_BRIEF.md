@@ -50,7 +50,7 @@ The core rule: **reward smart, effective engineering decisions; everything else 
 - Use at least one NASA data source and name it exactly (we use many; see `02_NASA_RESOURCES.md`).
 - List every outside resource, including open-source code and the font (from our earlier game,
   Rotorfall).
-- **Submission closes Sun 15 Nov 2026, 23:59 local time.** Resubmitting is allowed until then.
+- **Ramallah local event: projects submitted by Sun 15 Nov 2026, 15:15**; live pitches from 16:15 (3 min + 2 min Q&A); awards 19:00. The global portal closes at 23:59 local time. Judging rules and the 7-slide plan: `research/notes-pitch-and-judging.md`.
 
 ## Judging (5 criteria, each scored 1–5)
 

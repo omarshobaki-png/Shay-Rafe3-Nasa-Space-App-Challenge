@@ -67,4 +67,5 @@ sounds, flat UI, hard landing) need a hand playtest to confirm they're fixed.
 - [ ] Demo video ≤ 30 s, public link, English, no under-18 faces or voices
 - [ ] Submission: NASA data list (from `02_NASA_RESOURCES.md` §13), all outside resources, AI disclosure
       (root `README.md`)
-- [ ] Submitted before **Sun 15 Nov 2026, 23:59 local time**
+- [ ] Submitted before **Sun 15 Nov 2026, 15:15** (Ramallah cut-off; global portal 23:59)
+- [ ] Live pitch ready: 3 min, 7 slides, offline demo recording as backup (see `research/notes-pitch-and-judging.md`)

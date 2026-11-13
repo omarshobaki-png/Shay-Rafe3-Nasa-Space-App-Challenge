@@ -163,7 +163,7 @@ The player is the mission's engineer and controller. All missions are **robotic*
 
 ## 8. Working rules for the team
 
-- The hackathon deadline is **Sun 15 Nov 2026, 23:59 local time**. Plan backwards from the 30 s demo
+- The hackathon deadline is **Sun 15 Nov 2026, 15:15** at the Ramallah local event (projects submitted; pitches 16:15, 3 min + 2 min Q&A). The global portal closes at 23:59. Plan backwards from the 30 s demo
   video.
 - Read the NASA resources properly; every feature should be traceable to one (see
   `02_NASA_RESOURCES.md`).
