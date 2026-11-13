@@ -1,0 +1,19 @@
+# Godot 4
+.godot/
+*.translation
+# intermediate Blender render passes (re-made by game/tools/blender)
+game/art/raw3d/
+# Python
+__pycache__/
+*.pyc
+# builds go in Releases, not in the repository (the Windows .exe is over GitHub's 100 MB file limit)
+build/
+*.exe
+*.pck
+!docs/index.pck
+# OS
+Thumbs.db
+.DS_Store
+
+# local builds (upload SpaceMissionDesigner-windows-v3.zip as a GitHub Release instead)
+builds/
