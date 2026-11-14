@@ -124,6 +124,46 @@ a {
   color: var(--amber);
   line-height: 1;
 }
+/* The game's own pixel logo leads the header; the team signs it underneath. */
+.brand {
+  gap: 16px;
+}
+.brand-logo {
+  display: block;
+  height: 46px;
+  width: auto;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 0 10px #fac65c2e);
+  animation: logo-float 6s ease-in-out infinite;
+  transition: filter 0.3s var(--ease);
+}
+.brand:hover .brand-logo,
+.brand:focus-visible .brand-logo {
+  filter: drop-shadow(0 0 14px #fac65c80) brightness(1.08);
+}
+.brand-team {
+  font: 7px/1.5 monospace;
+  letter-spacing: 2px;
+  color: var(--muted);
+  padding-left: 14px;
+  border-left: 1px solid var(--line);
+  white-space: nowrap;
+}
+.brand-team b {
+  display: block;
+  font: bold 11px/1.5 monospace;
+  letter-spacing: 1.6px;
+  color: var(--text);
+}
+@keyframes logo-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
 .event {
   font: 9px monospace;
   letter-spacing: 2px;
@@ -2889,6 +2929,39 @@ dialog code {
   *:after {
     animation: none !important;
     transition: none !important;
+  }
+}
+/* Header logo on smaller screens. */
+@media (max-width: 1050px) {
+  .brand-logo {
+    height: 36px;
+  }
+}
+@media (max-height: 550px) and (min-width: 761px) {
+  .brand-logo {
+    height: 32px;
+  }
+}
+@media (max-width: 760px) {
+  .brand {
+    gap: 10px;
+  }
+  .brand-logo {
+    height: 28px;
+  }
+  .brand-team {
+    padding-left: 10px;
+    font-size: 5px;
+    letter-spacing: 1px;
+  }
+  .brand-team b {
+    font-size: 8px;
+    letter-spacing: 1px;
+  }
+}
+@media (max-width: 420px) {
+  .brand-team {
+    display: none;
   }
 }
 /* Keep the fixed presentation legible on compact screens. */
