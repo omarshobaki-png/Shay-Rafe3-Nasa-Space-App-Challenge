@@ -181,6 +181,9 @@ Debug: run with `-- screen=builder dest=mars` (also `launch`, `flight`, `landing
   (`tools/audio/`). No recordings, no samples.
 - **Font:** the pixel font comes from our earlier game, Rotorfall.
 - **Screenshots** in this README are captured from the game itself.
+- **Research write-ups:** Claude compiled the NASA data sheet
+  (`context/reference/NASA_Data_In_Game.pdf`, from the team's research notes and the sources in
+  `data.gd`) and wrote the project website (`docs/index.html`). The team reviews them.
 - **Multiplayer:** the scope is the team's (decision D7). Where it left gaps, the AI proposed small
   mechanics (a landing-site choice, the Scientist's parachute and legs job, a drone throttle, the Comms
   downlink pick, who decides each event, the team sync weights). They are marked "game rule" in
