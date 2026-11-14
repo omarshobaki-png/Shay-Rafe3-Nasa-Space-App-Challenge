@@ -3047,3 +3047,49 @@ dialog code {
     font-size: 9px;
   }
 }
+/* Eight worlds: the mission tabs and the lab's destination picker are 4 x 2 grids. */
+.mission-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0 4px;
+  min-width: 420px;
+}
+.mission-tabs button {
+  padding: 8px 10px 9px;
+  text-align: center;
+  white-space: nowrap;
+}
+.destination-picker {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+.destination-picker span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 1050px) {
+  .mission-tabs {
+    min-width: 340px;
+  }
+  .mission-tabs button {
+    font-size: 11px;
+    padding: 7px 6px 8px;
+  }
+}
+@media (max-width: 760px) {
+  .mission-tabs {
+    min-width: 0;
+    width: 100%;
+  }
+  .mission-tabs button {
+    font-size: 10px;
+    padding: 6px 4px 7px;
+    justify-content: center;
+  }
+  .destination-picker span {
+    font-size: 10px;
+    padding: 5px 2px;
+  }
+}

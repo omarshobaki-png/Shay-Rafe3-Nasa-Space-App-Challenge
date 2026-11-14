@@ -25,7 +25,7 @@
     />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="icon" href="assets/planet_moon_60.png" />
-    <link rel="stylesheet" href="styles.css?v=4" />
+    <link rel="stylesheet" href="styles.css?v=5" />
   </head>
   <body>
     <a class="skip" href="#main">Skip to presentation</a>
@@ -243,7 +243,7 @@
           <div class="view-heading">
             <div>
               <p class="eyebrow">03 / DESTINATION SELECT</p>
-              <h2 id="missions-title">Eight worlds. <em>Three lessons.</em></h2>
+              <h2 id="missions-title">Eight worlds. <em>Eight lessons.</em></h2>
             </div>
             <div
               class="subnav mission-tabs"
@@ -252,13 +252,34 @@
             >
               <button
                 role="tab"
+                aria-selected="false"
+                aria-controls="mission-content"
+                id="mission-mercury"
+                data-mission="mercury"
+                tabindex="-1"
+              >
+                Mercury
+              </button>
+              <button
+                role="tab"
+                aria-selected="false"
+                aria-controls="mission-content"
+                id="mission-venus"
+                data-mission="venus"
+                tabindex="-1"
+              >
+                Venus
+              </button>
+              <button
+                role="tab"
                 aria-selected="true"
                 aria-controls="mission-content"
                 id="mission-moon"
                 data-mission="moon"
               >
-                Moon <small>FUEL</small></button
-              ><button
+                Moon
+              </button>
+              <button
                 role="tab"
                 aria-selected="false"
                 aria-controls="mission-content"
@@ -266,8 +287,19 @@
                 data-mission="mars"
                 tabindex="-1"
               >
-                Mars <small>AIR</small></button
-              ><button
+                Mars
+              </button>
+              <button
+                role="tab"
+                aria-selected="false"
+                aria-controls="mission-content"
+                id="mission-jupiter"
+                data-mission="jupiter"
+                tabindex="-1"
+              >
+                Jupiter
+              </button>
+              <button
                 role="tab"
                 aria-selected="false"
                 aria-controls="mission-content"
@@ -275,7 +307,27 @@
                 data-mission="saturn"
                 tabindex="-1"
               >
-                Saturn <small>POWER</small>
+                Saturn
+              </button>
+              <button
+                role="tab"
+                aria-selected="false"
+                aria-controls="mission-content"
+                id="mission-uranus"
+                data-mission="uranus"
+                tabindex="-1"
+              >
+                Uranus
+              </button>
+              <button
+                role="tab"
+                aria-selected="false"
+                aria-controls="mission-content"
+                id="mission-neptune"
+                data-mission="neptune"
+                tabindex="-1"
+              >
+                Neptune
               </button>
             </div>
           </div>
@@ -356,7 +408,7 @@
                 fuel = dry mass × (e<sup>Δv / vₑ</sup> − 1)
               </div>
               <p class="body-copy">
-                On the Moon, each kilogram of equipment needs about 1.6 kg of
+                On the Moon, each kilogram of equipment needs about 1.7 kg of
                 fuel to brake and land.
               </p>
               <p class="fine">
@@ -372,6 +424,14 @@
               <fieldset class="destination-picker">
                 <legend class="sr-only">Destination</legend>
                 <label
+                  ><input type="radio" name="dest" value="mercury" /><span
+                    >Mercury</span
+                  ></label
+                ><label
+                  ><input type="radio" name="dest" value="venus" /><span
+                    >Venus</span
+                  ></label
+                ><label
                   ><input type="radio" name="dest" value="moon" checked /><span
                     >Moon</span
                   ></label
@@ -380,21 +440,33 @@
                     >Mars</span
                   ></label
                 ><label
+                  ><input type="radio" name="dest" value="jupiter" /><span
+                    >Jupiter</span
+                  ></label
+                ><label
                   ><input type="radio" name="dest" value="saturn" /><span
                     >Saturn</span
+                  ></label
+                ><label
+                  ><input type="radio" name="dest" value="uranus" /><span
+                    >Uranus</span
+                  ></label
+                ><label
+                  ><input type="radio" name="dest" value="neptune" /><span
+                    >Neptune</span
                   ></label
                 >
               </fieldset>
               <label class="slider-label" for="dry"
                 >SHIP WITHOUT FUEL
-                <output id="dry-out" for="dry">1,000 kg</output></label
+                <output id="dry-out" for="dry">900 kg</output></label
               ><input
                 id="dry"
                 type="range"
                 min="200"
                 max="2600"
                 step="10"
-                value="1000"
+                value="900"
               />
               <div class="stack" aria-hidden="true">
                 <div class="stack-bar">
@@ -409,15 +481,15 @@
               <dl class="readout">
                 <div>
                   <dt>Speed change</dt>
-                  <dd id="r-dv">2.79 km/s</dd>
+                  <dd id="r-dv">2.93 km/s</dd>
                 </div>
                 <div>
                   <dt>Fuel needed</dt>
-                  <dd id="r-fuel">1,580 kg</dd>
+                  <dd id="r-fuel">1,535 kg</dd>
                 </div>
                 <div>
                   <dt>Total mass</dt>
-                  <dd id="r-total">2,580 kg</dd>
+                  <dd id="r-total">2,435 kg</dd>
                 </div>
                 <div>
                   <dt>Rocket capacity</dt>
@@ -539,6 +611,6 @@
       </button>
       <div id="dialog-content"></div>
     </dialog>
-    <script src="main.js?v=4"></script>
+    <script src="main.js?v=5"></script>
   </body>
 </html>

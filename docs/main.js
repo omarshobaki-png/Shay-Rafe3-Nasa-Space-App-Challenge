@@ -198,6 +198,34 @@ document.querySelectorAll("[data-role]").forEach((button) =>
   }),
 );
 const MISSIONS = {
+  mercury: {
+    image: "surface_mercury",
+    alt: "A rover on Mercury under a huge, close Sun",
+    caption: "MERCURY SURFACE OPERATIONS",
+    lesson: "THE LESSON / HEAT AND BRAKING",
+    title: "Land next to the Sun. Survey its rocks.",
+    copy: "Sunlight is 6.7 times Earth’s, so the ship needs a sunshade. With no air, all 3 km/s of the landing comes from fuel—and the cheap path takes 6.6 years.",
+    facts: [
+      ["GRAVITY", "3.70 m/s²"],
+      ["SUNLIGHT", "6.7× Earth’s"],
+      ["RADIO DELAY", "4 to 12 minutes"],
+      ["REAL MISSION", "MESSENGER · 2011–2015"],
+    ],
+  },
+  venus: {
+    image: "landing_venus",
+    alt: "A lander sinks through Venus’ thick air toward a rock slab",
+    caption: "VENUS DESCENT",
+    lesson: "THE LESSON / PRESSURE AND TIME",
+    title: "Land in crushing air. Work fast.",
+    copy: "The air presses like 900 m of ocean and does all the braking—if the lander has a heat shield and a pressure hull. Then batteries and radio get 127 minutes.",
+    facts: [
+      ["GRAVITY", "8.87 m/s²"],
+      ["TIME ON THE SURFACE", "127 minutes"],
+      ["RADIO DELAY", "2 to 14 minutes"],
+      ["REAL MISSION", "Venera 13 · 1982"],
+    ],
+  },
   moon: {
     image: "surface_moon",
     alt: "A rover drives across the Moon beside the lander",
@@ -226,6 +254,20 @@ const MISSIONS = {
       ["REAL MISSION", "Perseverance · 2021"],
     ],
   },
+  jupiter: {
+    image: "drone_jupiter",
+    alt: "A drone photographs a marked spot in Jupiter’s faint rings",
+    caption: "JUPITER RING DRONE OPERATIONS",
+    lesson: "THE LESSON / RADIATION AND POWER",
+    title: "Orbit inside the radiation belts. Fly the drone.",
+    copy: "Jupiter’s belts fry unshielded electronics, and sunlight is under 4% of Earth’s: carry nuclear power, or huge solar wings like Juno.",
+    facts: [
+      ["SUNLIGHT", "3.7% of Earth’s"],
+      ["RADIO DELAY", "33 to 54 minutes"],
+      ["TASKS", "Ring photos · ring grains"],
+      ["REAL MISSION", "Juno · 2016–"],
+    ],
+  },
   saturn: {
     image: "drone_saturn",
     alt: "A drone flying through Saturn’s rings to collect ice",
@@ -238,6 +280,34 @@ const MISSIONS = {
       ["RADIO DELAY", "About 80 minutes"],
       ["TASKS", "Ring photos · ring grains"],
       ["REAL MISSION", "Cassini · 1997–2017"],
+    ],
+  },
+  uranus: {
+    image: "builder_uranus",
+    alt: "Building a ship for Uranus: the guide points to nuclear power because sunlight is 0.27% of Earth’s",
+    caption: "URANUS SPACECRAFT ASSEMBLY",
+    lesson: "THE LESSON / DISTANCE",
+    title: "Be the first to orbit Uranus.",
+    copy: "Thirteen years of cruise, sunlight at 0.3% of Earth’s and a radio link 370 times slower than at Earth: power, data and money all run short.",
+    facts: [
+      ["SUNLIGHT", "0.3% of Earth’s"],
+      ["RADIO DELAY", "2.4 to 2.9 hours"],
+      ["TASKS", "Ring photos · ring grains"],
+      ["REAL MISSION", "Voyager 2 flyby · 1986"],
+    ],
+  },
+  neptune: {
+    image: "drone_neptune",
+    alt: "A drone flies to a marked spot near Neptune’s moons",
+    caption: "NEPTUNE RING DRONE OPERATIONS",
+    lesson: "THE LESSON / THE LONG WAY",
+    title: "The farthest world. Brake hard, or arrive slowly.",
+    copy: "After 12 years the ship must brake hard into orbit, or fly 16 years and let its nuclear power fade. Its radio link is the slowest in the game.",
+    facts: [
+      ["SUNLIGHT", "0.1% of Earth’s"],
+      ["RADIO DELAY", "About 4 hours"],
+      ["TASKS", "Ring photos · ring grains"],
+      ["REAL MISSION", "Voyager 2 flyby · 1989"],
     ],
   },
 };
@@ -266,23 +336,53 @@ wireTabs("[data-mission]", "mission", (key) => {
 });
 const VE = (300 * 9.81) / 1000;
 const DEST = {
-  moon: {
-    dv: 2.79,
+  mercury: {
+    dv: 3.89,
+    cap: 9000,
+    rocket: "Falcon Heavy",
+    note: "Mercury: 0.86 km/s into orbit + 3.0 km/s to land, with no air to help. The hardest landing in the game.",
+  },
+  venus: {
+    dv: 0.03,
     cap: 4020,
     rocket: "Falcon 9",
-    note: "Moon: 0.90 km/s into orbit + 1.89 km/s to land. No air, so it’s all fuel.",
+    note: "Venus: the thick air does all the braking. Only 0.03 km/s of course corrections needs fuel; the challenge is surviving 127 minutes.",
+  },
+  moon: {
+    dv: 2.93,
+    cap: 4020,
+    rocket: "Falcon 9",
+    note: "Moon: 0.90 km/s into orbit + 2.0 km/s to land + 0.03 km/s of course corrections. No air, so it’s all fuel.",
   },
   mars: {
-    dv: 0.3,
+    dv: 0.33,
     cap: 4020,
     rocket: "Falcon 9",
-    note: "Mars: heat shield and parachute do most of the braking. This model leaves 0.30 km/s to the engines.",
+    note: "Mars: the heat shield and parachute do most of the braking. 0.30 km/s is left for the landing burn.",
+  },
+  jupiter: {
+    dv: 0.57,
+    cap: 6000,
+    rocket: "Falcon Heavy",
+    note: "Jupiter: 0.54 km/s to brake into orbit. The hard part is radiation and power, not fuel.",
   },
   saturn: {
-    dv: 0.63,
-    cap: 6065,
+    dv: 0.66,
+    cap: 6000,
     rocket: "Falcon Heavy",
-    note: "Saturn: 0.63 km/s to brake into orbit. The difficult trade-off here is power, not fuel.",
+    note: "Saturn: 0.63 km/s to brake into orbit. The hard trade-off here is power, not fuel.",
+  },
+  uranus: {
+    dv: 1.12,
+    cap: 5000,
+    rocket: "Falcon Heavy",
+    note: "Uranus: 1.09 km/s to brake into orbit after 13 years. Power and radio are the real limits.",
+  },
+  neptune: {
+    dv: 2.53,
+    cap: 3600,
+    rocket: "Falcon Heavy",
+    note: "Neptune: 2.5 km/s to brake into orbit after 12 years: the biggest orbit burn in the game.",
   },
 };
 function calculateMission(destination, dryMass) {
