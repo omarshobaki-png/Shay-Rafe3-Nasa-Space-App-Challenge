@@ -5,7 +5,8 @@ extends RefCounted
 ##
 ## Event:  id, phase ("cruise" | "site"; nothing happens after the site), from ("ship": a hazard, the amber
 ##         ALERT card | "earth": advice from mission control, the blue MESSAGE card), role, title (<= 28),
-##         text (<= 90), real (<= 140), choices (exactly 2)
+##         text (<= 90), real (<= 140), choices (exactly 2), intro (< 80: Mission Control's line before the card,
+##         v8; it sets the scene, never the outcome), urgent (optional, true: no lead-in line)
 ##   filters, all optional: kinds [..], dests [..], jobs [..], needs_part id or [ids: any one of them],
 ##                          returns bool (true: only where a capsule flies home; false: only where it does not)
 ## Choice: label (<= 22), text (<= 60; every number in it is one of its effects or its odds), and any of
@@ -29,7 +30,7 @@ extends RefCounted
 
 const LIST: Array = [
 	# ------------------------------------------------------------------ on the way: ship hazards
-	{"id": "storm", "phase": "cruise", "from": "ship", "role": "engineer", "title": "SOLAR STORM INCOMING",
+	{"id": "storm", "phase": "cruise", "from": "ship", "role": "engineer", "title": "SOLAR STORM INCOMING", "intro": "Our Sun watchers just saw a big flare. Something is heading your way.",
 		"text": "A cloud of charged particles from the Sun will hit the ship in a few hours.",
 		"real": "In Oct 2003 a solar storm killed the MARIE radiation instrument on NASA's Mars Odyssey.",
 		"choices": [
@@ -38,7 +39,7 @@ const LIST: Array = [
 			{"label": "KEEP WORKING", "text": "{pct}% chance a part breaks. Radiation shielding stops it.",
 				"risk": {"chance": 0.4, "bad": {"break": "electronics"}, "save_part": "shield"}},
 		]},
-	{"id": "micro", "phase": "cruise", "from": "ship", "role": "engineer", "title": "MICROMETEOROID HIT",
+	{"id": "micro", "phase": "cruise", "from": "ship", "role": "engineer", "title": "MICROMETEOROID HIT", "intro": "We are seeing odd readings from your power system.",
 		"text": "A dust grain hit the ship at 20 km/s. One power line now reads low.",
 		"real": "In May 2022 a micrometeoroid hit a mirror of the James Webb Space Telescope harder than planned for (NASA/ESA/CSA).",
 		"choices": [
@@ -47,7 +48,7 @@ const LIST: Array = [
 			{"label": "LIVE WITH IT", "text": "Lose 6% of your power for good.",
 				"cost": {"power": 0.94}},
 		]},
-	{"id": "antenna_stuck", "phase": "cruise", "from": "ship", "role": "comms", "needs_part": "hga", "title": "DISH WILL NOT OPEN",
+	{"id": "antenna_stuck", "phase": "cruise", "from": "ship", "role": "comms", "needs_part": "hga", "title": "DISH WILL NOT OPEN", "intro": "The big dish should be open by now. Its sensors say something else.",
 		"text": "The big dish is stuck half open, like a broken umbrella.",
 		"real": "Galileo's main antenna jammed in 1991. NASA saved the Jupiter mission with the small antenna and new software.",
 		"choices": [
@@ -56,7 +57,7 @@ const LIST: Array = [
 			{"label": "NEW SOFTWARE", "text": "10 days of work, then the radio is 20% slower.",
 				"cost": {"days": 10, "rate": 0.8}},
 		]},
-	{"id": "units", "phase": "cruise", "from": "ship", "role": "planner", "title": "THE NUMBERS DISAGREE",
+	{"id": "units", "phase": "cruise", "from": "ship", "role": "planner", "title": "THE NUMBERS DISAGREE", "intro": "Our flight dynamics teams are arguing about your next burn.",
 		"text": "Two teams got different answers for the next burn. One used the wrong units.",
 		"real": "Mars Climate Orbiter was lost in 1999: one team worked in pound-seconds, the other in newton-seconds (NASA).",
 		"choices": [
@@ -65,7 +66,7 @@ const LIST: Array = [
 			{"label": "TRUST THE PLAN", "text": "35% chance you need a 20 m/s fix-up burn.",
 				"risk": {"chance": 0.35, "bad": {"dv_ms": 20.0}}},
 		]},
-	{"id": "receiver", "phase": "cruise", "from": "ship", "role": "comms", "dests": ["mercury", "venus", "jupiter", "saturn", "uranus", "neptune"], "title": "MAIN RECEIVER IS DEAD",
+	{"id": "receiver", "phase": "cruise", "from": "ship", "role": "comms", "dests": ["mercury", "venus", "jupiter", "saturn", "uranus", "neptune"], "title": "MAIN RECEIVER IS DEAD", "intro": "Your ship has gone quiet on our commands. Checking the radio now.",
 		"text": "The ship stopped hearing Earth. The backup receiver only hears one exact tone.",
 		"real": "Voyager 2 lost its main receiver in 1978. NASA has tuned every command to the half-deaf backup ever since.",
 		"choices": [
@@ -74,7 +75,7 @@ const LIST: Array = [
 			{"label": "RESET THE MAIN ONE", "text": "50% it wakes up. 50% the radio is 25% slower.",
 				"risk": {"chance": 0.5, "bad": {"rate": 0.75}}},
 		]},
-	{"id": "hot_electronics", "phase": "cruise", "from": "ship", "role": "engineer", "dests": ["mercury", "venus"], "title": "ELECTRONICS RUN HOT",
+	{"id": "hot_electronics", "phase": "cruise", "from": "ship", "role": "engineer", "dests": ["mercury", "venus"], "title": "ELECTRONICS RUN HOT", "intro": "Your computer's temperature keeps climbing. We are watching it.",
 		"text": "This close to the Sun the computer is too hot and starts making errors.",
 		"real": "The front of MESSENGER's sunshade ran above 300 C while the craft behind it stayed near room temperature (NASA).",
 		"choices": [
@@ -83,7 +84,7 @@ const LIST: Array = [
 			{"label": "SAFE MODE", "text": "Switch most things off for 6 days.",
 				"cost": {"days": 6}},
 		]},
-	{"id": "wheel", "phase": "cruise", "from": "ship", "role": "engineer", "title": "A REACTION WHEEL FAILS",
+	{"id": "wheel", "phase": "cruise", "from": "ship", "role": "engineer", "title": "A REACTION WHEEL FAILS", "intro": "Your ship is wobbling. We are seeing odd readings from its pointing.",
 		"text": "One of the spinning wheels that point the ship has stopped.",
 		"real": "Dawn lost reaction wheels in 2010 and 2012. NASA flew on with two wheels plus thrusters: 'hybrid control'.",
 		"choices": [
@@ -93,7 +94,7 @@ const LIST: Array = [
 				"cost": {"days": 8}},
 		]},
 	# ------------------------------------------------------------------ on the way: messages from Earth
-	{"id": "update", "phase": "cruise", "from": "earth", "role": "science", "title": "NEW SOFTWARE READY",
+	{"id": "update", "phase": "cruise", "from": "earth", "role": "science", "title": "NEW SOFTWARE READY", "intro": "A message from the software team just came in.",
 		"text": "We have an update that makes your instruments sharper. Install it?",
 		"real": "Days after landing in 2012, NASA sent Curiosity new software for driving on Mars: a four-day 'brain transplant'.",
 		"choices": [
@@ -102,7 +103,7 @@ const LIST: Array = [
 			{"label": "NOT NOW", "text": "Keep flying as you are.",
 				"cost": {}},
 		]},
-	{"id": "trim", "phase": "cruise", "from": "earth", "role": "planner", "title": "SMALL COURSE FIX",
+	{"id": "trim", "phase": "cruise", "from": "earth", "role": "planner", "title": "SMALL COURSE FIX", "intro": "A message from our navigators just came in.",
 		"text": "Our navigators see the ship drifting a little off course.",
 		"real": "Every deep-space craft makes small course fixes on the way. Perseverance made several on its way to Mars (NASA).",
 		"choices": [
@@ -111,7 +112,7 @@ const LIST: Array = [
 			{"label": "FIX IT LATER", "text": "50% it is fine. 50% it needs a 6 m/s burn.",
 				"risk": {"chance": 0.5, "bad": {"dv_ms": 6.0}}},
 		]},
-	{"id": "earth_photo", "phase": "cruise", "from": "earth", "role": "science", "title": "A PHOTO OF HOME?",
+	{"id": "earth_photo", "phase": "cruise", "from": "earth", "role": "science", "title": "A PHOTO OF HOME?", "intro": "A message from a school outreach team just came in.",
 		"text": "Students ask for a picture of Earth from deep space. Can you take one?",
 		"real": "In 1990 Voyager 1 turned round and took the 'Pale Blue Dot' photo of Earth from 6 billion km away (NASA).",
 		"choices": [
@@ -121,7 +122,7 @@ const LIST: Array = [
 				"cost": {}},
 		]},
 	# ------------------------------------------------------------------ at the site: ship hazards
-	{"id": "stuck_wheel", "phase": "site", "from": "ship", "role": "science", "dests": ["moon", "mars", "mercury"], "needs_part": ["rover", "rover_big"], "title": "WHEEL STUCK IN SAND",
+	{"id": "stuck_wheel", "phase": "site", "from": "ship", "role": "science", "dests": ["moon", "mars", "mercury"], "needs_part": ["rover", "rover_big"], "title": "WHEEL STUCK IN SAND", "intro": "Your rover has stopped moving, but its motors are still running.",
 		"text": "The rover broke through a crust into loose sand. One wheel just spins.",
 		"real": "NASA's Spirit broke into soft sand at 'Troy' on Mars in 2009. It never got out.",
 		"choices": [
@@ -130,7 +131,7 @@ const LIST: Array = [
 			{"label": "FULL POWER", "text": "60% it is free. 40% it costs 20% of the battery.",
 				"risk": {"chance": 0.4, "bad": {"battery_pct": 20.0}}},
 		]},
-	{"id": "reboot", "phase": "site", "from": "ship", "role": "comms", "kinds": ["land"], "title": "COMPUTER KEEPS REBOOTING",
+	{"id": "reboot", "phase": "site", "from": "ship", "role": "comms", "kinds": ["land"], "title": "COMPUTER KEEPS REBOOTING", "intro": "We keep losing the lander's signal for a few seconds at a time.",
 		"text": "The lander's computer restarts again and again. Part of its memory is damaged.",
 		"real": "In Feb 2013 Curiosity's computer showed corrupted flash memory. NASA switched the rover to its backup computer.",
 		"choices": [
@@ -139,7 +140,7 @@ const LIST: Array = [
 			{"label": "FIX IT STEP BY STEP", "text": "Keep the data. Uses 15% of the battery.",
 				"cost": {"battery_pct": 15.0}},
 		]},
-	{"id": "tipped", "phase": "site", "from": "ship", "role": "engineer", "dests": ["moon"], "title": "LANDER LEANS: NO SUN",
+	{"id": "tipped", "phase": "site", "from": "ship", "role": "engineer", "dests": ["moon"], "title": "LANDER LEANS: NO SUN", "intro": "The lander is down, but its power readings look low.",
 		"text": "The lander came to rest tilted. Its solar panels miss the Sun.",
 		"real": "Odysseus landed on the Moon in Feb 2024 and tipped over, resting about 30 degrees tilted. It still sent data.",
 		"choices": [
@@ -148,7 +149,7 @@ const LIST: Array = [
 			{"label": "WORK ON BATTERY", "text": "Do the work now: 20% of the battery.",
 				"cost": {"battery_pct": 20.0}},
 		]},
-	{"id": "dust_storm", "phase": "site", "from": "ship", "role": "engineer", "dests": ["mars"], "title": "DUST STORM",
+	{"id": "dust_storm", "phase": "site", "from": "ship", "role": "engineer", "dests": ["mars"], "title": "DUST STORM", "intro": "The sky over your site is getting darker on our images.",
 		"text": "A storm is turning day into night. The solar panels make almost nothing.",
 		"real": "A 2018 dust storm blocked the Sun for four months and ended NASA's solar-powered rover Opportunity.",
 		"choices": [
@@ -157,7 +158,7 @@ const LIST: Array = [
 			{"label": "KEEP WORKING", "text": "50% it passes soon. 50% it costs 35% of the battery.",
 				"risk": {"chance": 0.5, "bad": {"battery_pct": 35.0}}},
 		]},
-	{"id": "hull_heat", "phase": "site", "from": "ship", "role": "engineer", "dests": ["venus"], "title": "IT IS GETTING HOT INSIDE",
+	{"id": "hull_heat", "phase": "site", "from": "ship", "role": "engineer", "dests": ["venus"], "title": "IT IS GETTING HOT INSIDE", "intro": "Temperatures inside your lander are rising on our screens.",
 		"text": "The inside of the hull is warming faster than planned.",
 		"real": "Venera 13 and 14 sent data from the surface of Venus for 127 and 57 minutes in 1982, until heat ended it (USSR).",
 		"choices": [
@@ -166,7 +167,7 @@ const LIST: Array = [
 			{"label": "RACE THE CLOCK", "text": "Keep everything on: lose 12 minutes.",
 				"cost": {"minutes": 12.0}},
 		]},
-	{"id": "ring_cross", "phase": "site", "from": "ship", "role": "engineer", "kinds": ["ring"], "title": "RING PLANE CROSSING",
+	{"id": "ring_cross", "phase": "site", "from": "ship", "role": "engineer", "kinds": ["ring"], "title": "RING PLANE CROSSING", "intro": "Your orbit is about to take you through the ring plane.",
 		"text": "The orbit crosses the ring plane. Dust grains will hit at 20 km/s.",
 		"real": "In April 2017 Cassini dived between Saturn and its rings with its 4 m dish turned forward as a shield (NASA).",
 		"choices": [
@@ -175,7 +176,7 @@ const LIST: Array = [
 			{"label": "FLY STRAIGHT ON", "text": "20% chance a grain breaks an instrument.",
 				"risk": {"chance": 0.2, "bad": {"break": "science"}}},
 		]},
-	{"id": "deaf_relay", "phase": "site", "from": "ship", "role": "comms", "kinds": ["ring"], "needs_part": "drone", "title": "ORBITER CANNOT HEAR DRONE",
+	{"id": "deaf_relay", "phase": "site", "from": "ship", "role": "comms", "kinds": ["ring"], "needs_part": "drone", "title": "ORBITER CANNOT HEAR DRONE", "intro": "We are seeing gaps in the drone's signal at the orbiter.",
 		"text": "The orbiter loses the drone's signal when the two pass each other fast.",
 		"real": "In 2000 a test showed Cassini could not hear its Huygens probe. A new flight path fixed it, at a cost in fuel (ESA/NASA).",
 		"choices": [
@@ -185,7 +186,7 @@ const LIST: Array = [
 				"risk": {"chance": 0.25, "bad": {"score": -3}}},
 		]},
 	# ------------------------------------------------------------------ at the site: messages from Earth
-	{"id": "odd_rock", "phase": "site", "from": "earth", "role": "science", "kinds": ["land"], "title": "WE SPOTTED SOMETHING",
+	{"id": "odd_rock", "phase": "site", "from": "earth", "role": "science", "kinds": ["land"], "title": "WE SPOTTED SOMETHING", "intro": "A message from the science team just came in.",
 		"text": "Scientists saw an odd, shiny rock near you in the last pictures. Take a look?",
 		"real": "In 2005 Opportunity found 'Heat Shield Rock', the first meteorite ever seen on another planet (NASA).",
 		"choices": [
@@ -194,7 +195,7 @@ const LIST: Array = [
 			{"label": "STAY ON PLAN", "text": "Keep to the plan.",
 				"cost": {}},
 		]},
-	{"id": "dsn_slot", "phase": "site", "from": "earth", "role": "comms", "kinds": ["land"], "title": "A BIG DISH IS FREE",
+	{"id": "dsn_slot", "phase": "site", "from": "earth", "role": "comms", "kinds": ["land"], "title": "A BIG DISH IS FREE", "intro": "A message from the Deep Space Network schedulers just came in.",
 		"text": "A big dish on Earth is free tonight. Send your data early?",
 		"real": "NASA's Deep Space Network has big dishes in California, Spain and Australia, so one always faces the ship.",
 		"choices": [
@@ -203,7 +204,7 @@ const LIST: Array = [
 			{"label": "SEND IT LATER", "text": "Keep the battery for the work.",
 				"cost": {}},
 		]},
-	{"id": "ring_tip", "phase": "site", "from": "earth", "role": "science", "kinds": ["ring"], "title": "ONE MORE LOOK?",
+	{"id": "ring_tip", "phase": "site", "from": "earth", "role": "science", "kinds": ["ring"], "title": "ONE MORE LOOK?", "intro": "A message from the ring science team just came in.",
 		"text": "Scientists ask for one extra pass near a bright clump in the ring.",
 		"real": "In 2017 Cassini flew close to Saturn's rings and photographed 'propellers' stirred up by hidden moonlets (NASA).",
 		"choices": [

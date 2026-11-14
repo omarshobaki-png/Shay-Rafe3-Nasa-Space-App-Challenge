@@ -68,6 +68,8 @@ const DEST: Dictionary = {
 		"earth_min_mkm": 0.3844,   # closest distance from Earth, million km. NASA planetary fact sheet
 		"name": "MOON", "diff": "EASY", "color": Color("c9c9d6"),
 		"kind": "land", "skin": "moon", "tier": 1, "air": "none", "returns": true,
+		"why": "The Moon is our closest world and the next stop for people: what you learn helps them land.",
+		"build_talk": "There is no air to brake in, so the engines and their fuel do all the landing.",
 		"critical": ["fuel", "mass"], "hazards": [],
 		"goal": "Land, drill 3 samples, send the capsule home",
 		"needs": ["Engine landing: no air to slow you down", "Sample capsule: only the rocks fly home", "Lots of fuel: land, then launch the capsule"],
@@ -96,6 +98,8 @@ const DEST: Dictionary = {
 		"earth_min_mkm": 77.3,   # closest distance from Earth, million km. NASA planetary fact sheet
 		"name": "MERCURY", "diff": "HARD", "color": Color("a89c8c"),
 		"kind": "land", "skin": "mercury", "tier": 3, "air": "none", "returns": false,
+		"why": "Mercury is the least explored rocky planet: no spacecraft has ever landed there.",
+		"build_talk": "The Sun is fierce this close: bring the sunshade, and fuel to land with no air to brake in.",
 		"critical": ["fuel", "mass", "time"], "hazards": ["heat"],
 		"goal": "Land, drill 4 samples, send data home",
 		"needs": ["Sunshade: sunlight is 6.7 times Earth's", "A huge fuel load: no air to brake in", "Patience: the cheap path takes 6.6 years"],
@@ -124,6 +128,8 @@ const DEST: Dictionary = {
 		"earth_min_mkm": 38.2,   # closest distance from Earth, million km. NASA planetary fact sheet
 		"name": "VENUS", "diff": "HARD", "color": Color("e8c27a"),
 		"kind": "land", "skin": "venus", "tier": 3, "air": "thick", "returns": false,
+		"why": "Venus is Earth's twin gone wrong. Its rocks show how a planet can turn into an oven.",
+		"build_talk": "The thick air crushes and bakes: bring the pressure hull, the heat shield and a fast dish.",
 		"critical": ["time", "comms", "mass"], "hazards": ["pressure", "heat"],
 		"surface_minutes": 127.0,
 		"goal": "Land, drill 3 samples in 127 minutes",
@@ -153,6 +159,8 @@ const DEST: Dictionary = {
 		"earth_min_mkm": 55.7,   # closest distance from Earth, million km. NASA planetary fact sheet
 		"name": "MARS", "diff": "MEDIUM", "color": Color("d0623a"),
 		"kind": "land", "skin": "mars", "tier": 2, "air": "thin", "returns": false,
+		"why": "Mars once had rivers. Its rocks may keep signs of a wetter past, and show where people could land.",
+		"build_talk": "The thin air helps a little: heat shield and parachute first, and batteries for the cold nights.",
 		"critical": ["power", "mass"], "hazards": ["night"],
 		"goal": "Land, drill 4 samples, send data home",
 		"needs": ["Heat shield and parachute: landers dive straight into the thin air", "Batteries for a 12-hour night", "A medium dish or better"],
@@ -181,6 +189,8 @@ const DEST: Dictionary = {
 		"earth_min_mkm": 588.5,   # closest distance from Earth, million km. NASA planetary fact sheet
 		"name": "JUPITER", "diff": "EXPERT", "color": Color("d9a066"),
 		"kind": "ring", "skin": "jupiter", "tier": 4, "air": "none", "returns": false,
+		"why": "Jupiter's faint rings are dust knocked off its small moons: a sample shows what they are made of.",
+		"build_talk": "Sunlight is weak and radiation is strong out here: plan the power, the shielding and a big dish.",
 		"critical": ["power", "comms", "budget"], "hazards": ["radiation", "delay"],
 		"goal": "Orbit, fly the drone for 5 ring samples",
 		"needs": ["Radiation shield: the belts fry electronics", "Nuclear power, or huge solar arrays like Juno", "High-gain dish: 5 times farther than the Sun"],
@@ -209,6 +219,8 @@ const DEST: Dictionary = {
 		"earth_min_mkm": 1195.5,   # closest distance from Earth, million km. NASA planetary fact sheet
 		"name": "SATURN", "diff": "EXPERT", "color": Color("e3c27a"),
 		"kind": "ring", "skin": "saturn", "tier": 4, "air": "none", "returns": false,
+		"why": "Saturn's rings are almost pure ice. Their grains tell us how old the rings are.",
+		"build_talk": "Sunlight is very weak this far out: plan your power, and a big dish for the long link home.",
 		"critical": ["power", "comms", "time"], "hazards": ["dark", "delay"],
 		"goal": "Orbit, fly the drone for 5 ring samples",
 		"needs": ["Nuclear power: sunlight is 1% of Earth's", "High-gain dish: 9.5 times farther than the Sun", "A 6 to 7 year cruise: plan the time"],
@@ -237,6 +249,8 @@ const DEST: Dictionary = {
 		"earth_min_mkm": 2581.9,   # closest distance from Earth, million km. NASA planetary fact sheet
 		"name": "URANUS", "diff": "EXTREME", "color": Color("9fe0e0"),
 		"kind": "ring", "skin": "uranus", "tier": 5, "air": "none", "returns": false,
+		"why": "Only one spacecraft has ever passed Uranus. Its dark, narrow rings are still a mystery.",
+		"build_talk": "The Sun is just a bright star from here: plan your power, and a big dish for the very slow link.",
 		"critical": ["power", "comms", "time", "budget"], "hazards": ["dark", "delay"],
 		"goal": "Orbit, fly the drone for 6 ring samples",
 		"needs": ["Nuclear power: sunlight is 0.3% of Earth's", "Every bit counts: radio 370 times slower than at Earth", "13 years of cruise: plan the time and the money"],
@@ -265,6 +279,8 @@ const DEST: Dictionary = {
 		"earth_min_mkm": 4305.9,   # closest distance from Earth, million km. NASA planetary fact sheet
 		"name": "NEPTUNE", "diff": "EXTREME", "color": Color("4f7be0"),
 		"kind": "ring", "skin": "neptune", "tier": 5, "air": "none", "returns": false,
+		"why": "Neptune's outer ring has bright arcs that no one fully understands yet.",
+		"build_talk": "Sunlight is faint and Earth is very far: plan your power, and the best dish you can carry.",
 		"critical": ["power", "comms", "time", "fuel"], "hazards": ["dark", "delay"],
 		"goal": "Orbit, fly the drone for 6 ring samples",
 		"needs": ["Nuclear power: sunlight is 0.1% of Earth's", "Brake hard after 12 years, or fly 16 and let the nuclear power fade", "The slowest radio link in the game"],
@@ -402,10 +418,20 @@ const TASKS: Dictionary = {
 
 ## The three jobs a task can be (the task's "job"; Game.job() reads it). Words for screens and the report.
 ##   word  the counter's label   noun  in sentences   obj  the "samples" objective   home  what flies to Earth ("" = data only)
+##   v8, by Data.DEST kind: short  the objective (Game.task_short)   kit  what it needs on board   act  the key to use
 const JOBS: Dictionary = {
-	"drill": {"word": "SAMPLES", "noun": "samples", "obj": "Collect samples", "home": "sample capsule"},
-	"photo": {"word": "PHOTOS", "noun": "photos", "obj": "Take the photos", "home": ""},
-	"crew": {"word": "STATIONS", "noun": "stations", "obj": "Set up the stations", "home": "crew capsule"},
+	"drill": {"word": "SAMPLES", "noun": "samples", "obj": "Collect samples", "home": "sample capsule",
+		"short": {"land": "Collect %d rock samples", "ring": "Catch %d ring grains"},
+		"kit": {"land": "a rover with the sample drill", "ring": "the sampling drone"},
+		"act": {"land": "hold E at a glowing rock to drill it", "ring": "fly into the glowing grains to grab them"}},
+	"photo": {"word": "PHOTOS", "noun": "photos", "obj": "Take the photos", "home": "",
+		"short": {"land": "Take %d photos", "ring": "Photograph %d ring features"},
+		"kit": {"land": "a rover and a camera", "ring": "the drone and a camera"},
+		"act": {"land": "hold E at a flag to take a picture", "ring": "hold F at a marked spot to take the photo"}},
+	"crew": {"word": "STATIONS", "noun": "stations", "obj": "Set up the stations", "home": "crew capsule",
+		"short": {"land": "Set up %d science stations", "ring": "Set up %d science stations"},
+		"kit": {"land": "the crew cabin", "ring": "the crew cabin"},
+		"act": {"land": "hold E at a flag to set up a station", "ring": "hold E at a flag to set up a station"}},
 }
 ## Game rule: on a photo task the camera makes this many Gb per photo: a ground panorama stitched from many
 ## frames, or one drone frame at the rings. Big enough that the radio (and on big tasks the storage) matters.
@@ -568,6 +594,14 @@ const REQUESTS: Array[String] = [
 	"NEED MORE POWER", "WE ARE OVER BUDGET", "NEED MORE DATA STORAGE", "OVER ROCKET MASS",
 	"CAN I ADD AN INSTRUMENT?", "PLEASE SIGN OFF",
 ]
+
+## v8 Mission Control dialogue (scripts/talk.gd) and its "bibi" chatter (Audio.chatter). Game rule.
+##   cps letters per second   hold_s / hold_per_char  how long a typed line stays   pause_long / pause_short  s
+##   after . ! ? / , : ;   lead_s  the line before an event card (lead_read_s: at least this long once typed)
+##   chatter_every  a blip on every 2nd or 3rd letter   chatter_db  under the sound effects   chatter_pitch  +-
+const TALK: Dictionary = {"cps": 55.0, "hold_s": 2.5, "hold_per_char": 0.02, "pause_long": 0.28, "pause_short": 0.12,
+	"lead_s": 2.0, "lead_read_s": 0.5, "max_lines": 3, "chatter_every": [2, 3], "chatter_db": -16.0, "chatter_pitch": 0.12,
+	"src": "game rule"}
 
 ## Network send rates for flight controls and the host's simulation state.
 const NET_RATES: Dictionary = {"input_hz": 20.0, "state_hz": 15.0, "src": "game rule"}

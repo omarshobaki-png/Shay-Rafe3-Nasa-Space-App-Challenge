@@ -1,6 +1,39 @@
 # Status and roadmap
 
-_Last updated: 14 Nov 2026, when the partner's v7 source (AstroPixel) was merged into this repo._
+_Last updated: 14 Nov 2026, when the partner's v8 (the final game version) was merged and published._
+
+## v8 is merged and published (14 Nov). The partner calls it the final version
+
+Applied from `AstroPixel-v8.patch` (made on 607a34f) with no conflicts. Checked headless after the merge:
+BALANCE OK, the 66-boot smoke test and both two-client online missions (Mars, Saturn) pass. `docs/play/`
+is the v8 web build exported from this source; `builds/AstroPixel-windows.zip` is the v8 Windows build
+(also on the GitHub release). Website, README screenshots and texts are updated for v8. Not checked: a
+full mission by hand, online play on 2 real computers, the web build in a browser.
+
+### What v8 changed (partner's notes)
+
+Made on top of 607a34f; the team's words and the design are in `game/docs/V8_PLAN.md`.
+- **One dialogue component, `game/scripts/talk.gd`**, taken from the builder's guide (portrait, typed
+  speech bubble) and now used by the builder, the menu briefing, the rover/astronaut site and the ring
+  drone. It has no buttons and adds no decisions. Mission Control explains each task once
+  (`Game.task_talk("brief" | "builder" | "site")`, built from `Data.JOBS` / `Data.DEST`), and the short
+  objective comes from `Game.task_short()`. Replay: click YOUR GOAL or its "i" in the briefing, the task
+  title in the builder, "?" at the site.
+- **Event lead-in**: `EventCard.open()` shows one Mission Control line for about 2 s (`Data.TALK`), then
+  the same card as before. `is_open()` is true from the first moment, so no screen's timing changed; the
+  card's input delay starts when the card appears. Every event in `events.gd` has an `"intro"` line.
+- **"bibi" chatter** while text types: `audio/talk_bi*.wav` from `tools/audio/make_chatter.py`,
+  `Audio.chatter()` / `chatter_stop()`, switch in HOW TO PLAY (TALK SOUND, kept in `user://audio.cfg`).
+- **NORMAL builder** sits between EASY and HARD: full hint sentence and SHOW ME, no AUTO-BUILD, no ghost.
+- **EASY retry**: `main.goto()` calls `Game.checkpoint(screen)`; a missed-goal EASY solo report shows
+  TRY THE ... AGAIN (`Game.can_retry()`, `retry()`), which restores the run and the credits. Off online.
+- **Scrolling** (`Scroll` class in `menu.gd`, reused by `report.gd`): the briefing, NASA DATA, THE LESSON.
+- **Ring drone** steers with cold nitrogen gas (as NASA's MMU jetpack, 24 nitrogen thrusters): pale puffs
+  instead of flames, GAS wording, a hiss instead of the rocket roar.
+- `tools/dev/shot.sh` and `godot_import.sh` find the project and Godot by themselves again (`GODOT` env).
+Checked headless: BALANCE OK; the self-play test (`tools/dev/e2e.sh`) on all 24 tasks; screenshots of each
+change. Not checked: online play (the lead-in and the dialogue are local only, nothing new is sent over
+`Net`), a mission by hand, the sound by ear. `docs/play/` still holds the v7 web build.
 
 ## v7 is merged (14 Nov, morning). The partner calls it the last game update
 

@@ -14,6 +14,7 @@ extends Control
 const UI = preload("res://scripts/ui.gd")
 const Pix = preload("res://scripts/pix.gd")
 const Fx = preload("res://scripts/fx.gd")
+const Talk = preload("res://scripts/talk.gd")
 const EventCard = preload("res://scripts/event_card.gd")
 const FLOOR_SHADER = preload("res://shaders/floor.gdshader")
 
@@ -134,6 +135,8 @@ var ev_cool: float = 0.0
 var card: Control = null
 var card_ev: Dictionary = {}
 var help_on: bool = false
+var talk: Control = null
+var talk_due: bool = true   # Mission Control still has to explain the site (once per run, or on "?")
 var low_warned: bool = false
 var auto: bool = false
 var photos: Array[Texture2D] = []
@@ -310,6 +313,8 @@ func _ready() -> void:
 	add_child(front)
 	if driver and DisplayServer.is_touchscreen_available():
 		_hold_buttons()
+	talk = Talk.make(self, Vector2(8, 312))
+	talk_due = not Talk.said(_talk_key())
 
 ## Where the targets, boulders and small rocks lie. Spacing by the difficulty: a normal visit is about a minute.
 func _lay_out(hz: float) -> void:
@@ -374,7 +379,24 @@ func _scenery() -> void:
 		decor.append({"x": rd.randf_range(320.0 - span, WORLD - 320.0 + span), "s": s, "b": size_px, "k": k})
 	decor.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["s"]) > float(b["s"]))
 
+func _talk_key() -> String:
+	return "site:%s:%s" % [Game.dest_id, str(Game.task().get("id", Game.task_idx))]
+
+## Mission Control explains the site; it never pauses the game. Waits while an event card is open or the result shows.
+func _talk_step() -> void:
+	if talk_due and state == "explore" and not EventCard.is_open():
+		talk_due = false
+		talk.say(Game.task_talk("site"), {"key": _talk_key()})
+
+func _toggle_help() -> void:
+	help_on = not help_on
+	if not help_on and state == "explore":
+		talk.say(Game.task_talk("site"), {"urgent": true, "key": _talk_key()})   # the replay plays when the panel closes
+	Audio.play("ui_click", -8.0)
+
 func _exit_tree() -> void:
+	if talk != null:
+		talk.clear()
 	Engine.time_scale = 1.0   # the autopilot test speeds the game up
 	Audio.loop("drill", false)
 	Audio.loop("rover_loop", false)
@@ -434,14 +456,12 @@ func _input(event: InputEvent) -> void:
 		if k.physical_keycode == KEY_E or k.keycode == KEY_ENTER:
 			_use()
 		elif k.physical_keycode == KEY_H or k.physical_keycode == KEY_SLASH or k.physical_keycode == KEY_F1:
-			help_on = not help_on
-			Audio.play("ui_click", -8.0)
+			_toggle_help()
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
 		if _help_rect().has_point((event as InputEventMouseButton).position) or help_on:
-			help_on = not help_on
-			Audio.play("ui_click", -8.0)
+			_toggle_help()
 
 func _help_rect() -> Rect2:
 	return Rect2(617, 6, 17, 17)
@@ -561,6 +581,7 @@ func _finish(text: String, col: Color = UI.YELLOW) -> void:
 	if state != "explore":
 		return
 	state = "done"
+	talk.clear()
 	end_t = t + 2.5
 	banner = text
 	banner_col = col
@@ -975,6 +996,7 @@ func _process(delta: float) -> void:
 	floor_mat.set_shader_parameter("cam", _cam())
 	floor_mat.set_shader_parameter("tint", Color(String(sk["tint"])).darkened(night * 0.6))
 	floor_mat.set_shader_parameter("haze", Color(String(sk["haze"])).darkened(night * 0.6))
+	_talk_step()
 	queue_redraw()
 	front.queue_redraw()
 
@@ -1482,8 +1504,11 @@ func _draw_hud(night: float) -> void:
 		front.draw_texture(tex_camera, Vector2(12, 12))
 	else:
 		Pix.icon(front, "science" if crew else "sample", Vector2(12, 12), UI.CYAN)
-	_text(Vector2(30, 22), _word(), 10, UI.YELLOW)
 	var cnt: String = "%d / %d" % [got, goal]
+	var obj: String = Game.task_short().to_upper()
+	if obj == "" or Pix.text_w(obj, 10) > w - 52.0 - Pix.text_w(cnt, 20):
+		obj = _word()
+	_text(Vector2(30, 22), obj, 10, UI.YELLOW)
 	var cc: Color = UI.GREEN if got >= goal or t - got_t < 0.6 else UI.TEXT
 	Pix.text(front, Vector2(floorf(6.0 + w - 10.0 - Pix.text_w(cnt, 20)), 28), cnt, 20, cc)
 	# battery, or the suit's oxygen
@@ -1540,6 +1565,11 @@ func _draw_hud(night: float) -> void:
 	var words: String = String(dr[1])
 	if assist < 2 and not bool(dr[2]):
 		words = ""   # NORMAL and HARD: no step-by-step directions, only warnings and the end
+	if state == "explore" and talk.busy():
+		if bool(dr[2]):
+			talk.clear()   # a warning outranks the explanation
+		else:
+			words = ""   # the panel takes the bottom edge while it talks
 	var wcol: Color = banner_col if state != "explore" else (UI.RISK if bool(dr[2]) else UI.YELLOW)
 	if words != "":
 		var kw: float = maxf(13.0, Pix.text_w(String(dr[0]), 10) + 7.0) + 8.0 if String(dr[0]) != "" else 0.0

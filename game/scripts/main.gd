@@ -124,6 +124,7 @@ func goto(screen: String) -> void:
 	# the outbound flight begins with the launch screen, which hands over to "flight" for the cruise
 	if screen == "flight" and String(Game.run.get("mode", "out")) == "out" and not bool(Game.run.get("launched", false)):
 		screen = "launch"
+	Game.checkpoint(screen)   # EASY can fly the section again from here (Game.retry)
 	if current != null:
 		current.queue_free()
 	var script: GDScript = SCREENS[screen]

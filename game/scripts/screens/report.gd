@@ -103,6 +103,9 @@ var shown_total: float = 0.0
 var boom_t: float = -9.0
 var goals_start: float = 1.0
 var cur_sh: Vector2 = Vector2.ZERO
+var cur_off: Vector2 = Vector2.ZERO   # the last _shift(): shake plus panel slide
+var cv: CanvasItem = self              # where the drawing helpers draw: self, or the scroll box
+var lscroll: MenuScript.Scroll = null       # the scrolling body of THE LESSON card
 
 func _ready() -> void:
 	for n: String in ["ic_tick", "ic_cross", "ic_coin", "ic_flask", "ic_play", "ic_warn", "card", "veh_lander", "veh_orbiter", "ground_moon"]:
@@ -113,6 +116,7 @@ func _ready() -> void:
 	for dd: String in ["moon", "mars", "saturn"]:
 		for m: String in ["gold", "silver", "bronze", "fail"]:
 			_tx("patch_%s_%s" % [dd, m])
+	lscroll = MenuScript.Scroll.make(self, _lesson_body)
 	_load(Game.run)
 
 func _tx(name: String) -> Texture2D:
@@ -183,8 +187,8 @@ func _load(run: Dictionary) -> void:
 		score_rows.append({"key": key, "name": String(row.get("name", key.to_upper())), "value": int(row.get("value", 0)),
 			"lines": _wrap(String(row.get("tip", "No data for this flight.")), 294.0, 2)})
 	# the lesson and the real mission
-	lesson_lines = _wrap(_lesson(sc), 290.0, 3)
-	real_lines = _wrap(String(d.get("real", "")), 290.0, 4)
+	lesson_lines = _wrap(_lesson(sc), 290.0)   # THE LESSON scrolls when it is long
+	real_lines = _wrap(String(d.get("real", "")), 290.0)
 	_build_rows()
 	_build_pages()
 	page = 0
@@ -481,6 +485,7 @@ func _process(delta: float) -> void:
 		if h != "":
 			Audio.play("ui_hover", -9.0)
 	queue_redraw()
+	lscroll.queue_redraw()   # after ours, so its hits land in the list our _draw has just cleared
 
 func _skip() -> void:
 	## Jump to the end of the show: everything shown, coins counted.
@@ -496,6 +501,9 @@ func _skip() -> void:
 
 func _input(event: InputEvent) -> void:
 	var k: InputEventKey = event as InputEventKey
+	if k != null and lscroll.key(k):
+		get_viewport().set_input_as_handled()
+		return
 	if k == null or not k.pressed or k.echo:
 		return
 	match k.keycode:
@@ -514,6 +522,9 @@ func _input(event: InputEvent) -> void:
 	get_viewport().set_input_as_handled()
 
 func _gui_input(event: InputEvent) -> void:
+	if lscroll.handle(event):
+		down = ""
+		return
 	var e: InputEventMouseButton = event as InputEventMouseButton
 	if e == null:
 		return
@@ -554,16 +565,19 @@ func _activate(id: String) -> void:
 		"tech":
 			MenuScript.open_tech_next = true
 			Game.leave_room()
+		"retry":
+			if Game.can_retry():
+				Game.retry()
 
 # ---------------------------------------------------------------- drawing helpers
 
 func _nine(rect: Rect2, name: String, m: Array, mod: Color = Color.WHITE) -> void:
 	var tx: Texture2D = _tx(name)
-	RenderingServer.canvas_item_add_nine_patch(get_canvas_item(), Rect2(rect.position.floor(), rect.size.floor()), Rect2(Vector2.ZERO, tx.get_size()),
+	RenderingServer.canvas_item_add_nine_patch(cv.get_canvas_item(), Rect2(rect.position.floor(), rect.size.floor()), Rect2(Vector2.ZERO, tx.get_size()),
 		tx.get_rid(), Vector2(m[0], m[1]), Vector2(m[2], m[3]), RenderingServer.NINE_PATCH_STRETCH, RenderingServer.NINE_PATCH_STRETCH, true, mod)
 
 func _img(name: String, pos: Vector2, mod: Color = Color.WHITE) -> void:
-	draw_texture(_tx(name), pos.floor(), mod)
+	cv.draw_texture(_tx(name), pos.floor(), mod)
 
 func _wrap(s: String, w: float, lines_max: int = 60) -> Array:
 	var f: Font = Pix.font()
@@ -596,7 +610,7 @@ func _wrap_cap(s: String, w: float, n: int) -> Array:
 
 func _lines(p: Vector2, arr: Array, c: Color) -> void:
 	for i: int in arr.size():
-		Pix.text(self, p + Vector2(0, i * 12), String(arr[i]), 10, c)
+		Pix.text(cv, p + Vector2(0, i * 12), String(arr[i]), 10, c)
 
 func _button(rect: Rect2, id: String, label: String, kind: String, icon: String = "") -> void:
 	hits.append([rect, id])
@@ -611,7 +625,7 @@ func _button(rect: Rect2, id: String, label: String, kind: String, icon: String 
 	if icon != "":
 		_img(icon, Vector2(x, by - 11))
 		x += 16.0
-	Pix.text(self, Vector2(x, by), label, 10, Color("f4f8ff"))
+	Pix.text(cv, Vector2(x, by), label, 10, Color("f4f8ff"))
 
 func _panel_dy(delay: float) -> float:
 	var e: float = clampf((t - _tl("panels") - delay) / 0.25, 0.0, 1.0)
@@ -621,10 +635,11 @@ func _panel_on(delay: float) -> bool:
 	return t >= _tl("panels") + delay
 
 func _shift(dy: float) -> void:
-	draw_set_transform(cur_sh + Vector2(0, dy))
+	cur_off = cur_sh + Vector2(0, dy)
+	draw_set_transform(cur_off)
 
 func _sep(x: float, y: float, w: float) -> void:
-	draw_rect(Rect2(x, y, w, 1), LINE)
+	cv.draw_rect(Rect2(x, y, w, 1), LINE)
 
 func _val_text(v: float, unit: String) -> String:
 	var n: String = "0" if absf(v) < 0.005 else Game.fmt(v)
@@ -660,15 +675,16 @@ func _draw() -> void:
 	_shift(0.0)
 	_draw_bottom()
 	for s: Dictionary in sparks:
-		Fx.sparkle(self, s["pos"], float(s["age"]) / float(s["dur"]), s["tint"], 1)
+		Fx.sparkle(cv, s["pos"], float(s["age"]) / float(s["dur"]), s["tint"], 1)
 	draw_set_transform(Vector2.ZERO)
+	lscroll.visible = _sec() == 0 and _panel_on(0.0)
 
 func _draw_band() -> void:
-	draw_rect(Rect2(-4, -4, 648, 368), UI.BG)
-	Pix.tiled(self, BG_TEX, 0, t * 2.0, 640.0, Color(0.8, 0.8, 1.0))
-	Pix.stars(self, t, Vector2(640, 70), 30, 11, Vector2(-t * 4.0, 0))
-	draw_rect(Rect2(0, 68, 640, 3), Color(0.02, 0.03, 0.07))
-	draw_rect(Rect2(0, 71, 640, 1), LINE)
+	cv.draw_rect(Rect2(-4, -4, 648, 368), UI.BG)
+	Pix.tiled(cv, BG_TEX, 0, t * 2.0, 640.0, Color(0.8, 0.8, 1.0))
+	Pix.stars(cv, t, Vector2(640, 70), 30, 11, Vector2(-t * 4.0, 0))
+	cv.draw_rect(Rect2(0, 68, 640, 3), Color(0.02, 0.03, 0.07))
+	cv.draw_rect(Rect2(0, 71, 640, 1), LINE)
 	var col: Color = UI.GOOD if level == 2 else (UI.RISK if level == 1 else UI.BAD)
 	if grade == "":
 		_draw_vignette()
@@ -684,31 +700,31 @@ func _draw_band() -> void:
 		else:
 			var d2: float = dt - 0.3
 			py = 3.0 - floorf(absf(sin(d2 * 13.0)) * 7.0 * exp(-d2 * 6.0))
-			Fx.glow(self, Vector2(38, 35), 48.0, Color(col.r, col.g, col.b, 0.26), true)
+			Fx.glow(cv, Vector2(38, 35), 48.0, Color(col.r, col.g, col.b, 0.26), true)
 		_draw_patch(Vector2(6, py))
 	# the verdict, typed in; the score counts up under it
 	var vt: float = t - _tl("verdict")
 	if vt >= 0.0:
 		var shown_chars: int = mini(head.length(), int(vt * 30.0) + 1)
 		var failed: bool = not cause_lines.is_empty()
-		Pix.title(self, Vector2(80, 35 if failed else 36), head.substr(0, shown_chars), col, 3)
+		Pix.title(cv, Vector2(80, 35 if failed else 36), head.substr(0, shown_chars), col, 3)
 		if vt > 0.4:
 			_draw_subline(46.0 if failed else 51.0)
 			var sc: int = roundi(float(total) * clampf((t - _tl("score")) / 1.4, 0.0, 1.0))
 			var sx: float = 416.0 if failed else 82.0
 			var sy: float = 20.0 if failed else 65.0
 			for k: int in cause_lines.size():
-				Pix.text(self, Vector2(82, 57.0 + k * 9.0), String(cause_lines[k]), 10, UI.BAD)
-			Pix.text(self, Vector2(sx, sy), "SCORE" if failed else "TOTAL SCORE", 10, UI.DIM)
-			Pix.title(self, Vector2(sx + (38.0 if failed else 76.0), sy + 1.0), "%d / 100" % sc, UI.YELLOW, 1)
+				Pix.text(cv, Vector2(82, 57.0 + k * 9.0), String(cause_lines[k]), 10, UI.BAD)
+			Pix.text(cv, Vector2(sx, sy), "SCORE" if failed else "TOTAL SCORE", 10, UI.DIM)
+			Pix.title(cv, Vector2(sx + (38.0 if failed else 76.0), sy + 1.0), "%d / 100" % sc, UI.YELLOW, 1)
 			if reward > 0:
 				_img("ic_coin", Vector2(sx if failed else 246.0, sy + 3.0 if failed else 55.0))
-				Pix.text(self, Vector2(sx + 18.0 if failed else 264.0, sy + 13.0 if failed else 65.0), "+%d CREDITS" % reward, 10, UI.YELLOW)
+				Pix.text(cv, Vector2(sx + 18.0 if failed else 264.0, sy + 13.0 if failed else 65.0), "+%d CREDITS" % reward, 10, UI.YELLOW)
 			var lv_col: Color = [UI.GOOD, UI.RISK, UI.BAD][clampi(["EASY", "NORMAL", "HARD"].find(diff_name), 0, 2)]
 			var lnote: String = String(LEVEL_NOTE.get(diff_name, ""))
 			if not failed:
-				Pix.text(self, Vector2(352, 65), diff_name + ":", 10, lv_col)
-				Pix.text(self, Vector2(358.0 + Pix.text_w(diff_name + ":", 10), 65), lnote, 10, UI.DIM)
+				Pix.text(cv, Vector2(352, 65), diff_name + ":", 10, lv_col)
+				Pix.text(cv, Vector2(358.0 + Pix.text_w(diff_name + ":", 10), 65), lnote, 10, UI.DIM)
 			if sc < total and sc / 8 != int(fired.get("sc", 0)) / 8:
 				Audio.play("poll_blip", -12.0, 0.8 + sc / 100.0)
 			fired["sc"] = sc
@@ -719,14 +735,14 @@ func _draw_subline(y: float = 51.0) -> void:
 	var head_s: String = String(d.get("name", ""))
 	if task_name != "":
 		head_s += "  -  " + task_name
-	Pix.text(self, Vector2(x, y), head_s, 10, UI.DIM)
+	Pix.text(cv, Vector2(x, y), head_s, 10, UI.DIM)
 	x += Pix.text_w(head_s, 10) + 8.0
 	var tcol: Color = [UI.GOOD, UI.RISK, UI.BAD][clampi(["EASY", "NORMAL", "HARD"].find(diff_name), 0, 2)]
 	var tw: float = Pix.text_w(diff_name, 10) + 8.0
-	draw_rect(Rect2(x, y - 9.0, tw, 12), tcol)
-	draw_rect(Rect2(x + 1, y - 8.0, tw - 2, 10), Color(0.02, 0.03, 0.07))
-	Pix.text(self, Vector2(x + 4.0, y), diff_name, 10, tcol)
-	Pix.text(self, Vector2(x + tw + 8.0, y), "%d of %d goals" % [_goals_done(), goals.size()], 10, UI.DIM)
+	cv.draw_rect(Rect2(x, y - 9.0, tw, 12), tcol)
+	cv.draw_rect(Rect2(x + 1, y - 8.0, tw - 2, 10), Color(0.02, 0.03, 0.07))
+	Pix.text(cv, Vector2(x + 4.0, y), diff_name, 10, tcol)
+	Pix.text(cv, Vector2(x + tw + 8.0, y), "%d of %d goals" % [_goals_done(), goals.size()], 10, UI.DIM)
 
 ## The grade stamp (success only): a medal with the letter that drops in after the verdict, the text beside it.
 func _draw_grade() -> void:
@@ -740,14 +756,14 @@ func _draw_grade() -> void:
 	else:
 		var d2: float = gt - 0.2
 		py = 3.0 - floorf(absf(sin(d2 * 13.0)) * 6.0 * exp(-d2 * 6.0))
-		Fx.glow(self, Vector2(502, 23), 32.0, Color(1.0, 0.85, 0.35, 0.25), true)
+		Fx.glow(cv, Vector2(502, 23), 32.0, Color(1.0, 0.85, 0.35, 0.25), true)
 	var tx: Texture2D = _medal(grade)
-	draw_texture(tx, Vector2(482, py).floor())
+	cv.draw_texture(tx, Vector2(482, py).floor())
 	var ink: Color = Color("fff6d0")
-	Pix.title_c(self, 502.0, py + 31.0, grade, ink, 2)
-	Pix.text(self, Vector2(528, 12), "GRADE", 10, UI.TEXT)
+	Pix.title_c(cv, 502.0, py + 31.0, grade, ink, 2)
+	Pix.text(cv, Vector2(528, 12), "GRADE", 10, UI.TEXT)
 	for i: int in grade_lines.size():
-		Pix.text(self, Vector2(528, 25.0 + i * 10.0), String(grade_lines[i]), 10, UI.DIM)
+		Pix.text(cv, Vector2(528, 25.0 + i * 10.0), String(grade_lines[i]), 10, UI.DIM)
 
 ## A 40 x 40 pixel medal (outline, shaded ring, flat disc), light from the upper left; gold A, silver B, bronze C.
 func _medal(g: String) -> Texture2D:
@@ -788,42 +804,42 @@ func _draw_vignette() -> void:
 	var wreck: Vector2 = Vector2(vx, 40.0)
 	if String(d.get("kind", "land")) == "ring":
 		var pl: Texture2D = _ta("planet_%s_22" % dest_id)
-		draw_texture(pl, Vector2(vx - 46.0 - pl.get_width() / 2.0 + 20.0, 36.0 - pl.get_height() / 2.0 + 10.0).floor(), dim)
+		cv.draw_texture(pl, Vector2(vx - 46.0 - pl.get_width() / 2.0 + 20.0, 36.0 - pl.get_height() / 2.0 + 10.0).floor(), dim)
 		var bob: float = floorf(sin(t * 1.4) * 2.0)
-		draw_texture(_tx("veh_orbiter"), Vector2(vx - 20.0, 12.0 + bob), dim)
+		cv.draw_texture(_tx("veh_orbiter"), Vector2(vx - 20.0, 12.0 + bob), dim)
 		if level > 0:
-			Fx.trail(self, Vector2(vx - 20.0, 30.0 + bob), Vector2.LEFT, 48.0, 3.0, t)
+			Fx.trail(cv, Vector2(vx - 20.0, 30.0 + bob), Vector2.LEFT, 48.0, 3.0, t)
 	else:
 		var gt: Texture2D = _tx("ground_moon")
 		var gx: float = 470.0
 		var gmod: Color = GROUND_TINT.get(dest_id, Color.WHITE) as Color
 		while gx < 640.0:
-			draw_texture(gt, Vector2(gx, ground - 14.0), gmod)
+			cv.draw_texture(gt, Vector2(gx, ground - 14.0), gmod)
 			gx += gt.get_width()
 		var lt: Texture2D = _tx("veh_lander")
-		draw_texture(lt, Vector2(vx - 20.0, ground - 10.0 - lt.get_height()), dim)
+		cv.draw_texture(lt, Vector2(vx - 20.0, ground - 10.0 - lt.get_height()), dim)
 		if level == 1:
 			_img("ic_warn", Vector2(vx - 7.0, ground - 50.0 - floorf(absf(sin(t * 3.0)) * 3.0)))
 	if level == 0 and boom_t > -1.0:
-		Fx.explosion(self, wreck, t - boom_t, 1, 20.0)
+		Fx.explosion(cv, wreck, t - boom_t, 1, 20.0)
 		if t - boom_t > 0.5:
 			for k: int in 3:
 				var age: float = fposmod(t * 0.6 + k * 0.33, 1.0)
-				Fx.puff(self, wreck + Vector2((k - 1) * 8.0, 8.0 - age * 30.0), age, 1, Color(0.5, 0.5, 0.55, 0.8), k)
+				Fx.puff(cv, wreck + Vector2((k - 1) * 8.0, 8.0 - age * 30.0), age, 1, Color(0.5, 0.5, 0.55, 0.8), k)
 	elif level == 2:
 		for k: int in 2:
 			var age2: float = fposmod(t * 0.7 + k * 0.5, 1.0)
 			var spot: float = floorf(sin(k * 3.0 + floorf(t * 0.7 + k * 0.5)) * 6.0)
-			Fx.sparkle(self, Vector2(vx - 28.0 + k * 52.0 + spot, 30.0 + k * 10.0), age2, Color("fff4b8"), 1)
+			Fx.sparkle(cv, Vector2(vx - 28.0 + k * 52.0 + spot, 30.0 + k * 10.0), age2, Color("fff4b8"), 1)
 
 ## The mission patch (Moon, Mars, Saturn) or the planet in a medal-coloured frame.
 func _draw_patch(pos: Vector2) -> void:
 	if dest_id in ["moon", "mars", "saturn"]:
-		draw_texture(_tx("patch_%s_%s" % [dest_id, metal]), pos.floor())
+		cv.draw_texture(_tx("patch_%s_%s" % [dest_id, metal]), pos.floor())
 		return
 	var accent: Color = {"gold": Color("ffd75e"), "silver": Color("c9d0e0"), "bronze": Color("d9945a"), "fail": Color("6a6a78")}[metal]
-	Pix.panel(self, Rect2(pos, Vector2(64, 64)), accent, Color(0.02, 0.03, 0.07, 0.95))
-	draw_texture(_ta("planet_%s_22" % dest_id), (pos + Vector2(8, 8)).floor(), Color.WHITE if level > 0 else Color(0.45, 0.42, 0.45))
+	Pix.panel(cv, Rect2(pos, Vector2(64, 64)), accent, Color(0.02, 0.03, 0.07, 0.95))
+	cv.draw_texture(_ta("planet_%s_22" % dest_id), (pos + Vector2(8, 8)).floor(), Color.WHITE if level > 0 else Color(0.45, 0.42, 0.45))
 
 func _goals_done() -> int:
 	var n: int = 0
@@ -839,19 +855,23 @@ func _draw_tabs() -> void:
 		var on: bool = i == _sec()
 		var rc: Rect2 = Rect2(float(xs[i]), 75.0, float(ws[i]), 19.0)
 		hits.append([rc, "sec%d" % i])
-		Pix.frame(self, rc, "tab_sel" if on else "tab_normal", Color.WHITE if (on or hot == "sec%d" % i) else Color(0.8, 0.82, 0.9))
+		Pix.frame(cv, rc, "tab_sel" if on else "tab_normal", Color.WHITE if (on or hot == "sec%d" % i) else Color(0.8, 0.82, 0.9))
 		var label: String = "%d %s" % [i + 1, SEC_NAMES[i]]
-		Pix.text_c(self, rc.position.x + rc.size.x / 2.0, rc.position.y + 13.0, label, 10, UI.TEXT if on else UI.DIM)
+		Pix.text_c(cv, rc.position.x + rc.size.x / 2.0, rc.position.y + 13.0, label, 10, UI.TEXT if on else UI.DIM)
 	# the one line that says what to do
 	var x: float = 336.0
-	x += Pix.keycap(self, Vector2(x, 78), "LEFT") + 2.0
-	x += Pix.keycap(self, Vector2(x, 78), "RIGHT") + 5.0
-	Pix.text(self, Vector2(x, 88), "MORE PAGES", 10, UI.TEXT)
-	Pix.text(self, Vector2(x + 72.0, 88), "PAGE %d / %d" % [page + 1, pages.size()], 10, UI.CYAN)
+	if Game.can_retry():
+		Pix.text(cv, Vector2(x, 88), "EASY: fly this part again from its start", 10, UI.GOOD)
+		Pix.text(cv, Vector2(632.0 - Pix.text_w("%d / %d" % [page + 1, pages.size()], 10), 88), "%d / %d" % [page + 1, pages.size()], 10, UI.CYAN)
+		return
+	x += Pix.keycap(cv, Vector2(x, 78), "LEFT") + 2.0
+	x += Pix.keycap(cv, Vector2(x, 78), "RIGHT") + 5.0
+	Pix.text(cv, Vector2(x, 88), "MORE PAGES", 10, UI.TEXT)
+	Pix.text(cv, Vector2(x + 72.0, 88), "PAGE %d / %d" % [page + 1, pages.size()], 10, UI.CYAN)
 
 func _head(rect: Rect2, title: String) -> void:
 	_nine(rect, "card", FRAME_M)
-	Pix.title(self, rect.position + Vector2(10, 16), title, UI.CYAN, 1)
+	Pix.title(cv, rect.position + Vector2(10, 16), title, UI.CYAN, 1)
 	_sep(rect.position.x + 8, rect.position.y + 21, rect.size.x - 16)
 
 # ---------------------------------------------------------------- page 1: overview
@@ -865,25 +885,21 @@ func _draw_overview() -> void:
 		var rt: float = t - (_tl("goals") + 0.45 * k)
 		var y: float = pg.position.y + 26.0 + k * rowh
 		if rt < 0.0:
-			Pix.text(self, Vector2(pg.position.x + 28, y + 10), String(goals[k][0]), 10, Color("3a4a7a"))
+			Pix.text(cv, Vector2(pg.position.x + 28, y + 10), String(goals[k][0]), 10, Color("3a4a7a"))
 			continue
 		var ok: bool = bool(goals[k][1])
 		var pop: float = floorf(maxf(0.0, 1.0 - rt / 0.2) * 4.0)
 		_img("ic_tick" if ok else "ic_cross", Vector2(pg.position.x + 10, y - pop))
-		Pix.text(self, Vector2(pg.position.x + 28, y + 10), String(goals[k][0]), 10, UI.TEXT if ok else COL_RISK)
+		Pix.text(cv, Vector2(pg.position.x + 28, y + 10), String(goals[k][0]), 10, UI.TEXT if ok else COL_RISK)
 	# the lesson and the real thing
 	var pl: Rect2 = Rect2(8, PAGE_Y + 108.0, 310, PAGE_H - 108.0)
 	_head(pl, "THE LESSON")
-	_lines(pl.position + Vector2(10, 33), lesson_lines, UI.TEXT)
-	var ry: float = pl.position.y + 33.0 + lesson_lines.size() * 12.0 + 8.0
-	Pix.text(self, Vector2(pl.position.x + 10, ry + 8), "THE REAL THING", 10, UI.CYAN)
-	_sep(pl.position.x + 8, ry + 12, 294)
-	_lines(Vector2(pl.position.x + 10, ry + 24), real_lines, UI.DIM)
+	lscroll.place(Rect2(pl.position + cur_off + Vector2(4, 23), pl.size - Vector2(8, 27)), cur_off)
 	# the four scores
 	var pr: Rect2 = Rect2(322, PAGE_Y, 310, PAGE_H)
 	_head(pr, "THE FOUR SCORES")
 	if Net.is_online() and Game.run.has("team_sync"):
-		Pix.text(self, Vector2(pr.end.x - 115, pr.position.y + 14), "TEAM SYNC %d" % int(Game.run["team_sync"]), 10, UI.CYAN)
+		Pix.text(cv, Vector2(pr.end.x - 115, pr.position.y + 14), "TEAM SYNC %d" % int(Game.run["team_sync"]), 10, UI.CYAN)
 	var gk: float = clampf((t - maxf(_tl("roles"), page_t0)) / 0.9, 0.0, 1.0)
 	var pitch: float = 45.0 if grade != "" else 51.0
 	for i: int in score_rows.size():
@@ -891,19 +907,31 @@ func _draw_overview() -> void:
 		var y2: float = pr.position.y + 25.0 + i * pitch
 		var v: int = int(row["value"])
 		var col: Color = _score_col(v)
-		Pix.icon(self, String(SCORE_ICON[row["key"]]), Vector2(pr.position.x + 10, y2))
-		Pix.text(self, Vector2(pr.position.x + 26, y2 + 10), String(row["name"]), 10, UI.TEXT)
+		Pix.icon(cv, String(SCORE_ICON[row["key"]]), Vector2(pr.position.x + 10, y2))
+		Pix.text(cv, Vector2(pr.position.x + 26, y2 + 10), String(row["name"]), 10, UI.TEXT)
 		var vs: String = "%d / 100" % roundi(v * gk)
-		Pix.text(self, Vector2(pr.position.x + pr.size.x - 10.0 - Pix.text_w(vs, 10), y2 + 10), vs, 10, col)
-		Pix.gauge(self, Rect2(pr.position.x + 10, y2 + 14, 290, 9), float(v) / 100.0 * gk, col)
+		Pix.text(cv, Vector2(pr.position.x + pr.size.x - 10.0 - Pix.text_w(vs, 10), y2 + 10), vs, 10, col)
+		Pix.gauge(cv, Rect2(pr.position.x + 10, y2 + 14, 290, 9), float(v) / 100.0 * gk, col)
 		var tl: Array = row["lines"]
 		for j: int in tl.size():
-			Pix.text(self, Vector2(pr.position.x + 10, y2 + 35.0 + j * (10.0 if grade != "" else 12.0)), String(tl[j]), 10, UI.DIM)
+			Pix.text(cv, Vector2(pr.position.x + 10, y2 + 35.0 + j * (10.0 if grade != "" else 12.0)), String(tl[j]), 10, UI.DIM)
 	if grade != "":
 		var gy: float = pr.position.y + 25.0 + 4.0 * pitch
 		_sep(pr.position.x + 8, gy - 2, 294)
 		for j: int in grade_rule_lines.size():
-			Pix.text(self, Vector2(pr.position.x + 10, gy + 9.0 + j * 10.0), String(grade_rule_lines[j]), 10, UI.CYAN)
+			Pix.text(cv, Vector2(pr.position.x + 10, gy + 9.0 + j * 10.0), String(grade_rule_lines[j]), 10, UI.CYAN)
+
+## THE LESSON card's text (drawn by the scroll box). Returns the bottom y.
+func _lesson_body(c: CanvasItem) -> float:
+	cv = c
+	var pl: Rect2 = Rect2(8, PAGE_Y + 108.0, 310, PAGE_H - 108.0)
+	_lines(pl.position + Vector2(10, 33), lesson_lines, UI.TEXT)
+	var ry: float = pl.position.y + 33.0 + lesson_lines.size() * 12.0 + 8.0
+	Pix.text(cv, Vector2(pl.position.x + 10, ry + 8), "THE REAL THING", 10, UI.CYAN)
+	_sep(pl.position.x + 8, ry + 12, 294)
+	_lines(Vector2(pl.position.x + 10, ry + 24), real_lines, UI.DIM)
+	cv = self
+	return ry + 24.0 + (real_lines.size() - 1) * 12.0 + 3.0
 
 # ---------------------------------------------------------------- page 2: journey
 
@@ -912,10 +940,10 @@ func _draw_journey() -> void:
 	var pp: Dictionary = pages[page]
 	_head(pg, "THE JOURNEY")
 	var part: String = "PART %d OF %d" % [int(pp["n"]), int(pp["of"])]
-	Pix.text(self, Vector2(pg.position.x + pg.size.x - 10.0 - Pix.text_w(part, 10), pg.position.y + 15), part, 10, UI.DIM)
+	Pix.text(cv, Vector2(pg.position.x + pg.size.x - 10.0 - Pix.text_w(part, 10), pg.position.y + 15), part, 10, UI.DIM)
 	var top: float = pg.position.y + 26.0
 	var items: Array = pp["items"]
-	draw_rect(Rect2(19, top, 1, CONTENT_H - 4), LINE)   # the timeline spine
+	cv.draw_rect(Rect2(19, top, 1, CONTENT_H - 4), LINE)   # the timeline spine
 	var y: float = top
 	for it: Dictionary in items:
 		var h: int = int(it["h"])
@@ -923,11 +951,11 @@ func _draw_journey() -> void:
 			"head":
 				var ok: bool = bool(it["ok"])
 				_img("ic_tick" if ok else "ic_cross", Vector2(12, y))
-				Pix.title(self, Vector2(32, y + 12), String(it["name"]), UI.TEXT, 1)
+				Pix.title(cv, Vector2(32, y + 12), String(it["name"]), UI.TEXT, 1)
 			"line":
 				var good: bool = bool(it["ok"])
 				var lc: Color = UI.BAD if not good else (UI.RISK if bool(it.get("warn", false)) else UI.TEXT)
-				draw_rect(Rect2(28, y + 4, 3, 3), COL_WELL if good else COL_RISK)
+				cv.draw_rect(Rect2(28, y + 4, 3, 3), COL_WELL if good else COL_RISK)
 				_lines(Vector2(36, y + 9), it["lines"], lc)
 			"dec":
 				_draw_decision(it, y)
@@ -938,15 +966,15 @@ func _draw_decision(it: Dictionary, y: float) -> void:
 	var grade: String = String(dc.get("grade", "good"))
 	var gcol: Color = COL_WELL if grade == "good" else (COL_WASTE if grade == "risky" else COL_RISK)
 	var rc: Rect2 = Rect2(30, y + 1, 592, int(it["h"]) - 3)
-	Pix.panel(self, rc, gcol, Color(0.03, 0.04, 0.08, 0.9))
+	Pix.panel(cv, rc, gcol, Color(0.03, 0.04, 0.08, 0.9))
 	var x0: float = rc.position.x + 10.0
 	var role: String = String(dc.get("role", "planner"))
-	Pix.icon(self, String(ROLE_ICON.get(role, "clipboard")), Vector2(x0, rc.position.y + 5))
-	Pix.title(self, Vector2(x0 + 16, rc.position.y + 15), String(dc.get("title", "")), UI.CYAN, 1)
+	Pix.icon(cv, String(ROLE_ICON.get(role, "clipboard")), Vector2(x0, rc.position.y + 5))
+	Pix.title(cv, Vector2(x0 + 16, rc.position.y + 15), String(dc.get("title", "")), UI.CYAN, 1)
 	var gw: String = String(GRADE_WORD.get(grade, "CALL"))
-	Pix.text(self, Vector2(rc.end.x - 10.0 - Pix.text_w(gw, 10), rc.position.y + 14), gw, 10, gcol)
+	Pix.text(cv, Vector2(rc.end.x - 10.0 - Pix.text_w(gw, 10), rc.position.y + 14), gw, 10, gcol)
 	var rw: String = String(ROLE_NAME.get(role, ""))
-	Pix.text(self, Vector2(rc.end.x - 20.0 - Pix.text_w(gw, 10) - Pix.text_w(rw, 10), rc.position.y + 14), rw, 10, UI.DIM)
+	Pix.text(cv, Vector2(rc.end.x - 20.0 - Pix.text_w(gw, 10) - Pix.text_w(rw, 10), rc.position.y + 14), rw, 10, UI.DIM)
 	var ly: float = rc.position.y + 27.0
 	_lines(Vector2(x0, ly), it["choice"], UI.TEXT)
 	ly += (it["choice"] as Array).size() * 12.0
@@ -962,23 +990,23 @@ func _draw_build() -> void:
 	var n: int = build_rows.size()
 	var sum: String = "%d of %d WELL USED" % [well_count, n]
 	var scol: Color = COL_WELL if well_count >= n - 1 else (COL_WASTE if well_count * 2 >= n else COL_RISK)
-	Pix.title(self, Vector2(pg.position.x + 150, pg.position.y + 16), sum, scol, 1)
+	Pix.title(cv, Vector2(pg.position.x + 150, pg.position.y + 16), sum, scol, 1)
 	# legend, right
 	var lx: float = pg.position.x + pg.size.x - 10.0
 	var l3: String = "WHAT IT NEEDED"
 	lx -= Pix.text_w(l3, 10)
-	Pix.text(self, Vector2(lx, pg.position.y + 15), l3, 10, UI.DIM)
-	draw_rect(Rect2(lx - 8, pg.position.y + 6, 1, 10), UI.CYAN)
+	Pix.text(cv, Vector2(lx, pg.position.y + 15), l3, 10, UI.DIM)
+	cv.draw_rect(Rect2(lx - 8, pg.position.y + 6, 1, 10), UI.CYAN)
 	lx -= 18.0
 	var l2: String = "YOUR SHIP"
 	lx -= Pix.text_w(l2, 10)
-	Pix.text(self, Vector2(lx, pg.position.y + 15), l2, 10, UI.DIM)
-	draw_rect(Rect2(lx - 8, pg.position.y + 6, 3, 10), UI.TEXT)
+	Pix.text(cv, Vector2(lx, pg.position.y + 15), l2, 10, UI.DIM)
+	cv.draw_rect(Rect2(lx - 8, pg.position.y + 6, 3, 10), UI.TEXT)
 	lx -= 18.0
 	var l1: String = "WELL USED"
 	lx -= Pix.text_w(l1, 10)
-	Pix.text(self, Vector2(lx, pg.position.y + 15), l1, 10, UI.DIM)
-	draw_rect(Rect2(lx - 14, pg.position.y + 6, 10, 10), Color(0.25, 0.8, 0.4, 0.8))
+	Pix.text(cv, Vector2(lx, pg.position.y + 15), l1, 10, UI.DIM)
+	cv.draw_rect(Rect2(lx - 14, pg.position.y + 6, 10, 10), Color(0.25, 0.8, 0.4, 0.8))
 	var bk: float = clampf((t - maxf(_tl("panels"), page_t0)) / 0.6, 0.0, 1.0)
 	for i: int in n:
 		var row: Dictionary = build_rows[i]
@@ -989,23 +1017,23 @@ func _draw_build() -> void:
 		var col: Color = _state_col(state)
 		if i > 0:
 			_sep(pg.position.x + 8, ry - 1, 608)
-		Pix.icon(self, String(RES_ICON[row["key"]]), Vector2(pg.position.x + 10, ry + 1))
-		Pix.text(self, Vector2(pg.position.x + 26, ry + 10), String(u.get("name", row["key"].to_upper())), 10, UI.TEXT)
+		Pix.icon(cv, String(RES_ICON[row["key"]]), Vector2(pg.position.x + 10, ry + 1))
+		Pix.text(cv, Vector2(pg.position.x + 26, ry + 10), String(u.get("name", row["key"].to_upper())), 10, UI.TEXT)
 		var unit: String = String(u.get("unit", ""))
 		var have_type: bool = String(u.get("band_on", "have")) == "have"
 		_band_gauge(Rect2(pg.position.x + 112, ry + 1, 180, 9), u, col, bk)
 		var l_a: String = "need %s  have %s" if have_type else "uses %s  max %s"
-		Pix.text(self, Vector2(pg.position.x + 112, ry + 20), l_a % [_val_text(float(u.get("need", 0.0)), unit), _val_text(float(u.get("have", 0.0)), unit)], 10, UI.DIM)
+		Pix.text(cv, Vector2(pg.position.x + 112, ry + 20), l_a % [_val_text(float(u.get("need", 0.0)), unit), _val_text(float(u.get("have", 0.0)), unit)], 10, UI.DIM)
 		var word: String = ("UNDER-USED" if rating == "under" else ("OVER-USED" if rating == "over" else "WELL USED"))
 		if state != "well":
 			word += ": RISKY" if state == "risk" else ": WASTED"
-		Pix.text(self, Vector2(pg.position.x + 304, ry + 10), word, 10, col)
+		Pix.text(cv, Vector2(pg.position.x + 304, ry + 10), word, 10, col)
 		var tl: Array = row["lines"]
 		var ty: float = ry + (14.0 if tl.size() < 2 else 9.0)
 		for j: int in tl.size():
-			Pix.text(self, Vector2(pg.position.x + 412, ty + j * 10.0), String(tl[j]), 10, UI.TEXT if state != "well" else UI.DIM)
+			Pix.text(cv, Vector2(pg.position.x + 412, ty + j * 10.0), String(tl[j]), 10, UI.TEXT if state != "well" else UI.DIM)
 	_sep(pg.position.x + 8, pg.position.y + 26.0 + n * 23.0 - 1.0, 608)
-	Pix.text(self, Vector2(pg.position.x + 10, pg.end.y - 7.0), "GREEN = THE NEED PLUS NASA/JPL MARGIN. ABOVE THE TOP OF THE GREEN COUNTS AS WASTE (GAME RULE).", 10, UI.DIM)
+	Pix.text(cv, Vector2(pg.position.x + 10, pg.end.y - 7.0), "GREEN = THE NEED PLUS NASA/JPL MARGIN. ABOVE THE TOP OF THE GREEN COUNTS AS WASTE (GAME RULE).", 10, UI.DIM)
 
 ## A gauge with the green "well used" band, a pin where the ship was and a cyan tick for what the mission needed.
 func _band_gauge(rc: Rect2, u: Dictionary, col: Color, k: float) -> void:
@@ -1017,18 +1045,18 @@ func _band_gauge(rc: Rect2, u: Dictionary, col: Color, k: float) -> void:
 	var v: float = have if have_type else need
 	var other: float = need if have_type else have
 	var axis: float = maxf(maxf(hi * 1.3, v * 1.12), maxf(other * 1.12, 0.001))
-	Pix.gauge(self, rc, 0.0)
+	Pix.gauge(cv, rc, 0.0)
 	var inner: Rect2 = rc.grow(-2)
 	var bx0: float = inner.position.x + floorf(inner.size.x * clampf(lo / axis, 0.0, 1.0))
 	var bx1: float = inner.position.x + floorf(inner.size.x * clampf(hi / axis, 0.0, 1.0))
-	draw_rect(Rect2(bx0, inner.position.y, maxf(1.0, bx1 - bx0), inner.size.y), Color(0.25, 0.8, 0.4, 0.8))
-	draw_rect(Rect2(bx0, inner.position.y - 1, 1, inner.size.y + 2), COL_WELL)
-	draw_rect(Rect2(bx1 - 1.0, inner.position.y - 1, 1, inner.size.y + 2), COL_WELL)
+	cv.draw_rect(Rect2(bx0, inner.position.y, maxf(1.0, bx1 - bx0), inner.size.y), Color(0.25, 0.8, 0.4, 0.8))
+	cv.draw_rect(Rect2(bx0, inner.position.y - 1, 1, inner.size.y + 2), COL_WELL)
+	cv.draw_rect(Rect2(bx1 - 1.0, inner.position.y - 1, 1, inner.size.y + 2), COL_WELL)
 	var ox: float = inner.position.x + floorf((inner.size.x - 1.0) * clampf(other / axis, 0.0, 1.0))
-	draw_rect(Rect2(ox, inner.position.y - 2, 1, inner.size.y + 4), UI.CYAN)
+	cv.draw_rect(Rect2(ox, inner.position.y - 2, 1, inner.size.y + 4), UI.CYAN)
 	var px: float = inner.position.x + floorf((inner.size.x - 3.0) * clampf(v / axis * k, 0.0, 1.0))
-	draw_rect(Rect2(px - 1, inner.position.y - 2, 5, inner.size.y + 4), Color(0.02, 0.03, 0.07))
-	draw_rect(Rect2(px, inner.position.y - 1, 3, inner.size.y + 2), UI.TEXT if col == COL_WELL else col)
+	cv.draw_rect(Rect2(px - 1, inner.position.y - 2, 5, inner.size.y + 4), Color(0.02, 0.03, 0.07))
+	cv.draw_rect(Rect2(px, inner.position.y - 1, 3, inner.size.y + 2), UI.TEXT if col == COL_WELL else col)
 
 # ---------------------------------------------------------------- bottom row
 
@@ -1036,17 +1064,22 @@ func _draw_bottom() -> void:
 	_button(Rect2(8, 332, 118, 24), "menu", "MISSION SELECT", "btn_grey")
 	_button(Rect2(130, 332, 86, 24), "tech", "TECH LAB", "btn_blue", "ic_flask")
 	if t >= _tl("coins") - 0.2 and reward > 0:
-		Pix.text(self, Vector2(222, 348), "+%d" % reward, 10, UI.YELLOW)
+		Pix.text(cv, Vector2(222, 348), "+%d" % reward, 10, UI.YELLOW)
 	var tot: String = str(roundi(shown_total))
 	_img("ic_coin", Vector2(280, 332))
-	Pix.title(self, Vector2(299, 350), tot, UI.YELLOW, 1)
-	Pix.text(self, Vector2(299.0 + Pix.title_w(tot, 1) + 6.0, 348), "CREDITS", 10, UI.DIM)
+	Pix.title(cv, Vector2(299, 350), tot, UI.YELLOW, 1)
+	Pix.text(cv, Vector2(299.0 + Pix.title_w(tot, 1) + 6.0, 348), "CREDITS", 10, UI.DIM)
 	for cn: Dictionary in coins:
 		var u: float = (t - float(cn["t0"])) / 0.55
 		if u < 0.0 or u >= 1.0:
 			continue
 		var p: Vector2 = (cn["from"] as Vector2).lerp(cn["to"] as Vector2, u) + Vector2(0, -sin(u * PI) * 22.0)
-		draw_texture(_tx("ic_coin"), (p - Vector2(7, 7)).floor())
+		cv.draw_texture(_tx("ic_coin"), (p - Vector2(7, 7)).floor())
+	if Game.can_retry():
+		# EASY: fly the failed section again; the page buttons give way (the tabs and LEFT / RIGHT still turn pages)
+		_button(Rect2(384, 332, 150, 24), "retry", "TRY %s AGAIN" % Game.retry_name(), "btn_blue", "ic_play")
+		_button(Rect2(538, 332, 94, 24), "again", "REDESIGN", "btn_green")
+		return
 	if page > 0:
 		_button(Rect2(396, 332, 36, 24), "prev", "<", "btn_grey")
 	if page < pages.size() - 1:
@@ -1200,6 +1233,28 @@ func debug_keys() -> void:
 	_activate("sec2")
 	print("KEYS click tab 3 -> page ", page)
 	_skip()
+
+## The EASY retry button: a checkpoint at the landing, then a missed-goal EASY run.
+func debug_retry() -> void:
+	Game.difficulty = 0
+	if Game.run.is_empty():
+		Game.run = {"score": 60}
+	Game.checkpoint("landing")
+	Game.run["score"] = 60
+	fake_grade = {"difficulty": "EASY"}
+	debug_partial()
+	fake_grade = {}
+
+## Dev check of the EASY retry: a missed-goal report, then the retry itself (the landing must open again).
+func debug_do_retry() -> void:
+	debug_retry()
+	Game.retry.call_deferred()
+
+## A long lesson and real-mission text: THE LESSON card scrolls (to its end).
+func debug_lesson_scroll() -> void:
+	debug_partial()
+	lesson_lines = _wrap(" ".join(lesson_lines) + " Check every gauge against the green band before you sign, keep a margin for the night, and bring a spare battery for the drill.", 290.0)
+	lscroll.off = 1e9
 
 func debug_skip() -> void:
 	_skip()

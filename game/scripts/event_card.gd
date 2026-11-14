@@ -19,12 +19,18 @@ extends Control
 ## v7 colours: every effect of a choice and every result chip is coloured by consequence (Game.tone_color):
 ## a loss UI.BAD, a chance UI.RISK, a gain UI.GOOD, a plain fact white. On EASY the safer choice carries a small
 ## green MISSION CONTROL RECOMMENDS tag (Game.event_choice()["tip"]); NORMAL and HARD show none.
+## v8 lead-in: open() first shows only Mission Control's line (the event's "intro", scripts/talk.gd) for
+## Data.TALK["lead_s"] (longer if the line needs it), then the card itself. is_open() is true from the first
+## moment; INPUT_DELAY, the slide and the sounds start when the card appears. Enter or a click during the
+## lead-in skips to the card. Events with "urgent": true, or without an intro, open at once. Online every
+## client plays the same lead-in locally; nothing new is sent.
 ## Sounds (all in scripts/audio.gd): "alarm" (ALERT) or "radio_blip" (MESSAGE) when it opens,
 ## "confirm" / "error" for the outcome, "ui_deny" for a closed choice.
 
 const UI = preload("res://scripts/ui.gd")
 const Pix = preload("res://scripts/pix.gd")
 const Events = preload("res://scripts/events.gd")
+const Talk = preload("res://scripts/talk.gd")
 
 const W: float = 480.0           # a multiple of 16: the stripe tile repeats evenly
 const PAD: float = 12.0
@@ -57,6 +63,8 @@ var tex_stripes: Texture2D = null
 var tex_alert: Texture2D = null
 var tex_radio: Texture2D = null
 var tex_operator: Texture2D = null
+var lead: float = 0.0            # s of the lead-in line left; the card shows itself at 0
+var talk: Control = null
 
 static func is_open() -> bool:
 	return _current != null and is_instance_valid(_current) and not _current.is_queued_for_deletion()
@@ -81,6 +89,8 @@ static func demo(parent: Control, id: String = "", choice: int = -1) -> Control:
 		event = Game.event_by_id("storm")
 	var c: Control = open(parent, event, func(_r: Dictionary) -> void: pass)
 	if choice >= 0:
+		if float(c.get("lead")) > 0.0:
+			c.call("_appear")
 		c.call("_choose", choice)
 	return c
 
@@ -103,6 +113,24 @@ func _ready() -> void:
 			role_col = r["color"]
 	for i: int in (ev["choices"] as Array).size():
 		infos.append(Game.event_choice(ev, i))
+	Talk.clear_all()   # never two panels at once
+	var intro: String = String(ev.get("intro", ""))
+	if intro != "" and not bool(ev.get("urgent", false)):
+		# bottom left, where the site screens keep their own Mission Control panel
+		talk = Talk.make(self, Vector2(8, 300))
+		talk.set_process_input(false)   # Enter and clicks go to the card: they skip the whole lead-in
+		lead = maxf(float(Data.TALK["lead_s"]), Talk.type_secs(intro) + float(Data.TALK["lead_read_s"]))
+		talk.say(intro, {"who": "control", "hold": lead})
+	else:
+		_appear()
+
+## The card itself shows: its sound, and from now on its clock (INPUT_DELAY, the slide) runs.
+func _appear() -> void:
+	lead = 0.0
+	age = 0.0
+	if talk != null:
+		talk.queue_free()
+		talk = null
 	if earth:
 		Audio.play("radio_blip", -2.0)
 	else:
@@ -113,6 +141,11 @@ func _exit_tree() -> void:
 		_current = null
 
 func _process(delta: float) -> void:
+	if lead > 0.0:
+		lead -= delta
+		if lead <= 0.0:
+			_appear()
+		return
 	age += delta
 	queue_redraw()
 
@@ -130,6 +163,8 @@ func _choose(i: int) -> void:
 func _resolve(i: int) -> void:
 	if not result.is_empty() or i < 0 or i >= infos.size():
 		return
+	if lead > 0.0:
+		_appear()   # a debug hook or the self-play chose during the lead-in
 	var res: Dictionary = Game.resolve_event(ev, i)
 	if res.has("refused"):
 		Audio.play("ui_deny")
@@ -174,6 +209,8 @@ func _on_net(kind: String, data: Dictionary, from_id: int) -> void:
 			_continue()
 	elif Game.sender_is_host(from_id):
 		if kind == "event_result":
+			if lead > 0.0:
+				_appear()
 			ev = data["event"]
 			result = data["result"]
 			Game.run = data["run"]
@@ -188,6 +225,10 @@ func _input(event: InputEvent) -> void:
 		return
 	get_viewport().set_input_as_handled()   # the screen below gets no keys while the card is up
 	var k: InputEventKey = event
+	if lead > 0.0:
+		if k.pressed and not k.echo and k.keycode in [KEY_ENTER, KEY_KP_ENTER]:
+			_appear()
+		return
 	if not k.pressed or k.echo or age < INPUT_DELAY:
 		return
 	if result.is_empty():
@@ -205,6 +246,11 @@ func _input(event: InputEvent) -> void:
 
 func _gui_input(event: InputEvent) -> void:
 	accept_event()
+	if lead > 0.0:
+		var mbl: InputEventMouseButton = event as InputEventMouseButton
+		if mbl != null and mbl.pressed and mbl.button_index == MOUSE_BUTTON_LEFT:
+			_appear()
+		return
 	if event is InputEventMouseMotion:
 		hover = _at((event as InputEventMouseMotion).position)
 	elif event is InputEventMouseButton and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
@@ -261,6 +307,8 @@ func _stripes(y: float) -> void:
 		x += tw
 
 func _draw() -> void:
+	if lead > 0.0:
+		return   # only the lead-in line shows
 	var accent: Color = RADIO if earth else AMBER
 	draw_rect(Rect2(Vector2.ZERO, size), Color(0.01, 0.03, 0.07, 0.76) if earth else Color(0.06, 0.02, 0.01, 0.74))
 	var tw: float = W - PAD * 2.0

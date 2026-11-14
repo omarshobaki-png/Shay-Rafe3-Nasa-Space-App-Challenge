@@ -43,7 +43,7 @@ happened to.
 
 | 🪐 **8 destinations** | 🛠️ **Real engineering** | 🎲 **Real surprises** | 👩‍🚀 **Play as a team** |
 |---|---|---|---|
-| The Moon, Mercury, Venus and Mars to land on. Jupiter, Saturn, Uranus and Neptune to sample from orbit. 3 tasks each: EASY guides you, NORMAL gives one-line hints, HARD gives none and you can fail. | Gravity, sunlight, distance, rocket lift and prices come from NASA and the makers. Margins follow JPL's early-design checklist. | 20 decision events taken from real missions: solar storms from NASA DONKI, Galileo's stuck antenna, Spirit's sand trap and more. Harder levels make every loss bigger. | 4 roles: Planner, Engineer, Scientist, Comms. Each owns part of the ship and a job in flight. |
+| The Moon, Mercury, Venus and Mars to land on. Jupiter, Saturn, Uranus and Neptune to sample from orbit. 3 tasks each: EASY guides you and lets you retry from a checkpoint, NORMAL gives hints and SHOW ME but no auto-build, HARD gives none and you can fail. Mission Control explains each task in plain words. | Gravity, sunlight, distance, rocket lift and prices come from NASA and the makers. Margins follow JPL's early-design checklist. | 20 decision events taken from real missions: solar storms from NASA DONKI, Galileo's stuck antenna, Spirit's sand trap and more. Harder levels make every loss bigger. | 4 roles: Planner, Engineer, Scientist, Comms. Each owns part of the ship and a job in flight. |
 
 ## How a mission goes
 
@@ -177,7 +177,7 @@ Debug: run with `-- screen=builder dest=mars` (also `launch`, `flight`, `landing
   - spacecraft, parts and launch vehicles: simple 3D models built by Python scripts in Blender,
     rendered and turned into palette pixel art (`tools/blender/`, `tools/art/gen_*.py`);
   - planets, backgrounds, ground, rocks and clouds: numpy noise and dithering (`tools/art/`).
-- **Sound:** all 67 sound files (effects, ambience and 5 music tracks) are synthesized with numpy
+- **Sound:** all 73 sound files (effects, ambience, 5 music tracks and the "bibi" Mission Control chatter) are synthesized with numpy
   (`tools/audio/`). No recordings, no samples.
 - **Font:** the pixel font comes from our earlier game, Rotorfall.
 - **Screenshots** in this README are captured from the game itself.

@@ -45,6 +45,127 @@ const LEVEL_TXT: Array = [
 const LEVEL_SHORT: Array = ["cannot lose", "mistakes cost science", "a mistake ends it"]
 
 const CARD: Rect2 = Rect2(10, 158, 620, 168)
+const Talk = preload("res://scripts/talk.gd")
+
+## One scrolling box for the hand-drawn panels (the menu and the report use it). A clipping child Control:
+## `body.call(canvas)` draws the content in the owner's coordinates into `canvas` and returns its bottom y.
+## Mouse wheel, UP / DOWN / PAGE UP / PAGE DOWN / HOME / END, dragging the content (mouse or touch) and a
+## slim bar on the right, drawn only when the content is longer than the box, with a fade and MORE below.
+class Scroll extends Control:
+	const P = preload("res://scripts/pix.gd")
+	const STEP: float = 24.0
+	var body: Callable
+	var box: Rect2                      # where the box shows, in owner coordinates
+	var shift: Vector2 = Vector2.ZERO   # content to owner offset (a panel sliding in, a shake)
+	var off: float = 0.0                # wanted scroll; set it to 1e9 to go to the end
+	var shown: float = 0.0              # the scroll this frame was drawn with
+	var max_off: float = 0.0
+	var dragged: bool = false
+	var _drag: int = 0                  # 0 none, 1 the content, 2 the bar
+	var _y0: float = 0.0
+	var _off0: float = 0.0
+
+	static func make(parent: Control, fn: Callable) -> Scroll:
+		var s: Scroll = Scroll.new()
+		s.body = fn
+		s.clip_contents = true
+		s.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		s.visible = false
+		parent.add_child(s)
+		return s
+
+	## From the owner's _draw: where the box is this frame.
+	func place(r: Rect2, sh: Vector2 = Vector2.ZERO) -> void:
+		box = Rect2(r.position.floor(), r.size.floor())
+		shift = sh
+		position = box.position
+		size = box.size
+
+	## A rect the body drew, as it shows on screen (cut to the box): the owner registers hits with it.
+	func to_screen(r: Rect2) -> Rect2:
+		return Rect2(r.position + shift - Vector2(0, shown), r.size).intersection(box)
+
+	func scroll_by(dy: float) -> void:
+		off = clampf(shown + dy, 0.0, max_off)
+
+	func _draw() -> void:
+		shown = clampf(off, 0.0, max_off)
+		draw_set_transform((shift - box.position - Vector2(0, shown)).round())
+		var bottom: float = float(body.call(self))
+		draw_set_transform(Vector2.ZERO)
+		max_off = maxf(0.0, ceilf(bottom + 6.0 - (box.end.y - shift.y)))
+		off = clampf(off, 0.0, max_off)
+		if max_off <= 0.0:
+			return
+		var h: float = size.y
+		var th: float = maxf(14.0, floorf(h * h / (h + max_off)))
+		var ty: float = floorf((h - th) * shown / max_off)
+		draw_rect(Rect2(size.x - 4, 0, 3, h), Color(0.16, 0.2, 0.34, 0.6))
+		draw_rect(Rect2(size.x - 4, ty, 3, th), Color("4fd0ff") if _drag == 2 else Color("8a9ac8"))
+		if shown < max_off - 0.5:
+			for i: int in 12:
+				draw_rect(Rect2(0, h - 12 + i, size.x - 6, 1), Color(0.02, 0.03, 0.07, 0.075 * i))
+			var bob: float = float(int(Time.get_ticks_msec() / 400.0) % 2)
+			var ax: float = size.x - 40.0
+			P.text_o(self, Vector2(ax - 26, h - 3), "MORE", 10, Color("8a9ac8"))
+			for k: int in 4:
+				draw_rect(Rect2(ax + 4 + k, h - 9 + k + bob, 7 - 2 * k, 1), Color("ffd75e"))
+
+	## The owner's _gui_input events (owner coordinates). True: it was scrolling, so the owner skips its click.
+	func handle(ev: InputEvent) -> bool:
+		if not visible or max_off <= 0.0:
+			_drag = 0
+			return false
+		var mb: InputEventMouseButton = ev as InputEventMouseButton
+		if mb != null:
+			if mb.pressed and box.has_point(mb.position) and (mb.button_index == MOUSE_BUTTON_WHEEL_UP or mb.button_index == MOUSE_BUTTON_WHEEL_DOWN):
+				scroll_by(-STEP if mb.button_index == MOUSE_BUTTON_WHEEL_UP else STEP)
+				return true
+			if mb.button_index != MOUSE_BUTTON_LEFT:
+				return false
+			if mb.pressed:
+				if not box.has_point(mb.position):
+					return false
+				_drag = 2 if mb.position.x >= box.end.x - 8.0 else 1
+				_y0 = mb.position.y
+				_off0 = shown
+				dragged = _drag == 2
+				return dragged
+			var was: bool = dragged
+			_drag = 0
+			dragged = false
+			return was
+		var mm: InputEventMouseMotion = ev as InputEventMouseMotion
+		if mm != null and _drag != 0:
+			var dy: float = mm.position.y - _y0
+			if _drag == 2:
+				off = clampf(_off0 + dy * (box.size.y + max_off) / box.size.y, 0.0, max_off)
+			elif dragged or absf(dy) > 4.0:
+				dragged = true
+				off = clampf(_off0 - dy, 0.0, max_off)
+			return dragged
+		return false
+
+	## UP / DOWN / PAGE UP / PAGE DOWN / HOME / END. True when it scrolled.
+	func key(k: InputEventKey) -> bool:
+		if not visible or max_off <= 0.0 or not k.pressed:
+			return false
+		match k.keycode:
+			KEY_UP:
+				scroll_by(-STEP)
+			KEY_DOWN:
+				scroll_by(STEP)
+			KEY_PAGEUP:
+				scroll_by(STEP - box.size.y)
+			KEY_PAGEDOWN:
+				scroll_by(box.size.y - STEP)
+			KEY_HOME:
+				off = 0.0
+			KEY_END:
+				off = max_off
+			_:
+				return false
+		return true
 
 var t: float = 0.0
 var tex_cache: Dictionary = {}
@@ -76,10 +197,16 @@ var field: String = "code"      # the text field that takes the keys
 var connecting: bool = false
 var lobby_dest: String = "moon" # host: where the mission goes
 
+var cv: CanvasItem = self      # where the drawing helpers draw: self, or the scroll box while it draws its body
+var sc: Scroll = null          # the scrolling body of the briefing and of NASA DATA
+var talk: Control = null       # Mission Control explains the task in the briefing
+
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	name_text = Game.player_name
+	sc = Scroll.make(self, _scroll_body)
+	talk = Talk.make(self, Vector2(56, 228))
 	Net.connected.connect(_on_connected)
 	Net.started.connect(_on_started)
 	Net.received.connect(_on_lobby_message)
@@ -139,8 +266,12 @@ func _process(delta: float) -> void:
 		if float(s["age"]) >= float(s["dur"]):
 			sparks.remove_at(i)
 	queue_redraw()
+	sc.queue_redraw()   # after ours: the box adds its hits to the list our _draw has just cleared
 
 func _gui_input(event: InputEvent) -> void:
+	if sc.handle(event):
+		down = ""
+		return
 	var e: InputEventMouseButton = event as InputEventMouseButton
 	if e == null or e.button_index != MOUSE_BUTTON_LEFT:
 		return
@@ -155,6 +286,8 @@ func _gui_input(event: InputEvent) -> void:
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	var k: InputEventKey = event as InputEventKey
+	if k != null and overlay != "" and sc.key(k):
+		return
 	if k == null or not k.pressed or k.echo:
 		return
 	if overlay == "multi" and not Net.is_online() and not connecting and k.keycode != KEY_ESCAPE:
@@ -186,6 +319,10 @@ func _hit_at(p: Vector2) -> String:
 func _hit(r: Rect2, id: String) -> void:
 	if blocked and not id.begins_with("o:"):
 		return
+	if cv != self:
+		r = sc.to_screen(r)
+		if not r.has_area():
+			return
 	hits.append([r, id])
 
 func _activate(id: String) -> void:
@@ -200,6 +337,11 @@ func _activate(id: String) -> void:
 		_open("brief")
 	elif id == "o:start":
 		_start()
+	elif id == "o:goal":
+		_say_brief(true)
+	elif id == "o:chatter":
+		Audio.set_chatter(not Audio.chatter_on)
+		Audio.play("ui_tab")
 	elif id.begins_with("task:"):
 		_pick_task(int(id.substr(5)))
 	elif id.begins_with("pl:"):
@@ -221,6 +363,7 @@ func _pick(id: String) -> void:
 		return
 	if id != sel:
 		Audio.play("ui_tab")
+		talk.clear()
 		sel_t = 0.0
 		sel = id
 		task_picked = false
@@ -233,6 +376,7 @@ func _pick_task(i: int) -> void:
 		return
 	if i != task_i:
 		Audio.play("ui_tab")
+		talk.clear()
 	task_i = i
 	task_picked = true
 	_sync_choice()
@@ -254,6 +398,7 @@ func _start() -> void:
 	if Net.is_online():
 		_open("multi")
 		return
+	talk.clear()
 	Audio.play("confirm")
 	Audio.play("ignition", -6.0)
 	Game.new_mission(sel)
@@ -267,12 +412,33 @@ func _start() -> void:
 func _open(which: String) -> void:
 	overlay = which
 	ov_t = 0.0
+	sc.off = 0.0
+	talk.clear()
 	Audio.play("ui_open")
+	if which == "brief":
+		_say_brief(false)
 
 func _close() -> void:
 	if overlay != "":
 		Audio.play("ui_close")
 	overlay = ""
+	talk.clear()
+
+## Game.task_short() / Game.task_talk() read Game.task_idx: answer for task i of the shown world without choosing it.
+func _task_say(i: int, where: String = "") -> Variant:
+	var keep: int = Game.task_idx
+	Game.task_idx = i
+	var out: Variant = Game.task_short() if where == "" else Game.task_talk(where)
+	Game.task_idx = keep
+	return out
+
+## Mission Control explains the task: once per world and task when the briefing opens, again when asked.
+func _say_brief(again: bool) -> void:
+	var key: String = "brief:%s:%s" % [sel, String(tasks[task_i].get("id", str(task_i)))]
+	if not again and Talk.said(key):
+		return
+	talk.clear()
+	talk.say(_task_say(task_i, "brief"), {"who": "control", "key": key})
 
 func _buy(id: String) -> void:
 	var cost: int = int(Data.TECH[id]["cost"])
@@ -304,17 +470,17 @@ func _reset() -> void:
 
 func _nine(r: Rect2, name: String, m: Array, mod: Color = Color.WHITE) -> void:
 	var tx: Texture2D = _tx(name)
-	RenderingServer.canvas_item_add_nine_patch(get_canvas_item(), Rect2(r.position.floor(), r.size.floor()), Rect2(Vector2.ZERO, tx.get_size()),
+	RenderingServer.canvas_item_add_nine_patch(cv.get_canvas_item(), Rect2(r.position.floor(), r.size.floor()), Rect2(Vector2.ZERO, tx.get_size()),
 		tx.get_rid(), Vector2(m[0], m[1]), Vector2(m[2], m[3]), RenderingServer.NINE_PATCH_STRETCH, RenderingServer.NINE_PATCH_STRETCH, true, mod)
 
 func _blit(tx: Texture2D, pos: Vector2, clip: Rect2, mod: Color = Color.WHITE) -> void:
 	var dst: Rect2 = Rect2(pos, tx.get_size()).intersection(clip)
 	if dst.size.x <= 0.0 or dst.size.y <= 0.0:
 		return
-	draw_texture_rect_region(tx, dst, Rect2(dst.position - pos, dst.size), mod)
+	cv.draw_texture_rect_region(tx, dst, Rect2(dst.position - pos, dst.size), mod)
 
 func _img(name: String, pos: Vector2, mod: Color = Color.WHITE) -> void:
-	draw_texture(_tx(name), pos.floor(), mod)
+	cv.draw_texture(_tx(name), pos.floor(), mod)
 
 func _para(p: Vector2, s: String, w: float, c: Color, lines_max: int = 9) -> int:
 	## Word-wrapped 10 px text, baseline-left at p, 12 px per line. Returns the number of lines used.
@@ -324,7 +490,7 @@ func _para(p: Vector2, s: String, w: float, c: Color, lines_max: int = 9) -> int
 	for wd: String in s.split(" "):
 		var test: String = wd if line == "" else line + " " + wd
 		if line != "" and f.get_string_size(test, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x > w:
-			Pix.text(self, p + Vector2(0, n * 12), line, 10, c)
+			Pix.text(cv, p + Vector2(0, n * 12), line, 10, c)
 			n += 1
 			line = wd
 			if n >= lines_max:
@@ -332,9 +498,17 @@ func _para(p: Vector2, s: String, w: float, c: Color, lines_max: int = 9) -> int
 		else:
 			line = test
 	if line != "":
-		Pix.text(self, p + Vector2(0, n * 12), line, 10, c)
+		Pix.text(cv, p + Vector2(0, n * 12), line, 10, c)
 		n += 1
 	return n
+
+## s cut to w pixels with "..." when it is longer.
+func _fit(s: String, w: float) -> String:
+	if Pix.text_w(s, 10) <= w:
+		return s
+	while s.length() > 1 and Pix.text_w(s + "...", 10) > w:
+		s = s.left(-1)
+	return s + "..."
 
 ## A face from art/menu with a label and an optional 14 px icon. owns_hit false: the caller registered the hit.
 func _button(r: Rect2, id: String, label: String, kind: String, icon: String = "", enabled: bool = true, mod: Color = Color.WHITE, owns_hit: bool = true) -> void:
@@ -358,15 +532,15 @@ func _button(r: Rect2, id: String, label: String, kind: String, icon: String = "
 	if icon != "":
 		_img(icon, Vector2(x, by - 11), mod * Color(1, 1, 1, 1.0 if enabled else 0.5))
 		x += 16.0
-	Pix.text(self, Vector2(x, by), label, 10, ink * mod)
+	Pix.text(cv, Vector2(x, by), label, 10, ink * mod)
 
 ## Critical resources as icon + name in a row. Returns the end x.
 func _critical_row(p: Vector2, id: String) -> float:
 	var x: float = p.x
 	for res: String in Data.DEST[id]["critical"]:
-		Pix.icon(self, String(RES_ICON.get(res, "warn")), Vector2(x, p.y - 10))
+		Pix.icon(cv, String(RES_ICON.get(res, "warn")), Vector2(x, p.y - 10))
 		var nm: String = String(Data.USE_NAMES.get(res, res.to_upper()))
-		Pix.text(self, Vector2(x + 15, p.y), nm, 10, C_TXT)
+		Pix.text(cv, Vector2(x + 15, p.y), nm, 10, C_TXT)
 		x += 15.0 + Pix.text_w(nm, 10) + 12.0
 	return x
 
@@ -376,8 +550,8 @@ func _brackets(r: Rect2, c: Color) -> void:
 	for corner: Vector2 in [q.position, Vector2(q.end.x - 1, q.position.y), Vector2(q.position.x, q.end.y - 1), q.end - Vector2.ONE]:
 		var sx: float = 1.0 if corner.x == q.position.x else -1.0
 		var sy: float = 1.0 if corner.y == q.position.y else -1.0
-		draw_rect(Rect2(corner.x if sx > 0 else corner.x - 3, corner.y, 4, 1), c)
-		draw_rect(Rect2(corner.x, corner.y if sy > 0 else corner.y - 3, 1, 4), c)
+		cv.draw_rect(Rect2(corner.x if sx > 0 else corner.x - 3, corner.y, 4, 1), c)
+		cv.draw_rect(Rect2(corner.x, corner.y if sy > 0 else corner.y - 3, 1, 4), c)
 
 # ---------------------------------------------------------------- drawing
 
@@ -391,23 +565,35 @@ func _draw() -> void:
 	_draw_bar()
 	for s: Dictionary in sparks:
 		if float(s["age"]) >= 0.0:
-			Fx.sparkle(self, s["pos"], float(s["age"]) / float(s["dur"]), s["tint"], 1)
+			Fx.sparkle(cv, s["pos"], float(s["age"]) / float(s["dur"]), s["tint"], 1)
 	if overlay != "":
 		_draw_overlay()
+	sc.visible = overlay == "brief" or overlay == "src"
+
+## The scrolling body of the open panel, drawn by `sc` into its clipped canvas. Returns the content's bottom y.
+func _scroll_body(c: CanvasItem) -> float:
+	cv = c
+	var bottom: float = 0.0
+	if overlay == "brief":
+		bottom = _brief_body(_panel_rect())
+	elif overlay == "src":
+		bottom = _draw_sources(_panel_rect())
+	cv = self
+	return bottom
 
 func _draw_background() -> void:
-	draw_rect(Rect2(0, 0, 640, 360), UI.BG)
-	Pix.tiled(self, BG_TEX, 0, t * 2.0, 640.0, Color(0.85, 0.85, 1.0))
-	Pix.stars(self, t, Vector2(640, 360), 50, 11, Vector2(-t * 1.5, 0))
-	Pix.stars(self, t * 1.3, Vector2(640, 360), 26, 5, Vector2(-t * 4.0, 0))
+	cv.draw_rect(Rect2(0, 0, 640, 360), UI.BG)
+	Pix.tiled(cv, BG_TEX, 0, t * 2.0, 640.0, Color(0.85, 0.85, 1.0))
+	Pix.stars(cv, t, Vector2(640, 360), 50, 11, Vector2(-t * 1.5, 0))
+	Pix.stars(cv, t * 1.3, Vector2(640, 360), 26, 5, Vector2(-t * 4.0, 0))
 
 func _draw_title() -> void:
 	var lg: Texture2D = _tx("logo")
 	var by: float = floorf(sin(t * 1.1) * 1.4)
-	draw_texture(lg, Vector2(floorf((640.0 - lg.get_width()) / 2.0), 2.0 + by))
+	cv.draw_texture(lg, Vector2(floorf((640.0 - lg.get_width()) / 2.0), 2.0 + by))
 	var gp: float = fposmod(t, 4.5) / 0.7
 	if gp < 1.0:
-		Fx.sparkle(self, Vector2(190.0 + gp * 260.0, 14.0 + by), gp, Color("fff4b8"), 1)
+		Fx.sparkle(cv, Vector2(190.0 + gp * 260.0, 14.0 + by), gp, Color("fff4b8"), 1)
 	# what to do now: stays until the player has done it
 	var head: String = "PICK A DESTINATION"
 	var tail: String = "  CLICK A PLANET, OR LEFT / RIGHT"
@@ -420,9 +606,9 @@ func _draw_title() -> void:
 	var w: float = Pix.title_w(head, 1) + Pix.text_w(tail, 10)
 	var x: float = floorf(320.0 - w / 2.0)
 	var blink: bool = fposmod(t, 1.0) < 0.6
-	Pix.text(self, Vector2(x - 12, 68), ">" if blink else " ", 10, C_HI)
-	Pix.title(self, Vector2(x, 68), head, C_HI, 1)
-	Pix.text(self, Vector2(x + Pix.title_w(head, 1), 68), tail, 10, C_TXT)
+	Pix.text(cv, Vector2(x - 12, 68), ">" if blink else " ", 10, C_HI)
+	Pix.title(cv, Vector2(x, 68), head, C_HI, 1)
+	Pix.text(cv, Vector2(x + Pix.title_w(head, 1), 68), tail, 10, C_TXT)
 
 func _body_pos(i: int) -> Vector2:
 	var b: Dictionary = BODIES[i]
@@ -440,12 +626,12 @@ func _draw_system() -> void:
 			var a: float = k * 4.0 / rad
 			var p: Vector2 = SUN_C + Vector2(cos(a), sin(a)) * rad
 			if p.y > 74.0 and p.y < 141.0:
-				draw_rect(Rect2(p.floor(), Vector2.ONE), Color(0.5, 0.6, 1.0, 0.16))
+				cv.draw_rect(Rect2(p.floor(), Vector2.ONE), Color(0.5, 0.6, 1.0, 0.16))
 	# the Sun at the left edge
 	var sun: Texture2D = _tx("sun_edge")
-	draw_texture(sun, Vector2(0, ROW_Y - floorf(sun.get_height() / 2.0)))
-	Fx.glow(self, Vector2(6, ROW_Y), 60.0, Color(1.0, 0.75, 0.3, 0.22 + 0.04 * sin(t * 1.7)), true)
-	Pix.text_o(self, Vector2(3, ROW_Y + 4), "SUN", 10, C_DIM)
+	cv.draw_texture(sun, Vector2(0, ROW_Y - floorf(sun.get_height() / 2.0)))
+	Fx.glow(cv, Vector2(6, ROW_Y), 60.0, Color(1.0, 0.75, 0.3, 0.22 + 0.04 * sin(t * 1.7)), true)
+	Pix.text_o(cv, Vector2(3, ROW_Y + 4), "SUN", 10, C_DIM)
 	_draw_comet()
 	# hover preview vs the picked world
 	var hov: String = hot.substr(5) if hot.begins_with("dest:") else ""
@@ -457,15 +643,15 @@ func _draw_system() -> void:
 		var hh: float = floorf(tx.get_height() / 2.0)
 		var is_sel: bool = id == sel
 		if is_sel:
-			Fx.glow(self, c, maxf(hw, 10.0) + 12.0, Color(1.0, 0.85, 0.45, 0.16 + 0.05 * sin(t * 3.0)), true)
-		draw_texture(tx, (c - Vector2(hw, hh)).floor())
+			Fx.glow(cv, c, maxf(hw, 10.0) + 12.0, Color(1.0, 0.85, 0.45, 0.16 + 0.05 * sin(t * 3.0)), true)
+		cv.draw_texture(tx, (c - Vector2(hw, hh)).floor())
 		# label: below, the Moon's above (it sits beside the Earth)
 		var ly: float = c.y - hh - 6.0 if id == "moon" else c.y + hh + 10.0
 		var nm: String = "EARTH" if id == "earth" else String(Data.DEST[id]["name"])
 		var col: Color = C_HI if (is_sel or id == hov) else (C_DIM if id == "earth" else C_TXT)
-		Pix.text_oc(self, c.x, ly, nm, 10, col)
+		Pix.text_oc(cv, c.x, ly, nm, 10, col)
 		if id == "earth":
-			Pix.text_oc(self, c.x, ly + 11.0, "HOME", 10, C_DIM)
+			Pix.text_oc(cv, c.x, ly + 11.0, "HOME", 10, C_DIM)
 			continue
 		var box: Rect2 = Rect2(c.x - maxf(hw + 3.0, 15.0), c.y - maxf(hh + 3.0, 13.0), 2.0 * maxf(hw + 3.0, 15.0), 2.0 * maxf(hh + 3.0, 13.0))
 		_hit(box.merge(Rect2(c.x - 22.0, ly - 10.0, 44.0, 13.0)), "dest:" + id)
@@ -474,7 +660,7 @@ func _draw_system() -> void:
 			_brackets(Rect2(c - Vector2(hw, hh), Vector2(hw, hh) * 2.0 + Vector2.ONE).grow(3.0 + grow), C_HI)
 		elif id == hov:
 			_brackets(Rect2(c - Vector2(hw, hh), Vector2(hw, hh) * 2.0 + Vector2.ONE).grow(3.0), C_TXT)
-	Pix.text(self, Vector2(634 - Pix.text_w("SIZES AND DISTANCES NOT TO SCALE", 10), 152), "SIZES AND DISTANCES NOT TO SCALE", 10, C_DIM)
+	Pix.text(cv, Vector2(634 - Pix.text_w("SIZES AND DISTANCES NOT TO SCALE", 10), 152), "SIZES AND DISTANCES NOT TO SCALE", 10, C_DIM)
 
 ## A comet now and then. Its tail points away from the Sun, as real ones do.
 func _draw_comet() -> void:
@@ -488,8 +674,8 @@ func _draw_comet() -> void:
 	var away: Vector2 = (head - SUN_C).normalized()
 	for j: int in 16:
 		var p: Vector2 = head + away * (j * 1.3)
-		draw_rect(Rect2(p.floor(), Vector2.ONE), Color(0.75, 0.9, 1.0, 0.6 * (1.0 - j / 16.0)))
-	draw_rect(Rect2(head.floor() - Vector2.ONE, Vector2(2, 2)), Color(0.92, 0.97, 1.0))
+		cv.draw_rect(Rect2(p.floor(), Vector2.ONE), Color(0.75, 0.9, 1.0, 0.6 * (1.0 - j / 16.0)))
+	cv.draw_rect(Rect2(head.floor() - Vector2.ONE, Vector2(2, 2)), Color(0.92, 0.97, 1.0))
 
 ## The job of a task: "drill" (samples), "photo" or "crew". Read defensively: the core may not set it yet.
 func _tjob(tk: Dictionary) -> String:
@@ -511,17 +697,17 @@ func _goes_to_earth(tk: Dictionary) -> String:
 func _job_icon(pos: Vector2, job: String, c: Color) -> void:
 	var p: Vector2 = pos.floor()
 	if job == "photo":
-		draw_rect(Rect2(p.x + 1, p.y + 3, 10, 7), c)
-		draw_rect(Rect2(p.x + 3, p.y + 1, 3, 2), c)
-		draw_rect(Rect2(p.x + 4, p.y + 4, 4, 4), Color(0.05, 0.05, 0.1))
-		draw_rect(Rect2(p.x + 5, p.y + 5, 2, 2), C_TXT)
+		cv.draw_rect(Rect2(p.x + 1, p.y + 3, 10, 7), c)
+		cv.draw_rect(Rect2(p.x + 3, p.y + 1, 3, 2), c)
+		cv.draw_rect(Rect2(p.x + 4, p.y + 4, 4, 4), Color(0.05, 0.05, 0.1))
+		cv.draw_rect(Rect2(p.x + 5, p.y + 5, 2, 2), C_TXT)
 	else:
-		Pix.icon(self, "icon_helmet" if job == "crew" else "icon_sample", p)
+		Pix.icon(cv, "icon_helmet" if job == "crew" else "icon_sample", p)
 
 func _draw_job(x: float, y: float, tk: Dictionary, c: Color) -> void:
 	var job: String = _tjob(tk)
 	_job_icon(Vector2(x, y - 9), job, c)
-	Pix.text(self, Vector2(x + 16, y), _job_word(job), 10, c)
+	Pix.text(cv, Vector2(x + 16, y), _job_word(job), 10, c)
 
 ## The mission card of the picked world.
 func _draw_card() -> void:
@@ -534,23 +720,23 @@ func _draw_card() -> void:
 		if b["id"] == id:
 			var px: float = float(b["x"])
 			for k: int in 4:
-				draw_rect(Rect2(px - k, r.position.y - 4 + k, 2 * k + 1, 1), C_HI)
+				cv.draw_rect(Rect2(px - k, r.position.y - 4 + k, 2 * k + 1, 1), C_HI)
 	var x0: float = r.position.x + 14.0
 	var y0: float = r.position.y
 	# --- left: name, best, what matters here, the vehicles, one fact
 	var nm: String = String(d["name"])
-	Pix.title(self, Vector2(x0, y0 + 30), nm, C_HI, 2)
+	Pix.title(cv, Vector2(x0, y0 + 30), nm, C_HI, 2)
 	var best: String = "BEST %d%%" % int(Game.best[id]) if Game.best.has(id) else "NOT FLOWN YET"
-	Pix.text(self, Vector2(x0 + Pix.title_w(nm, 2) + 12.0, y0 + 28), best, 10, C_DIM)
-	Pix.text(self, Vector2(x0, y0 + 48), "CRITICAL HERE", 10, C_DIM)
+	Pix.text(cv, Vector2(x0 + Pix.title_w(nm, 2) + 12.0, y0 + 28), best, 10, C_DIM)
+	Pix.text(cv, Vector2(x0, y0 + 48), "CRITICAL HERE", 10, C_DIM)
 	_critical_row(Vector2(x0, y0 + 62), id)
 	var ring: bool = d["kind"] == "ring"
 	var v1: Texture2D = _tx("veh_orbiter" if ring else "veh_lander")
 	var v2: Texture2D = _tx("veh_drone" if ring else "veh_rover")
 	var vy: float = y0 + 112.0
-	draw_texture(v1, Vector2(x0, vy - v1.get_height()))
-	draw_texture(v2, Vector2(x0 + 44.0, vy - v2.get_height() - (8.0 + roundf(sin(t * 2.0)) if ring else 0.0)))
-	Pix.text(self, Vector2(x0 + 96, y0 + 98), "ORBIT, THEN FLY A DRONE" if ring else ("LAND, THEN WALK AS AN ASTRONAUT" if String((tasks[task_i] as Dictionary).get("job", "drill")) == "crew" else "LAND, THEN DRIVE A ROVER"), 10, C_TXT)
+	cv.draw_texture(v1, Vector2(x0, vy - v1.get_height()))
+	cv.draw_texture(v2, Vector2(x0 + 44.0, vy - v2.get_height() - (8.0 + roundf(sin(t * 2.0)) if ring else 0.0)))
+	Pix.text(cv, Vector2(x0 + 96, y0 + 98), "ORBIT, THEN FLY A DRONE" if ring else ("LAND, THEN WALK AS AN ASTRONAUT" if String((tasks[task_i] as Dictionary).get("job", "drill")) == "crew" else "LAND, THEN DRIVE A ROVER"), 10, C_TXT)
 	var facts: Array = d["facts"]
 	var fact: String = String(facts[clampi(int(FACT_IDX.get(id, 0)), 0, facts.size() - 1)])
 	_img("ic_fact", Vector2(x0 - 1, y0 + 120))
@@ -560,40 +746,40 @@ func _draw_card() -> void:
 	for i: int in tasks.size():
 		var tk: Dictionary = tasks[i]
 		var on: bool = i == task_i
-		var tr: Rect2 = Rect2(x1, y0 + 8 + i * 24, 288, 22)
+		var tr: Rect2 = Rect2(x1, y0 + 8 + i * 32, 288, 30)
 		_hit(tr, "task:%d" % i)
 		var lit: bool = on or hot == "task:%d" % i
 		_nine(tr, "tile", TILE_M, Color(1.25, 1.2, 1.0) if on else (Color.WHITE if lit else Color(0.75, 0.75, 0.85)))
 		if on:
 			_brackets(tr.grow(1.0), C_HI)
-		Pix.text(self, tr.position + Vector2(8, 15), String(tk["name"]), 10, C_HI if on else C_TXT)
-		_draw_job(tr.position.x + 150.0, tr.position.y + 15, tk, C_DIM)
+		Pix.text(cv, tr.position + Vector2(8, 13), String(tk["name"]), 10, C_HI if on else C_TXT)
+		_draw_job(tr.position.x + 150.0, tr.position.y + 13, tk, C_DIM)
 		var lv: String = String(tk["level"])
-		Pix.text(self, Vector2(tr.end.x - 8 - Pix.text_w(lv, 10), tr.position.y + 15), lv, 10, LEVEL_COL[clampi(int(tk["diff"]), 0, 2)])
+		Pix.text(cv, Vector2(tr.end.x - 8 - Pix.text_w(lv, 10), tr.position.y + 13), lv, 10, LEVEL_COL[clampi(int(tk["diff"]), 0, 2)])
+		Pix.text(cv, tr.position + Vector2(8, 25), _fit(String(_task_say(i)), 272.0), 10, C_TXT if on else C_DIM)
 	if not tasks.is_empty():
-		_para(Vector2(x1 + 2, y0 + 92), String(tasks[task_i]["text"]), 286.0, C_TXT, 2)
 		var li: int = clampi(int(tasks[task_i]["diff"]), 0, 2)
 		var lw: String = String(tasks[task_i]["level"])
-		Pix.text(self, Vector2(x1 + 2, y0 + 118), lw, 10, LEVEL_COL[li])
-		Pix.text(self, Vector2(x1 + 8 + Pix.text_w(lw, 10), y0 + 118), String(LEVEL_TXT[li][0]), 10, C_DIM)
-		Pix.text(self, Vector2(x1 + 2, y0 + 130), String(LEVEL_TXT[li][1]), 10, C_DIM)
+		Pix.text(cv, Vector2(x1 + 2, y0 + 118), lw, 10, LEVEL_COL[li])
+		Pix.text(cv, Vector2(x1 + 8 + Pix.text_w(lw, 10), y0 + 118), String(LEVEL_TXT[li][0]), 10, C_DIM)
+		Pix.text(cv, Vector2(x1 + 2, y0 + 130), String(LEVEL_TXT[li][1]), 10, C_DIM)
 	_button(Rect2(r.end.x - 148, y0 + 134, 136, 24), "play", "PLAY  " + nm, "btn_green", "ic_play")
 
 func _draw_bar() -> void:
 	_nine(Rect2(10, 330, 620, 28), "plate", FRAME_M)
-	Pix.text(self, Vector2(22, 348), "PLAYERS", 10, C_DIM)
+	Pix.text(cv, Vector2(22, 348), "PLAYERS", 10, C_DIM)
 	for n: int in 4:
 		var r: Rect2 = Rect2(68 + n * 20, 332, 20, 24)
 		_hit(r, "pl:%d" % (n + 1))
 		var lift: int = 1 if hot == "pl:%d" % (n + 1) else 0
 		_img("ic_helmet" if n + 1 <= Game.players else "ic_helmet_off", Vector2(r.position.x + 3, r.position.y + 4 - lift))
 		if n + 1 == Game.players:
-			draw_rect(Rect2(r.position.x + 3, r.position.y + 20, 14, 2), UI.CYAN)
+			cv.draw_rect(Rect2(r.position.x + 3, r.position.y + 20, 14, 2), UI.CYAN)
 	_button(Rect2(270, 332, 84, 24), "multi", "ROOM " + String(Net.lobby().get("code", "")) if Net.is_online() else "MULTIPLAYER", "btn_blue")
 	var shown: int = roundi(shown_funds)
-	Pix.text(self, Vector2(166, 348), "CREDITS", 10, C_DIM)
+	Pix.text(cv, Vector2(166, 348), "CREDITS", 10, C_DIM)
 	_img("ic_coin", Vector2(212, 336))
-	Pix.title(self, Vector2(230, 349), str(shown), C_HI, 1)
+	Pix.title(cv, Vector2(230, 349), str(shown), C_HI, 1)
 	_button(Rect2(358, 332, 88, 24), "tech", "TECH LAB", "btn_blue", "ic_flask")
 	_button(Rect2(450, 332, 92, 24), "help", "HOW TO PLAY", "btn_grey", "ic_help")
 	_button(Rect2(546, 332, 78, 24), "src", "NASA DATA", "btn_grey", "ic_fact")
@@ -607,22 +793,22 @@ func _panel_rect() -> Rect2:
 
 func _draw_overlay() -> void:
 	var e: float = clampf(ov_t / 0.18, 0.0, 1.0)
-	draw_rect(Rect2(0, 0, 640, 360), Color(0.02, 0.03, 0.07, 0.8 * e))
+	cv.draw_rect(Rect2(0, 0, 640, 360), Color(0.02, 0.03, 0.07, 0.8 * e))
 	_hit(Rect2(0, 0, 640, 360), "o:dim")
 	var pr: Rect2 = _panel_rect()
 	_hit(pr, "o:panel")
 	_nine(pr, "card", FRAME_M)
 	var title: String = {"tech": "TECH LAB", "help": "HOW TO PLAY", "src": "NASA DATA & CREDITS", "brief": "MISSION BRIEFING", "multi": "MULTIPLAYER"}[overlay]
-	Pix.title(self, pr.position + Vector2(16, 28), title, C_HI, 2)
+	Pix.title(cv, pr.position + Vector2(16, 28), title, C_HI, 2)
 	_button(Rect2(pr.end.x - 38, pr.position.y + 8, 28, 24), "o:close", "", "btn_red", "ic_close")
-	draw_rect(Rect2(pr.position.x + 10, pr.position.y + 38, pr.size.x - 20, 1), Color("2a3558"))
+	cv.draw_rect(Rect2(pr.position.x + 10, pr.position.y + 38, pr.size.x - 20, 1), Color("2a3558"))
 	match overlay:
 		"tech":
 			_draw_tech(pr)
 		"help":
 			_draw_help(pr)
 		"src":
-			_draw_sources(pr)
+			sc.place(Rect2(pr.position.x + 8, pr.position.y + 41, pr.size.x - 16, pr.size.y - 49))
 		"brief":
 			_draw_brief(pr)
 		"multi":
@@ -655,65 +841,82 @@ func _enders(id: String) -> Array[String]:
 	out.append("A ship too heavy for its rocket")
 	return out.slice(0, 3)
 
-func _draw_brief(pr: Rect2) -> void:
+## The briefing between the title and the step tabs (drawn by the scroll box). Returns the bottom y.
+func _brief_body(pr: Rect2) -> float:
 	var d: Dictionary = Data.DEST[sel]
 	var x: float = pr.position.x + 16.0
 	var y: float = pr.position.y
-	Pix.text(self, Vector2(x, y + 56), "DESTINATION", 10, C_DIM)
-	Pix.title(self, Vector2(x + 72, y + 57), String(d["name"]), C_TXT, 1)
-	Pix.text(self, Vector2(x + 180, y + 56), "DIFFICULTY", 10, C_DIM)
-	Pix.title(self, Vector2(x + 246, y + 57), String(tasks[task_i]["level"]), LEVEL_COL[clampi(int(tasks[task_i]["diff"]), 0, 2)], 1)
+	Pix.text(cv, Vector2(x, y + 56), "DESTINATION", 10, C_DIM)
+	Pix.title(cv, Vector2(x + 72, y + 57), String(d["name"]), C_TXT, 1)
+	Pix.text(cv, Vector2(x + 180, y + 56), "DIFFICULTY", 10, C_DIM)
+	Pix.title(cv, Vector2(x + 246, y + 57), String(tasks[task_i]["level"]), LEVEL_COL[clampi(int(tasks[task_i]["diff"]), 0, 2)], 1)
 	var bl: int = clampi(int(tasks[task_i]["diff"]), 0, 2)
-	Pix.text(self, Vector2(x + 252 + Pix.title_w(String(tasks[task_i]["level"]), 1), y + 56), String(LEVEL_SHORT[bl]), 10, C_DIM)
+	Pix.text(cv, Vector2(x + 252 + Pix.title_w(String(tasks[task_i]["level"]), 1), y + 56), String(LEVEL_SHORT[bl]), 10, C_DIM)
 	# the world itself, top right
 	var pt: Texture2D = _planet("planet_%s_%d" % [sel, 22 if sel == "saturn" else 36])
-	draw_texture(pt, Vector2(pr.end.x - 24 - pt.get_width(), y + 44 + floorf(sin(t) * 1.5)))
+	cv.draw_texture(pt, Vector2(pr.end.x - 24 - pt.get_width(), y + 44 + floorf(sin(t) * 1.5)))
 	# three things to know
 	var rows: Array = [["YOUR GOAL", "icon_star"], ["WHAT IS CRITICAL HERE", "icon_warn"], ["WHAT WILL END THE MISSION", "icon_bad"]]
 	var ry: float = y + 84.0
 	for i: int in 3:
-		Pix.icon(self, String(rows[i][1]), Vector2(x, ry - 10))
-		Pix.text(self, Vector2(x + 16, ry), String(rows[i][0]), 10, C_HI)
+		Pix.icon(cv, String(rows[i][1]), Vector2(x, ry - 10))
+		Pix.text(cv, Vector2(x + 16, ry), String(rows[i][0]), 10, C_HI)
 		match i:
 			0:
 				var tk: Dictionary = tasks[task_i]
-				Pix.text(self, Vector2(x + 16, ry + 14), String(tk["name"]), 10, C_TXT)
+				Pix.text(cv, Vector2(x + 16, ry + 14), String(tk["name"]), 10, C_TXT)
 				var lv: String = String(tk["level"])
-				Pix.text(self, Vector2(x + 24 + Pix.text_w(String(tk["name"]), 10), ry + 14), lv, 10, LEVEL_COL[clampi(int(tk["diff"]), 0, 2)])
+				Pix.text(cv, Vector2(x + 24 + Pix.text_w(String(tk["name"]), 10), ry + 14), lv, 10, LEVEL_COL[clampi(int(tk["diff"]), 0, 2)])
 				_draw_job(x + 24.0 + Pix.text_w(String(tk["name"]), 10) + Pix.text_w(lv, 10) + 12.0, ry + 14, tk, C_DIM)
-				var ly0: float = ry + 26.0 + 12.0 * _para(Vector2(x + 16, ry + 26), String(tk["text"]), 380.0, C_TXT, 2)
-				Pix.text(self, Vector2(x + 16, ly0 + 2), "GOES TO EARTH:", 10, C_DIM)
-				Pix.text(self, Vector2(x + 16 + Pix.text_w("GOES TO EARTH: ", 10), ly0 + 2), _goes_to_earth(tk), 10, C_HI)
+				# the short objective; Mission Control says the rest (click the goal or the "i" to hear it again)
+				var gs: String = _task_say(task_i)
+				var lit: bool = hot == "o:goal"
+				Pix.text(cv, Vector2(x + 16, ry + 27), gs, 10, C_HI if lit else C_TXT)
+				var ix: float = x + 22.0 + Pix.text_w(gs, 10)
+				_info_icon(Vector2(ix, ry + 18), lit)
+				_hit(Rect2(x - 2, ry - 11, ix + 14.0 - x, 42), "o:goal")
+				var ly0: float = ry + 38.0
+				Pix.text(cv, Vector2(x + 16, ly0 + 2), "GOES TO EARTH:", 10, C_DIM)
+				Pix.text(cv, Vector2(x + 16 + Pix.text_w("GOES TO EARTH: ", 10), ly0 + 2), _goes_to_earth(tk), 10, C_HI)
 				ry = ly0 + 18.0
 			1:
 				_critical_row(Vector2(x + 16, ry + 15), sel)
 				var ny: float = ry + 29.0
 				for line: String in (d["needs"] as Array).slice(0, 3):
 					_img("ic_dash", Vector2(x + 14, ny - 10))
-					Pix.text(self, Vector2(x + 30, ny), line, 10, C_TXT)
+					Pix.text(cv, Vector2(x + 30, ny), line, 10, C_TXT)
 					ny += 12.0
 				ry = ny + 8.0
 			2:
 				var ly: float = ry + 14.0
 				for line: String in _enders(sel):
 					_img("ic_dash", Vector2(x + 14, ly - 10))
-					Pix.text(self, Vector2(x + 30, ly), line, 10, C_TXT)
+					Pix.text(cv, Vector2(x + 30, ly), line, 10, C_TXT)
 					ly += 12.0
+					ry = ly
+	return ry
+
+func _draw_brief(pr: Rect2) -> void:
+	var sy: float = pr.end.y - 66.0
+	# the body scrolls between the title and the step tabs; Mission Control's strip sits under it while talking
+	var talking: bool = talk.busy()
+	talk.position = Vector2(pr.position.x + 16, sy - 46)
+	sc.place(Rect2(pr.position.x + 8, pr.position.y + 41, pr.size.x - 16, sy - (50.0 if talking else 4.0) - pr.position.y - 41))
+	var x: float = pr.position.x + 16.0
 	# the three steps of every mission, the first lit
 	var steps: Array[String] = ["BUILD THE SHIP", "FLY IT", "READ THE REPORT"]
 	var sx: float = x
-	var sy: float = pr.end.y - 66.0
 	for i: int in 3:
 		var w: float = 160.0
 		var tr: Rect2 = Rect2(sx + i * (w + 8), sy, w, 26)
 		_nine(tr, "tile", TILE_M, Color.WHITE if i == 0 else Color(0.7, 0.7, 0.8))
-		Pix.title(self, tr.position + Vector2(8, 18), str(i + 1), C_HI if i == 0 else C_DIM, 1)
-		Pix.text(self, tr.position + Vector2(24, 17), steps[i], 10, C_TXT if i == 0 else C_DIM)
+		Pix.title(cv, tr.position + Vector2(8, 18), str(i + 1), C_HI if i == 0 else C_DIM, 1)
+		Pix.text(cv, tr.position + Vector2(24, 17), steps[i], 10, C_TXT if i == 0 else C_DIM)
 	_button(Rect2(x, pr.end.y - 34, 80, 24), "o:close", "BACK", "btn_grey")
-	Pix.keycap(self, Vector2(x + 88, pr.end.y - 28), "ESC")
+	Pix.keycap(cv, Vector2(x + 88, pr.end.y - 28), "ESC")
 	var bw: float = 170.0
 	_button(Rect2(pr.end.x - 16 - bw, pr.end.y - 34, bw, 24), "o:start", "START BUILDING", "btn_green", "ic_play")
-	Pix.keycap(self, Vector2(pr.end.x - 16 - bw - 52, pr.end.y - 28), "ENTER")
+	Pix.keycap(cv, Vector2(pr.end.x - 16 - bw - 52, pr.end.y - 28), "ENTER")
 
 func _tile_rect(id: String) -> Rect2:
 	var pr: Rect2 = _panel_rect()
@@ -722,8 +925,8 @@ func _tile_rect(id: String) -> Rect2:
 
 func _draw_tech(pr: Rect2) -> void:
 	_img("ic_coin", Vector2(pr.end.x - 150, pr.position.y + 12))
-	Pix.title(self, Vector2(pr.end.x - 130, pr.position.y + 28), str(roundi(shown_funds)), C_HI, 2)
-	Pix.text(self, pr.position + Vector2(16, 54), "Earn credits by finishing mission goals. Spend them on new parts for your ships.", 10, C_DIM)
+	Pix.title(cv, Vector2(pr.end.x - 130, pr.position.y + 28), str(roundi(shown_funds)), C_HI, 2)
+	Pix.text(cv, pr.position + Vector2(16, 54), "Earn credits by finishing mission goals. Spend them on new parts for your ships.", 10, C_DIM)
 	for id: String in Data.TECH:
 		var td: Dictionary = Data.TECH[id]
 		var r: Rect2 = _tile_rect(id)
@@ -735,16 +938,16 @@ func _draw_tech(pr: Rect2) -> void:
 		var flash: float = clampf(1.0 - (t - float(bought.get(id, -9.0))) / 0.5, 0.0, 1.0)
 		_nine(r, "tile_owned" if owned else "tile", TILE_M, Color(1, 1, 1).lerp(Color(1.6, 1.5, 1.0), flash))
 		_img("tech_" + id, r.position + Vector2(8, 8), Color.WHITE if (owned or can) else Color(0.72, 0.72, 0.84))
-		Pix.text(self, r.position + Vector2(40, 18), String(td["name"]), 10, C_TXT)
+		Pix.text(cv, r.position + Vector2(40, 18), String(td["name"]), 10, C_TXT)
 		_para(r.position + Vector2(40, 32), String(td["desc"]), 128.0, C_DIM, 4)
 		if owned:
 			_img("ic_tick", Vector2(r.position.x + 56, r.end.y - 28))
-			Pix.text(self, Vector2(r.position.x + 76, r.end.y - 17), "OWNED", 10, C_HI)
+			Pix.text(cv, Vector2(r.position.x + 76, r.end.y - 17), "OWNED", 10, C_HI)
 		else:
 			_button(Rect2(r.position.x + 8, r.end.y - 31, r.size.x - 16, 24), "o:buy:" + id, "BUY  %d" % cost, "btn_green" if can else "btn_grey", "ic_coin", can)
 	var armed: bool = t - reset_armed < 3.0
 	_button(Rect2(pr.position.x + 8, pr.end.y - 34, 150, 24), "o:reset", "SURE? CLICK AGAIN" if armed else "RESET SAVE", "btn_red" if armed else "btn_grey", "")
-	Pix.text(self, Vector2(pr.position.x + 172, pr.end.y - 17), "New parts appear in the builder after you buy them.", 10, C_DIM)
+	Pix.text(cv, Vector2(pr.position.x + 172, pr.end.y - 17), "New parts appear in the builder after you buy them.", 10, C_DIM)
 
 func _draw_help(pr: Rect2) -> void:
 	var titles: Array = ["PICK A PLANET AND A TASK", "BUILD UNTIL MISSION CONTROL SAYS GO", "FLY IT", "READ THE REPORT"]
@@ -758,16 +961,18 @@ func _draw_help(pr: Rect2) -> void:
 		var r: Rect2 = Rect2(pr.position.x + 8 + n * 137, pr.position.y + 50, 130, 216)
 		_nine(r, "tile", TILE_M)
 		var pw: Rect2 = Rect2(r.position.x + 6, r.position.y + 6, 118, 84)
-		draw_rect(pw, Color("090c18"))
-		draw_rect(Rect2(pw.position.x, pw.end.y - 1, pw.size.x, 1), Color("2a3558"))
+		cv.draw_rect(pw, Color("090c18"))
+		cv.draw_rect(Rect2(pw.position.x, pw.end.y - 1, pw.size.x, 1), Color("2a3558"))
 		_help_picture(n, pw)
 		var ny: float = r.position.y + 100.0
 		var lines: int = _para(Vector2(r.position.x + 8, ny + 8), String(titles[n]), 116.0, C_HI, 4)
 		_para(Vector2(r.position.x + 8, ny + 14 + lines * 12), String(bodies[n]), 116.0, C_TXT, 7)
-		draw_rect(Rect2(pw.position.x + 3, pw.position.y + 3, 18, 20), Color(0.02, 0.03, 0.07, 0.7))
-		Pix.title(self, pw.position + Vector2(6, 21), str(n + 1), C_HI, 1)
-	Pix.text(self, pr.position + Vector2(16, 294), "Up to 4 players share the roles: planner, engineer, scientist, comms.", 10, C_DIM)
-	Pix.text(self, pr.position + Vector2(16, 308), "Each screen shows one direction at a time: do it and the next one appears.", 10, C_DIM)
+		cv.draw_rect(Rect2(pw.position.x + 3, pw.position.y + 3, 18, 20), Color(0.02, 0.03, 0.07, 0.7))
+		Pix.title(cv, pw.position + Vector2(6, 21), str(n + 1), C_HI, 1)
+	Pix.text(cv, pr.position + Vector2(16, 294), "Up to 4 players share the roles: planner, engineer, scientist, comms.", 10, C_DIM)
+	Pix.text(cv, pr.position + Vector2(16, 308), "Each screen shows one direction at a time: do it and the next one appears.", 10, C_DIM)
+	# v8: the switch for Mission Control's "bibi" talking sound (Audio.chatter_on, kept in user://audio.cfg)
+	_button(Rect2(pr.position.x + 440, pr.position.y + 286, 112, 24), "o:chatter", "TALK SOUND: %s" % ("ON" if Audio.chatter_on else "OFF"), "btn_grey")
 
 func _help_picture(n: int, pw: Rect2) -> void:
 	var c: Vector2 = pw.get_center()
@@ -779,7 +984,7 @@ func _help_picture(n: int, pw: Rect2) -> void:
 			for j: int in 3:
 				var tx: Texture2D = _tx(names[j])
 				var p: Vector2 = Vector2(xs[j], c.y - 8.0)
-				draw_texture(tx, (p - tx.get_size() / 2.0).floor())
+				cv.draw_texture(tx, (p - tx.get_size() / 2.0).floor())
 				if j == pick:
 					_brackets(Rect2(p - tx.get_size() / 2.0, tx.get_size()).grow(2.0), C_HI)
 			for j: int in 3:
@@ -791,32 +996,40 @@ func _help_picture(n: int, pw: Rect2) -> void:
 				_img(lamp, Vector2(pw.position.x + 10 + j * 20, pw.position.y + 8))
 			_img("veh_lander", Vector2(c.x - 20, pw.position.y + 24))
 			var go: bool = phase >= 5
-			Pix.text_c(self, c.x, pw.end.y - 6.0, "GO" if go else "NO-GO", 10, C_HI if go else C_DIM)
+			Pix.text_c(cv, c.x, pw.end.y - 6.0, "GO" if go else "NO-GO", 10, C_HI if go else C_DIM)
 		2:
 			var ph: float = fposmod(t, 2.4) / 2.4
 			var ly: float = pw.position.y + 6.0 + ph * 26.0
 			var gt: Texture2D = _tx("ground_moon")
 			_blit(gt, Vector2(pw.position.x, pw.end.y - 13), pw)
-			Fx.flame(self, Vector2(c.x - 1, ly + 34), Vector2.DOWN, 12.0, 5.0, t)
+			Fx.flame(cv, Vector2(c.x - 1, ly + 34), Vector2.DOWN, 12.0, 5.0, t)
 			_img("veh_lander", Vector2(c.x - 20, ly))
 		3:
 			var m: int = int(t / 1.1) % 3
 			_img(["medal_bronze", "medal_silver", "medal_gold"][m], Vector2(c.x - 9, pw.position.y + 8))
 			_img("ic_coin", Vector2(c.x - 26, pw.end.y - 24))
-			Pix.text(self, Vector2(c.x - 8, pw.end.y - 12), "+%d" % (60 + 20 * m), 10, C_HI)
-			Fx.sparkle(self, Vector2(c.x + 18, pw.position.y + 14), fposmod(t, 1.1) / 1.1, Color("fff4b8"), 0)
+			Pix.text(cv, Vector2(c.x - 8, pw.end.y - 12), "+%d" % (60 + 20 * m), 10, C_HI)
+			Fx.sparkle(cv, Vector2(c.x + 18, pw.position.y + 14), fposmod(t, 1.1) / 1.1, Color("fff4b8"), 0)
 
-func _draw_sources(pr: Rect2) -> void:
+func _draw_sources(pr: Rect2) -> float:
 	var y: float = pr.position.y + 54.0
-	Pix.text(self, Vector2(pr.position.x + 16, y), "DATA SOURCES", 10, C_HI)
+	Pix.text(cv, Vector2(pr.position.x + 16, y), "DATA SOURCES", 10, C_HI)
 	y += 8.0
 	for s: String in Data.SOURCES:
 		_img("ic_dash", Vector2(pr.position.x + 14, y - 1))
 		var n: int = _para(Vector2(pr.position.x + 30, y + 9), s, 510.0, C_TXT, 3)
 		y += 4.0 + n * 12.0
 	y += 8.0
-	Pix.text(self, Vector2(pr.position.x + 16, y + 6), "AI USE (SPACE APPS RULES)", 10, C_HI)
-	_para(Vector2(pr.position.x + 16, y + 20), "Game idea and design: Team Shay Rafe3 (NASA Space Apps Challenge 2026). Code, code-drawn pixel art and code-made sound were written with help from Claude (AI) and checked by the team. No NASA logos are used.", 526.0, C_TXT, 4)
+	Pix.text(cv, Vector2(pr.position.x + 16, y + 6), "AI USE (SPACE APPS RULES)", 10, C_HI)
+	return y + 20.0 + 12.0 * _para(Vector2(pr.position.x + 16, y + 20), "Game idea and design: Team Shay Rafe3 (NASA Space Apps Challenge 2026). Code, code-drawn pixel art and code-made sound were written with help from Claude (AI) and checked by the team. No NASA logos are used.", 526.0, C_TXT, 4) - 12.0
+
+## A 10x10 "i" in a box: replays Mission Control's explanation.
+func _info_icon(p: Vector2, lit: bool) -> void:
+	var q: Vector2 = p.floor()
+	var c: Color = C_HI if lit else UI.CYAN
+	cv.draw_rect(Rect2(q, Vector2(10, 10)), c, false, 1.0)
+	cv.draw_rect(Rect2(q + Vector2(4, 2), Vector2(2, 1)), c)
+	cv.draw_rect(Rect2(q + Vector2(4, 4), Vector2(2, 4)), c)
 
 # ---------------------------------------------------------------- debug (screenshots)
 
@@ -835,6 +1048,16 @@ func debug_sources() -> void:
 func debug_brief() -> void:
 	_open("brief")
 	ov_t = 1.0
+
+## The briefing scrolled to its end.
+func debug_brief_end() -> void:
+	debug_brief()
+	sc.off = 1e9
+
+## NASA DATA scrolled to its end.
+func debug_sources_end() -> void:
+	debug_sources()
+	sc.off = 1e9
 
 func debug_moon() -> void: _pick("moon")
 func debug_mercury() -> void: _pick("mercury")
@@ -991,13 +1214,13 @@ static func _plain(reason: String) -> String:
 func _field(r: Rect2, id: String, label: String, text: String, hint: String) -> void:
 	_hit(r, "o:field:" + id)
 	var on: bool = field == id and not connecting
-	Pix.text(self, r.position + Vector2(0, -4), label, 10, UI.CYAN)
-	draw_rect(r, Color("05070d"))
-	draw_rect(r, UI.YELLOW if on else Color("3a4a7a"), false, 1.0)
+	Pix.text(cv, r.position + Vector2(0, -4), label, 10, UI.CYAN)
+	cv.draw_rect(r, Color("05070d"))
+	cv.draw_rect(r, UI.YELLOW if on else Color("3a4a7a"), false, 1.0)
 	var shown: String = text if text != "" else hint
-	Pix.text(self, r.position + Vector2(7, 15), shown, 10, UI.TEXT if text != "" else Color("56608a"))
+	Pix.text(cv, r.position + Vector2(7, 15), shown, 10, UI.TEXT if text != "" else Color("56608a"))
 	if on and fposmod(t, 1.0) < 0.55:
-		draw_rect(Rect2(r.position.x + 8 + (Pix.text_w(text, 10) if text != "" else 0.0), r.position.y + 5, 1, 12), UI.YELLOW)
+		cv.draw_rect(Rect2(r.position.x + 8 + (Pix.text_w(text, 10) if text != "" else 0.0), r.position.y + 5, 1, 12), UI.YELLOW)
 
 ## Not in a room yet: a name, HOST, or a code and JOIN.
 
@@ -1006,19 +1229,19 @@ func _draw_join(pr: Rect2) -> void:
 	_para(Vector2(x, pr.position.y + 56), "1 to 4 players, each on their own computer. Each player takes a role: Planner, Engineer, Scientist or Comms. One player hosts and gets a 4-letter code; the others join with it.", 528.0, UI.DIM, 3)
 	_field(Rect2(x, pr.position.y + 108, 200, 22), "name", "YOUR NAME", name_text, "TYPE YOUR NAME")
 	if connecting:
-		Pix.text(self, Vector2(x, pr.position.y + 170), "CONNECTING" + ".".repeat(int(t * 3.0) % 4), 10, UI.YELLOW)
+		Pix.text(cv, Vector2(x, pr.position.y + 170), "CONNECTING" + ".".repeat(int(t * 3.0) % 4), 10, UI.YELLOW)
 		_button(Rect2(x, pr.position.y + 186, 120, 24), "o:leave", "CANCEL", "btn_grey")
 	else:
-		Pix.text(self, Vector2(x, pr.position.y + 158), "START A NEW ROOM", 10, UI.CYAN)
+		Pix.text(cv, Vector2(x, pr.position.y + 158), "START A NEW ROOM", 10, UI.CYAN)
 		_button(Rect2(x, pr.position.y + 164, 200, 24), "o:host", "HOST A ROOM", "btn_green", "ic_play")
 		var jx: float = pr.position.x + 300.0
 		_field(Rect2(jx, pr.position.y + 108, 90, 22), "code", "ROOM CODE", code_text, "ABCD")
-		Pix.text(self, Vector2(jx, pr.position.y + 158), "JOIN A FRIEND'S ROOM", 10, UI.CYAN)
+		Pix.text(cv, Vector2(jx, pr.position.y + 158), "JOIN A FRIEND'S ROOM", 10, UI.CYAN)
 		_button(Rect2(jx, pr.position.y + 164, 200, 24), "o:join", "JOIN ROOM", "btn_blue", "ic_helmet", code_text.length() == 4)
 	if Game.net_error != "":
 		_img("ic_close", Vector2(x, pr.position.y + 214))
 		_para(Vector2(x + 18, pr.position.y + 225), _plain(Game.net_error), 500.0, UI.RED, 2)
-	Pix.text(self, pr.position + Vector2(16, 300), "Type with the keyboard. TAB switches fields, ENTER joins. Solo play needs no network.", 10, Color("56608a"))
+	Pix.text(cv, pr.position + Vector2(16, 300), "Type with the keyboard. TAB switches fields, ENTER joins. Solo play needs no network.", 10, Color("56608a"))
 
 func _role_rect(i: int, pr: Rect2) -> Rect2:
 	return Rect2(pr.position.x + 10 + i * 136, pr.position.y + 66, 130, 96)
@@ -1028,9 +1251,9 @@ func _role_rect(i: int, pr: Rect2) -> Rect2:
 func _draw_lobby(pr: Rect2) -> void:
 	var lob: Dictionary = Net.lobby()
 	var code: String = String(lob.get("code", "----"))
-	Pix.text(self, Vector2(pr.end.x - 190, pr.position.y + 20), "ROOM CODE", 10, UI.DIM)
-	Pix.title(self, Vector2(pr.end.x - 120, pr.position.y + 30), code, UI.YELLOW, 2)
-	Pix.text(self, pr.position + Vector2(16, 56), "Click a role to take it, click it again to drop it. Free roles go to the host.", 10, UI.DIM)
+	Pix.text(cv, Vector2(pr.end.x - 190, pr.position.y + 20), "ROOM CODE", 10, UI.DIM)
+	Pix.title(cv, Vector2(pr.end.x - 120, pr.position.y + 30), code, UI.YELLOW, 2)
+	Pix.text(cv, pr.position + Vector2(16, 56), "Click a role to take it, click it again to drop it. Free roles go to the host.", 10, UI.DIM)
 	for i: int in Data.ROLES.size():
 		var role: Dictionary = Data.ROLES[i]
 		var id: String = role["id"]
@@ -1040,15 +1263,15 @@ func _draw_lobby(pr: Rect2) -> void:
 		var who: String = Game.holder(id)
 		_hit(r, "o:role:" + id)
 		_nine(r, "tile_owned" if mine else "tile", TILE_M, Color(1.15, 1.15, 1.15) if hot == "o:role:" + id else Color.WHITE)
-		draw_rect(Rect2(r.position.x + 5, r.position.y + 5, r.size.x - 10, 3), col)
-		Pix.text(self, r.position + Vector2(8, 22), String(role["name"]), 10, col)
+		cv.draw_rect(Rect2(r.position.x + 5, r.position.y + 5, r.size.x - 10, 3), col)
+		Pix.text(cv, r.position + Vector2(8, 22), String(role["name"]), 10, col)
 		_para(r.position + Vector2(8, 36), String(role["job"]), r.size.x - 16.0, UI.DIM, 3)
 		var tag: String = "YOU" if mine else (who.substr(0, 14) if who != "" else "FREE")
-		Pix.text(self, Vector2(r.position.x + 8, r.end.y - 18), tag, 10, UI.GREEN if mine else (UI.TEXT if who != "" else Color("56608a")))
-		Pix.text(self, Vector2(r.position.x + 8, r.end.y - 7), "CLICK TO DROP" if mine else ("CLICK TO TAKE" if who == "" else "TAKEN"), 10, Color("56608a"))
+		Pix.text(cv, Vector2(r.position.x + 8, r.end.y - 18), tag, 10, UI.GREEN if mine else (UI.TEXT if who != "" else Color("56608a")))
+		Pix.text(cv, Vector2(r.position.x + 8, r.end.y - 7), "CLICK TO DROP" if mine else ("CLICK TO TAKE" if who == "" else "TAKEN"), 10, Color("56608a"))
 	# players and READY
 	var y: float = pr.position.y + 176.0
-	Pix.text(self, Vector2(pr.position.x + 16, y), "PLAYERS", 10, UI.CYAN)
+	Pix.text(cv, Vector2(pr.position.x + 16, y), "PLAYERS", 10, UI.CYAN)
 	var players: Array = lob.get("players", [])
 	for k: int in players.size():
 		var p: Dictionary = players[k]
@@ -1056,23 +1279,23 @@ func _draw_lobby(pr: Rect2) -> void:
 		var rdy: bool = bool(p.get("ready", false))
 		_img("ic_tick" if rdy else "ic_dash", Vector2(pr.position.x + 14, py - 10))
 		var nm: String = String(p.get("name", "PLAYER")).substr(0, 14) + (" (HOST)" if bool(p.get("host", false)) else "") + (" - YOU" if int(p.get("id", -1)) == Net.my_id() else "")
-		Pix.text(self, Vector2(pr.position.x + 32, py), nm, 10, UI.TEXT)
+		Pix.text(cv, Vector2(pr.position.x + 32, py), nm, 10, UI.TEXT)
 		var rx: float = pr.position.x + 200.0
 		for rid: Variant in p.get("roles", []):
-			draw_rect(Rect2(rx, py - 8, 9, 9), Game.role_color(String(rid)))
+			cv.draw_rect(Rect2(rx, py - 8, 9, 9), Game.role_color(String(rid)))
 			rx += 12.0
-		Pix.text(self, Vector2(pr.position.x + 256, py), "READY" if rdy else "NOT READY", 10, UI.GREEN if rdy else UI.DIM)
+		Pix.text(cv, Vector2(pr.position.x + 256, py), "READY" if rdy else "NOT READY", 10, UI.GREEN if rdy else UI.DIM)
 	var me_ready: bool = bool(_me().get("ready", false))
 	_button(Rect2(pr.position.x + 16, pr.end.y - 64, 130, 24), "o:ready", "I'M READY" if not me_ready else "NOT READY", "btn_green" if not me_ready else "btn_grey", "ic_tick" if not me_ready else "")
 	_button(Rect2(pr.position.x + 16, pr.end.y - 34, 130, 24), "o:leave", "LEAVE ROOM", "btn_red")
 	# Destination and task are the v5 pickers beneath this lobby.
 	var dx: float = pr.position.x + 350.0
-	Pix.text(self, Vector2(dx, y), String(Data.DEST[sel]["name"]), 10, UI.CYAN)
+	Pix.text(cv, Vector2(dx, y), String(Data.DEST[sel]["name"]), 10, UI.CYAN)
 	_para(Vector2(dx, y + 14), String(tasks[task_i]["name"]), 190.0, UI.TEXT, 2)
 	if Net.is_host():
 		_button(Rect2(dx, pr.end.y - 88, 182, 24), "o:choose", "CHOOSE MISSION", "btn_blue")
 		_button(Rect2(dx, pr.end.y - 58, 182, 24), "o:start", "START MISSION", "btn_green", "ic_play", _all_ready())
-		Pix.text(self, Vector2(dx, pr.end.y - 12), "Everyone must be READY.", 10, UI.DIM)
+		Pix.text(cv, Vector2(dx, pr.end.y - 12), "Everyone must be READY.", 10, UI.DIM)
 	else:
 		_para(Vector2(dx, pr.end.y - 58), "The host picks the task and starts when everyone is READY.", 190.0, UI.DIM, 3)
 	if Game.net_error != "":
@@ -1095,6 +1318,8 @@ func _on_lobby_message(kind: String, d: Dictionary, from_id: int) -> void:
 			from_host = bool(player.get("host", false))
 	if not from_host or not Data.DEST.has(String(d.get("dest", ""))):
 		return
+	if String(d["dest"]) != sel or int(d.get("task", 0)) != task_i:
+		talk.clear()
 	sel = String(d["dest"])
 	lobby_dest = sel
 	_load_tasks()

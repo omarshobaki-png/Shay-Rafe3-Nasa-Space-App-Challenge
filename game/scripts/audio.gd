@@ -93,9 +93,21 @@ var music_scene_db: float = 0.0
 var duck_db: float = 0.0
 var duck_until_ms: int = 0
 var jingle_free_ms: int = 0
+## v8: the dialogue's "bibi" chatter (talk_bi*.wav from tools/audio/make_chatter.py), on its own player so
+## two blips never overlap. chatter_on is the dialogue-sound switch, kept in user://audio.cfg (the game has
+## no other sound settings).
+const CHATTER_CFG: String = "user://audio.cfg"
+var chatter_on: bool = true
+var chatter_player: AudioStreamPlayer = null
+var chatter_count: int = 0
+var chatter_next: int = 2
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	chatter_player = _player()
+	var cfg: ConfigFile = ConfigFile.new()
+	if cfg.load(CHATTER_CFG) == OK:
+		chatter_on = bool(cfg.get_value("audio", "chatter", true))
 	for i: int in 12:
 		pool.append(_player())
 		pool_ms.append(0)
@@ -258,6 +270,43 @@ func music(song: String) -> void:
 		return
 	music_name = song
 	music_bed.switch_to(null if song == "" else _stream("music_" + song, true))
+
+## Call once per letter the dialogue reveals: a short blip on every 2nd or 3rd letter (never for spaces or
+## punctuation), a random take and pitch, Data.TALK["chatter_db"] under the sound effects. A new blip cuts
+## the one before, so they never overlap.
+func chatter(ch: String) -> void:
+	if not chatter_on or ch.strip_edges() == "" or ".,:;!?-'\"()".contains(ch):
+		return
+	chatter_count += 1
+	if chatter_count < chatter_next:
+		return
+	chatter_count = 0
+	var every: Array = Data.TALK["chatter_every"]
+	chatter_next = randi_range(int(every[0]), int(every[1]))
+	var n: int = _takes("talk_bi")
+	if n == 0:
+		return
+	var take: int = randi() % n
+	chatter_player.stream = _stream("talk_bi" if take == 0 else "talk_bi_%d" % take)
+	var p: float = float(Data.TALK["chatter_pitch"])
+	chatter_player.pitch_scale = randf_range(1.0 - p, 1.0 + p)
+	chatter_player.volume_db = VOL_SFX + float(Data.TALK["chatter_db"])
+	chatter_player.play()
+
+## Cuts the chatter at once (the line finished, was skipped or closed).
+func chatter_stop() -> void:
+	if chatter_player != null:
+		chatter_player.stop()
+	chatter_count = chatter_next - 1   # the next line starts with a blip
+
+## The dialogue-sound switch; remembered between runs.
+func set_chatter(on: bool) -> void:
+	chatter_on = on
+	if not on:
+		chatter_stop()
+	var cfg: ConfigFile = ConfigFile.new()
+	cfg.set_value("audio", "chatter", on)
+	cfg.save(CHATTER_CFG)
 
 ## Ambience bed by file name (amb_hangar, amb_space, amb_moon, amb_mars_wind, amb_saturn; "" = none).
 func ambience(bed: String) -> void:

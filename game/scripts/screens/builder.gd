@@ -15,6 +15,7 @@ const ShipKit = preload("res://scripts/ship_kit.gd")
 const Meta = preload("res://scripts/vab_meta.gd")
 const TeamUI = preload("res://scripts/team_ui.gd")
 const Preflight = preload("res://scripts/preflight.gd")
+const Talk = preload("res://scripts/talk.gd")
 
 const TABS: Array[String] = ["launcher", "power", "comms", "science", "landing", "robot", "return", "fuel", "protect"]
 const TAB_ICON: Dictionary = {"launcher": "launcher", "power": "power", "comms": "comms", "science": "science",
@@ -58,10 +59,10 @@ const INTRO: Dictionary = {"power": "First, power!", "radio": "Now a radio.", "s
 	"down": "Now the safe landing.", "fuel": "Time to fuel up.", "rocket": "Last, the rocket.", "crew": "Now the crew cabin."}
 const CHEER: Array[String] = ["Nice!", "Great job!", "Perfect!"]
 const GUIDE_BOX: Rect2 = Rect2(163, 27, 38, 42)    # the guide's portrait
+const TITLE: Rect2 = Rect2(52, 0, 340, 24)     # the task name and its short line: a click replays the task explanation
 const BUBBLE_X: float = 206.0
 const BUBBLE_W: float = 258.0
 const DELTA_T: float = 1.8         # how long a lamp shows what the last change did to it ("+12%", "-40 kg")
-const SAY_CPS: float = 55.0        # how fast the guide's line types on, characters per second
 const GHOST_LOOP: float = 3.2      # the ghost cursor shows the move again every this many seconds
 const POLL_STEP: float = 0.22
 const SLIDE: float = 0.07          # a new part slides in for this long before it clicks on
@@ -140,13 +141,16 @@ var g_t: float = 99.0              # seconds since the line started typing
 var g_happy: float = 0.0           # seconds left of the "done!" face
 var g_cheer: String = ""
 var ghost_t: float = 0.0
+var g_task: Array = []             # the task explanation still to say (Game.task_talk("builder")), before any step hint
+var g_task_n: int = 0              # counts the explanation's lines, so each one types on
+var g_heard: int = -1              # letters of the guide's line already voiced by the chatter sound; -1 silent
+var g_heard_text: String = ""
 var ghost_freeze: float = -1.0     # debug: hold the ghost cursor at this point of its loop
 
 var tex_bg: Texture2D = null
 var tex_fg: Texture2D = null
 var tex_fork: Texture2D = null
 var tex_redo: ImageTexture = null
-var tex_guide: Texture2D = null    # 4 frames of 32 x 36: idle, blink, talk, happy
 var tex_cursor: Texture2D = null   # 2 frames of 12 x 15: up, pressed
 var tex_tabs: Texture2D = null     # the bin tab pictures, 26 x 26 each, in TABS order
 var deltas: Dictionary = {}        # station id -> {"text", "col", "age"}: what the last change did to that lamp
@@ -192,7 +196,6 @@ func _ready() -> void:
 	tex_bg = _load("res://art/vab/bg.png")
 	tex_fg = _load(String(extras.get("FG", "res://art/vab/fg.png")))
 	tex_fork = _load(String(extras.get("FORKLIFT", "")))
-	tex_guide = _load("res://art/vab/guide.png")
 	tex_cursor = _load("res://art/vab/cursor.png")
 	tex_tabs = _load("res://art/vab/tabs.png")
 	for m: Dictionary in (Preflight as GDScript).get_script_method_list():
@@ -249,7 +252,7 @@ func _ready() -> void:
 	_place(self, b_go, Rect2(BOARD.position.x + 8, 334, BOARD.size.x - 16, 20))
 	over = _layer(_paint_over)
 	over.gui_input.connect(_over_input)
-	b_fix = UI.go_button("FIX IT" if _hints() >= 2 else "BACK", _poll_fix, 10, 90)
+	b_fix = UI.go_button("FIX IT" if _hints() >= 1 else "BACK", _poll_fix, 10, 90)
 	_place(over, b_fix, Rect2(0, 0, 90, 17))
 	b_anyway = UI.danger_button("LAUNCH ANYWAY", _launch, 10, 100)
 	_place(over, b_anyway, Rect2(0, 0, 100, 17))
@@ -262,6 +265,8 @@ func _ready() -> void:
 	guide_on = _hints() >= 1
 	b_guide.visible = guide_on
 	refresh()
+	if not Talk.said(_task_key()):
+		_explain_task()
 	lv_shift = _lv_shift()
 
 ## How much this mission needs a part (Preflight.part_need), remembered until the ship changes.
@@ -611,6 +616,7 @@ func _go_moment() -> void:
 
 func _toggle_guide() -> void:
 	guide_on = not guide_on
+	g_task.clear()
 	g_key = ""
 	Audio.play("ui_open" if guide_on else "ui_close")
 	refresh()
@@ -719,10 +725,12 @@ func _open_lit() -> void:
 		break
 
 ## The tiles to highlight: what SHOW ME is flashing, else what the lit step asks for.
-## Nothing glows above EASY.
+## NORMAL: only what SHOW ME flashes, after the player asked. HARD: nothing glows.
 func _hot() -> Dictionary:
-	if _hints() < 2:
+	if _hints() < 1:
 		return {}
+	if _hints() < 2:
+		return pulse
 	return pulse if not pulse.is_empty() else lit_fix
 
 ## The one outline in the hall: where the first highlighted part goes, the part to take off, or the rocket
@@ -827,7 +835,7 @@ func _fix_tiles(s: Dictionary) -> Dictionary:
 
 ## SHOW ME: opens the bin on what fixes the station being looked at, or on the lit step, and flashes it.
 func _show_me() -> void:
-	if _hints() < 2:
+	if _hints() < 1:
 		return
 	var s: Dictionary = _shown()
 	pulse = (_fix_tiles(s) if not s.is_empty() else lit_fix).duplicate()
@@ -1106,7 +1114,7 @@ func _layout_hint() -> void:
 		h["col"] = UI.status_color(s["status"])
 		h["body"] = ("%s %s" % [s["headline"], s["explain"]]).strip_edges()
 		h["fact"] = s["fact"]
-		h["show"] = _hints() >= 2 and not _fix_tiles(s).is_empty()
+		h["show"] = _hints() >= 1 and not _fix_tiles(s).is_empty()
 		if _hints() == 0:   # HARD: the numbers and the problem, no advice
 			h["body"] = s["headline"]
 			h["fact"] = ""
@@ -1114,12 +1122,13 @@ func _layout_hint() -> void:
 		h["title"] = ""
 		h["body"] = "Point at a lamp to see its numbers. Click it to keep them open."
 		h["col"] = UI.DIM
-	elif _hints() < 2 and not top.is_empty():   # no guide: only what the lamps say
+		h["show"] = _hints() == 1 and not lit_fix.is_empty()   # NORMAL: nothing glows until the player asks
+	elif _hints() == 0 and not top.is_empty():   # no guide: only what the lamps say
 		var bad: int = Preflight.count(stations, "bad")
 		h["title"] = "%d NO-GO" % bad
 		h["col"] = UI.BAD
 		h["body"] = "Point at a lamp to see its numbers."
-	elif not lit.is_empty() and _hints() >= 2:
+	elif not lit.is_empty() and _hints() >= 1:
 		h["body"] = lit["hint"]
 		h["show"] = not lit_fix.is_empty()
 		h["step"] = not lit.has("station")
@@ -1134,7 +1143,7 @@ func _layout_hint() -> void:
 	hint = h
 	var quiet: bool = poll.is_empty() and not auto
 	b_show.visible = bool(h["show"]) and quiet
-	b_go.visible = s.is_empty() and (lit.is_empty() if _hints() >= 2 else top.is_empty()) and quiet
+	b_go.visible = s.is_empty() and (lit.is_empty() if _hints() >= 1 else top.is_empty()) and quiet
 	var room: float = 354.0 - (22.0 if b_show.visible or b_go.visible else 0.0)
 	var by: float = _hint_flow(null)
 	if by > room and h["fact"] != "":
@@ -1363,6 +1372,7 @@ func _process(delta: float) -> void:
 	b_minus.modulate = Color.WHITE.lerp(Color(1.6, 1.6, 1.0), _beat()) if hot_n < 0 and sel != "prop" else Color.WHITE
 	_layout_hint()
 	_guide_tick(delta)
+	_guide_sound()
 	queue_redraw()
 	glow.queue_redraw()
 	front.queue_redraw()
@@ -1467,6 +1477,11 @@ func _gui_input(ev: InputEvent) -> void:
 	if mb.button_index != MOUSE_BUTTON_LEFT and mb.button_index != MOUSE_BUTTON_RIGHT:
 		return
 	help = false
+	if TITLE.has_point(mouse):
+		if mb.button_index == MOUSE_BUTTON_LEFT and poll.is_empty() and not auto:
+			_explain_task()
+			Audio.play("ui_open")
+		return
 	pulse.clear()
 	pulse_t = 0.0
 	_hover()
@@ -1767,7 +1782,10 @@ func _paint_front(ci: Control) -> void:
 	var level: String = String(task.get("level", Game.difficulty_name()))
 	var x: float = 56.0
 	var rx: float = x
-	if 64.0 + Pix.title_w(String(d["name"])) + Pix.text_w(String(d["goal"]), 10) <= 430.0:
+	var short: String = Game.task_short()
+	if short == "":
+		short = String(d["goal"])
+	if 64.0 + Pix.title_w(String(d["name"])) + Pix.text_w(short, 10) <= 430.0:
 		Pix.title(ci, Vector2(x, 17), String(d["name"]), UI.TEXT)
 		x = 64.0 + Pix.title_w(String(d["name"]))
 		rx = x
@@ -1779,7 +1797,9 @@ func _paint_front(ci: Control) -> void:
 		rx += Pix.text_w(String(task["name"]), 10) + 6.0
 	_outline(ci, Rect2(rx, 1, Pix.text_w(level, 10) + 7.0, 11), UI.DIM)
 	Pix.text(ci, Vector2(rx + 4.0, 10), level, 10, UI.DIM)
-	Pix.text(ci, Vector2(x, 21), String(d["goal"]), 10, UI.TEXT)
+	Pix.text(ci, Vector2(x, 21), short, 10, UI.TEXT)
+	if TITLE.has_point(mouse) and poll.is_empty() and not auto:   # the task name replays its explanation
+		ci.draw_rect(Rect2(x, 22, Pix.text_w(short, 10), 1), UI.DIM)
 	if lit.is_empty() and top.is_empty() and poll.is_empty():
 		Fx.glow(ci, b_launch.position + b_launch.size / 2.0, 48.0, Color(0.3, 1.0, 0.5, 0.2 + 0.15 * sin(t * 3.5)))
 	_draw_bin(ci)
@@ -2126,6 +2146,20 @@ func _paint_over(ci: Control) -> void:
 
 ## ---------------------------------------------------------------- the guide
 
+func _task_key() -> String:
+	return "builder_task:%s%d" % [Game.dest_id, Game.task_idx]
+
+## The guide explains the task (on every level: it is the mission, not a build hint), then goes on with the steps.
+## Once per task and run; clicking the task name at the top says it again.
+func _explain_task() -> void:
+	g_task = Game.task_talk("builder").filter(func(l: Variant) -> bool: return String(l).strip_edges() != "")
+	if not g_task.is_empty():
+		var mark: Control = Talk.new()
+		mark.say([], {"key": _task_key()})   # Talk keeps the record of what was said in this run
+		mark.free()
+		g_task_n += 1
+		g_happy = 0.0
+
 ## Sentence case for a step title: "GETTING DOWN" -> "Getting down".
 func _cap(s: String) -> String:
 	return s.substr(0, 1).to_upper() + s.substr(1).to_lower()
@@ -2142,9 +2176,6 @@ func _guide_now() -> Array:
 		if top.is_empty():
 			return ["go", "go", "Every lamp is green. Press LAUNCH!"]
 		return ["stuck", "stuck", "A lamp is red. Point at it to see why."]
-	if _hints() < 2:   # NORMAL: one short line, what is still missing
-		var miss: String = _missing_line()
-		return ["fix:" + String(lit["station"]["id"]) if lit.has("station") else String(lit["id"]), miss, miss]
 	var step: String = String(lit["id"])
 	var say: String = String(lit["hint"])
 	if lit.has("station"):
@@ -2155,7 +2186,7 @@ func _guide_now() -> Array:
 		if intro != "" and _lines(intro + " " + say) <= 2:
 			say = intro + " " + say
 	if hand != "" and lit_fix.has(hand) and int(lit_fix[hand]) > 0:
-		return [step, step + "|hand", "Now click the ship where it glows."]
+		return [step, step + "|hand", "Now click the ship where it glows." if not want.is_empty() or _hints() >= 2 else "Now click the ship to fit it."]
 	return [step, step, say]
 
 ## NORMAL's guide line: what is still missing, by name only (preflight.gd's own line when it has one).
@@ -2180,6 +2211,18 @@ func _missing_line() -> String:
 func _guide_tick(delta: float) -> void:
 	g_t += delta
 	ghost_t += delta
+	if not g_task.is_empty():
+		if g_key != "task%d" % g_task_n:
+			g_key = "task%d" % g_task_n
+			g_text = String(g_task[0])
+			g_t = 0.0
+		if Talk.typed_chars(_g_full(), g_t - Talk.HOLD_S) >= _g_full().length():   # typed out, then held
+			g_task.pop_front()
+			g_task_n += 1
+		if not g_task.is_empty():
+			return
+		g_key = ""
+		g_step = ""
 	var now: Array = _guide_now()
 	if not guide_on:
 		g_step = now[0]
@@ -2213,37 +2256,39 @@ func _guide_tick(delta: float) -> void:
 	else:
 		g_text = now[2]   # only a number in the line changed: no typing again
 
+## The guide's line as the bubble shows it (Talk wraps it the same way).
+func _g_full() -> String:
+	return Talk.wrap_text(g_text, Talk.BUBBLE_W - 14.0, int(Data.TALK["max_lines"]))
+
+## The same chatter as every other dialogue: one blip per letter typed, silent once the line is out, the
+## guide hidden or the screen left.
+func _guide_sound() -> void:
+	if not guide_on and g_task.is_empty():
+		if g_heard >= 0:
+			Audio.chatter_stop()
+		g_heard = -1
+		return
+	var full: String = _g_full()
+	var n: int = Talk.typed_chars(full, g_t)
+	if full != g_heard_text:
+		g_heard_text = full
+		g_heard = n if n >= full.length() else 0   # only a number changed in a typed-out line: no blips
+	if n != g_heard:
+		Talk.chatter_tick(full, g_heard, n)
+		g_heard = n
+
+func _exit_tree() -> void:
+	Audio.chatter_stop()
+
 ## The guide in the top-left corner of the hall: portrait, speech bubble, and one pip per build step.
 func _draw_guide(ci: Control) -> void:
-	if not guide_on:
+	if not guide_on and g_task.is_empty():
 		return
-	var r: Rect2 = GUIDE_BOX
-	Pix.panel(ci, r, UI.CYAN, Color(0.05, 0.07, 0.14, 0.95))
-	var full: String = _wrap(g_text, BUBBLE_W - 14.0, 2)
-	var n: int = mini(full.length(), int(g_t * SAY_CPS))
-	var frame: int = 0
-	if g_happy > 0.0:
-		frame = 3
-	elif n < full.length():
-		frame = 2 if int(t * 10.0) % 2 == 0 else 0
-	elif fmod(t, 3.7) < 0.13:
-		frame = 1
-	if tex_guide != null:
-		ci.draw_texture_rect_region(tex_guide, Rect2(r.position + Vector2(3, 3), Vector2(32, 36)), Rect2(frame * 32, 0, 32, 36))
-	# the bubble: light, dark ink, a tail toward the portrait
-	var w: float = 0.0
-	for line: String in full.split("\n"):
-		w = maxf(w, Pix.text_w(line, 10))
-	var lines: int = full.count("\n") + 1
-	var b: Rect2 = Rect2(BUBBLE_X, r.position.y + 2.0, floorf(w) + 14.0, 11.0 * lines + 9.0)
-	var paper: Color = Color("eef1fb") if g_happy <= 0.0 else Color("dcffe4")
-	ci.draw_rect(b.grow(1), Pix.INK)
-	ci.draw_rect(b, paper)
-	ci.draw_rect(Rect2(b.position.x, b.end.y - 1.0, b.size.x, 1), Color("aab4cc"))
-	for k: int in 4:   # the tail
-		ci.draw_rect(Rect2(b.position.x - 1.0 - k, b.position.y + 6.0 + k, 1, 8 - 2 * k), Pix.INK)
-		ci.draw_rect(Rect2(b.position.x - k, b.position.y + 7.0 + k, 1, maxf(0.0, 6.0 - 2.0 * k)), paper)
-	ci.draw_multiline_string(para_font, b.position + Vector2(7, 12), full.substr(0, n), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, -1, Color("141a2e"))
+	# one look everywhere: the shared dialogue component draws the portrait and the bubble
+	var full: String = _g_full()
+	Talk.draw_bubble(ci, GUIDE_BOX, Vector2(BUBBLE_X, GUIDE_BOX.position.y + 2.0), full, Talk.typed_chars(full, g_t), "guide", g_happy > 0.0)
+	if not g_task.is_empty():
+		return   # the explanation is about the task, not the steps
 	# progress: one pip per build step
 	var px: float = BUBBLE_X + 1.0
 	for st: Dictionary in steps:
@@ -2383,6 +2428,7 @@ func _draw_poll(ci: Control) -> void:
 ## A new mission: the bare ship, as a first-time player meets it.
 func debug_bare() -> void:
 	Game.new_mission(Game.dest_id)
+	g_task.clear()   # the hooks look at the step hints, not the task explanation
 	undo_stack.clear()
 	guide = 1
 	lit_key = ""

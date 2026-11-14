@@ -7,6 +7,8 @@ const UI = preload("res://scripts/ui.gd")
 const Pix = preload("res://scripts/pix.gd")
 const Fx = preload("res://scripts/fx.gd")
 const EventCard = preload("res://scripts/event_card.gd")
+const Talk = preload("res://scripts/talk.gd")
+const GAS_LINE: String = "The drone steers with cold nitrogen gas, like NASA's MMU jetpack: no flame."
 
 const WORLD: float = 1800.0
 const G_REF_PX: float = 24.6    # game rule: px/s2 of pull at Saturn's 11.19 m/s2; other worlds scale as (g / 11.19) ^ 0.6 so Jupiter stays flyable
@@ -24,6 +26,7 @@ const BODY_HALF: float = 13.0   # the drone's hull is a lying capsule: half leng
 const BODY_R: float = 10.0
 const PLANET_Y: float = 262.0
 const PLANET_PAR: float = 0.25
+const GAS: Color = Color(0.82, 0.94, 1.0, 0.6)   # pale blue-white nitrogen puff
 const FUEL_BASE: float = 45.0   # seconds of thrust at Saturn on NORMAL
 const PHOTO_GB: float = 1.5       # game rule: data one photo adds
 const PHOTO_HOLD: float = 1.0     # game rule: seconds to hold the key with the feature in the frame
@@ -109,6 +112,7 @@ var shoot_i: int = -1
 var shooting: bool = false
 var photo_flash: float = 0.0
 var help_btn: Button = null
+var talk: Control = null        # Mission Control explains the job at the site (scripts/talk.gd)
 var auto: bool = false          # debug: a simple autopilot flies the whole run
 var freeze_at: float = -1.0     # debug: stop the clock here so a screenshot catches a short effect
 var puffs: Array = []
@@ -255,9 +259,32 @@ func _ready() -> void:
 	add_child(help_btn)
 	help_btn.position = Vector2(614, 8)
 	help_btn.size = Vector2(20, 18)
-	help_btn.pressed.connect(func() -> void: help_open = not help_open)
+	help_btn.pressed.connect(_toggle_help)
+	talk = Talk.make(self, Vector2(330, 78))   # top right, under the counter: clear of the HUD, the drone's ring band and the prompts
+	if state == "fly" and not Talk.said(_talk_key()):
+		_explain()
+
+func _talk_key() -> String:
+	return "site:%s:%s" % [Game.dest_id, String(Game.task().get("id", ""))]
+
+## Mission Control says what to do at the site (also on HARD: it explains the job, it is not a hint).
+func _explain() -> void:
+	if talk == null or EventCard.is_open() or state != "fly" or confirm:
+		return
+	talk.clear()
+	talk.say(Game.task_talk("site"), {"who": "control", "key": _talk_key()})
+
+## "?" / H: the list of controls, and Mission Control says the job again.
+func _toggle_help() -> void:
+	if EventCard.is_open():
+		return
+	help_open = not help_open
+	if help_open:
+		_explain()
 
 func _exit_tree() -> void:
+	if talk != null:
+		talk.clear()
 	Engine.time_scale = 1.0
 
 ## Drone fuel follows the propellant the ship still carries (game rule: x0.9 empty .. x1.2 full; EASY never below x1).
@@ -286,7 +313,7 @@ func _loss_text(kind: String, text: String) -> String:
 		return text
 	var f: int = int(Game.diff("fail"))
 	var noun: String = "PHOTOS" if job == "photo" else "SAMPLES"
-	var cause: String = {"smash": "HIT BY A BOULDER", "fry": "RADIATION FRIED IT", "burn": "OUT OF FUEL" if fuel <= 0.0 else "FELL INTO THE AIR"}.get(kind, "LOST")
+	var cause: String = {"smash": "HIT BY A BOULDER", "fry": "RADIATION FRIED IT", "burn": "OUT OF GAS" if fuel <= 0.0 else "FELL INTO THE AIR"}.get(kind, "LOST")
 	var fix: String = {"smash": "fly slower, steer round big rocks", "fry": "fit a radiation shield",
 		"burn": "thrust in short bursts and dock sooner" if fuel <= 0.0 else "keep thrust on over the haze"}.get(kind, "fly cleaner")
 	if f >= 2:
@@ -386,7 +413,7 @@ func _end(ok_dock: bool, title: String, text: String, kind: String) -> void:
 		text2 = _loss_text(kind, text)
 		msg_col = UI.BAD if f >= 1 else UI.RISK
 		if kind == "burn" and fuel <= 0.0:
-			title = "OUT OF FUEL"
+			title = "OUT OF GAS"
 	if auto:
 		print("DRONE_AUTO %s %s: got %d of %d, hull %d of %d, fuel %.1f of %.1f s, radiation %.2f, cards %d, t %.1f s" % [skin, title, got, goal, hp, hp_max, fuel, fuel_max, rad, ev_shown, t])
 	docked = ok_dock
@@ -399,7 +426,9 @@ func _end(ok_dock: bool, title: String, text: String, kind: String) -> void:
 	steer = 0
 	warn.clear()
 	help_open = false
-	Audio.loop("thrust", false)
+	if talk != null:
+		talk.clear()
+	Audio.loop("rcs", false)
 	if ok_dock:
 		Audio.play("dock", -2.0)
 	else:
@@ -433,7 +462,7 @@ func _physics_process(delta: float) -> void:
 	_tick_fx(delta)
 	if not driver:
 		_send_input(delta)
-		Audio.loop("thrust", thrusting and state == "fly", -9.0)
+		Audio.loop("rcs", thrusting and state == "fly", -12.0)
 		return
 	_send_state(delta)
 	if state == "downlink":
@@ -480,7 +509,7 @@ func _physics_process(delta: float) -> void:
 		rgt = false
 	thrusting = up and fuel > 0.0
 	var drain: float = Game.diff("drain")
-	Audio.loop("thrust", thrusting, -9.0)
+	Audio.loop("rcs", thrusting, -12.0)
 	var acc: Vector2 = Vector2(0, gpx)
 	steer = 0
 	if thrusting:
@@ -600,7 +629,9 @@ func _open_confirm() -> void:
 	thrusting = false
 	steer = 0
 	help_open = false
-	Audio.loop("thrust", false)
+	if talk != null:
+		talk.clear()
+	Audio.loop("rcs", false)
 	var labels: Array[String] = ["YES, DOCK (Enter)", "KEEP FLYING (Esc)"]
 	for i: int in 2:
 		var yes: bool = i == 0
@@ -679,7 +710,7 @@ func _open_event(ev: Dictionary) -> void:
 	hold.clear()
 	thrusting = false
 	steer = 0
-	Audio.loop("thrust", false)
+	Audio.loop("rcs", false)
 	EventCard.open(self, ev, _after_event)
 
 ## The host supplied the run already; watchers only open the shared card.
@@ -742,10 +773,12 @@ func _spawn_trails(delta: float) -> void:
 		return
 	spawn_acc = 0.0
 	var jit: Vector2 = Vector2(fxr.randf_range(-4, 4), fxr.randf_range(-4, 4))
+	# cold-gas thrusters: compressed nitrogen, nothing burns. A real jet is near invisible in vacuum; these faint,
+	# brief puffs are a game simplification so the player sees which thruster fires (opposite to the push).
 	if thrusting:
-		_puff(pos + Vector2(0, 30) + jit, Vector2(fxr.randf_range(-12, 12), 50) + vel * 0.3, 0.45, 0, Color(1.0, 0.8, 0.55))
+		_puff(pos + Vector2(0, 20) + jit * 0.25, Vector2(fxr.randf_range(-10, 10), 110) + vel * 0.3, 0.2, 0, GAS)
 	if steer != 0:
-		_puff(pos + Vector2(-28.0 * steer, 6) + jit * 0.5, Vector2(-70.0 * steer, fxr.randf_range(-8, 8)) + vel * 0.5, 0.35, 0, Color(0.85, 0.92, 1.0))
+		_puff(pos + Vector2(-28.0 * steer, 5) + jit * 0.25, Vector2(-110.0 * steer, fxr.randf_range(-8, 8)) + vel * 0.3, 0.2, 0, GAS)
 	if pos.y > RING_TOP and pos.y < RING_BOTTOM and vel.length() > 25.0:
 		_puff(pos - vel.normalized() * 20.0 + jit * 2.0, -vel * 0.15, 0.8, 0, Color(0.8, 0.92, 1.0))
 		if fxr.randf() < 0.3:
@@ -804,7 +837,7 @@ func _input(event: InputEvent) -> void:
 		_open_confirm()
 		return
 	if k != null and k.pressed and not k.echo and (k.keycode == KEY_H or k.keycode == KEY_SLASH or k.keycode == KEY_QUESTION) and not EventCard.is_open():
-		help_open = not help_open
+		_toggle_help()
 
 func _cam() -> float:
 	return floorf(clampf(cam_x, 0.0, WORLD - 640.0))
@@ -970,14 +1003,7 @@ func _draw_drone(cam: float) -> void:
 	var gone: bool = state == "nodrone" or (end_kind == "smash" and t - end_at > 0.08) or (end_kind == "burn" and t - end_at > 0.7) or (end_kind == "fry" and pos.y > 330.0)
 	var blink_off: bool = state == "fly" and invuln > 0.0 and flash_t <= 0.0 and int(t * 12.0) % 2 == 1
 	if not gone and not blink_off:
-		if thrusting:
-			Fx.glow(self, dp + Vector2(0, 30), 16.0, Color(1.0, 0.7, 0.3, 0.3), true)
-			Fx.flame(self, dp + Vector2(0, 17), Vector2.DOWN, 22.0, 8.0, t)
-		if steer > 0:
-			Fx.flame(self, dp + Vector2(-27, 5), Vector2.LEFT, 9.0, 3.0, t)
-		elif steer < 0:
-			Fx.flame(self, dp + Vector2(27, 5), Vector2.RIGHT, 9.0, 3.0, t)
-		if end_kind == "burn":
+		if end_kind == "burn":   # falling into the atmosphere: entry heating, not a thruster
 			Fx.flame(self, dp + Vector2(0, -14), Vector2.UP, 30.0, 14.0, t)
 		var row: int = 1 + steer
 		var dmg: int = 0 if hp >= hp_max else (2 if hp <= 1 else 1)
@@ -1096,7 +1122,7 @@ func _draw_hud(cam: float) -> void:
 		draw_rect(Rect2(26 + i * 4, 12, 3, 8), fc if on else Color("1a2038"))
 	Pix.text(self, Vector2(109, 20), "%d s" % ceili(fuel), 10, fc)
 	if state == "fly" and frac < 0.3 and int(t * 3.0) % 3 != 0:
-		Pix.text_o(self, Vector2(26, 38), "OUT OF FUEL" if fuel <= 0.0 else "LOW FUEL", 10, UI.BAD if fuel <= 0.0 else UI.RISK)
+		Pix.text_o(self, Vector2(26, 38), "OUT OF GAS" if fuel <= 0.0 else "LOW GAS", 10, UI.BAD if fuel <= 0.0 else UI.RISK)
 	_groove(136)
 	for i: int in hp_max:
 		var lost_now: bool = i == hp and hull_flash > 0.0 and int(t * 12.0) % 2 == 0
@@ -1119,9 +1145,13 @@ func _draw_hud(cam: float) -> void:
 	if rad_on:
 		_draw_rad_meter()
 	# big counter: what the task counts
-	Pix.panel(self, Rect2(512, 6, 94, 34))
-	Pix.text(self, Vector2(520, 17), "PHOTOS" if job == "photo" else "SAMPLES", 10, UI.DIM)
-	Pix.text(self, Vector2(520, 36), "%d / %d" % [got, goal], 20, UI.TEXT)
+	var obj: String = Game.task_short().to_upper()
+	if obj == "":
+		obj = "PHOTOS" if job == "photo" else "SAMPLES"
+	var ow: float = maxf(94.0, Pix.text_w(obj, 10) + 16.0)
+	Pix.panel(self, Rect2(606.0 - ow, 6, ow, 34))
+	Pix.text(self, Vector2(614.0 - ow, 17), obj, 10, UI.DIM)
+	Pix.text(self, Vector2(614.0 - ow, 36), "%d / %d" % [got, goal], 20, UI.TEXT)
 	# samples on their way to a slot or up into the orbiter
 	var gc: Color = sk["glint"]
 	for e: Dictionary in gems:
@@ -1215,7 +1245,7 @@ func _direction(dk: float) -> Array:
 	if thrust_time < 0.6:
 		return ["HOLD THRUST" if touch else "HOLD UP TO THRUST", 0]
 	if low_fuel and int(t * 3.0) % 3 != 0:
-		return ["LOW FUEL: FLY BACK AND DOCK", -1]
+		return ["LOW GAS: FLY BACK AND DOCK", -1]
 	if job == "photo" and got < goal:
 		if in_frame >= 0:
 			return ["HOLD PHOTO" if touch else "HOLD F: TAKE THE PHOTO", 0]
@@ -1229,8 +1259,10 @@ func _direction(dk: float) -> Array:
 func _draw_help() -> void:
 	var x: float = 296.0
 	var o: float = 16.0 if job == "photo" else 0.0
-	var y: float = 262.0 - o
-	Pix.panel(self, Rect2(x, y, 242, 80 + o))
+	var gas: PackedStringArray = _wrap(GAS_LINE, 32)
+	var o2: float = gas.size() * 10.0 + 4.0
+	var y: float = 262.0 - o - o2
+	Pix.panel(self, Rect2(x, y, 242, 80 + o + o2))
 	Pix.text(self, Vector2(x + 8, y + 14), "CONTROLS", 10, UI.TEXT)
 	var kx: float = x + 8.0
 	Pix.key_hint(self, Vector2(kx, y + 20), "UP", "OR W OR SPACE: THRUST")
@@ -1240,6 +1272,8 @@ func _draw_help() -> void:
 		Pix.key_hint(self, Vector2(kx, y + 56), "F", "HOLD: TAKE A PHOTO")
 	Pix.text(self, Vector2(x + 8, y + 62 + o), "DOCK: UNDER THE PORT, OR PRESS E", 10, UI.DIM)
 	Pix.text(self, Vector2(x + 8, y + 72 + o), "CLOSE: ? OR H", 10, UI.DIM)
+	for i: int in gas.size():
+		Pix.text(self, Vector2(x + 8, y + 86 + o + i * 10.0), gas[i], 10, UI.TEXT)
 
 func _gem_flying() -> bool:
 	for e: Dictionary in gems:
@@ -1413,6 +1447,13 @@ func debug_event_result() -> void:
 	var cards: Array = get_children().filter(func(c: Node) -> bool: return c.has_method("_choose"))
 	if not cards.is_empty():
 		cards[0].call("_choose", 0)
+
+## Main and side thrusters held on, frozen a moment later, so the nitrogen puffs show in a screenshot.
+func debug_gas() -> void:
+	_debug_at(Vector2(300, 120), Vector2(0, 0), 0)
+	hold["u"] = true
+	hold["r"] = true
+	freeze_at = t + 0.25
 
 ## The "?" list of controls.
 func debug_help() -> void:

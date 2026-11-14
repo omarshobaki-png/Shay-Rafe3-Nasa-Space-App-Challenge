@@ -2034,3 +2034,76 @@ func team_sync() -> int:
 		s = 1.0 - clampf((float(team["sign_s"]) - float(w["sign_good_s"])) / (float(w["sign_bad_s"]) - float(w["sign_good_s"])), 0.0, 1.0)
 	var total: float = float(w["w_answered"]) + float(w["w_reply"]) + float(w["w_sign"])
 	return roundi(100.0 * (float(w["w_answered"]) * a + float(w["w_reply"]) * r + float(w["w_sign"]) * s) / total)
+
+# ---------------------------------------------------------------- v8: short objectives and dialogue (docs/V8_PLAN.md)
+
+## The task as a short objective for lists and HUDs ("Collect 4 rock samples").
+func task_short() -> String:
+	var d: Dictionary = dest()
+	return String(Data.JOBS[job()]["short"][d["kind"]]) % int(d["samples_goal"])
+
+## The fuller explanation of the task as Mission Control says it: 1 to 3 short lines for the dialogue panel.
+## where = "brief" (menu briefing), "builder" (what to build for it) or "site" (what to do now, at the site).
+## Built from the task's data (Data.TASKS text, Data.JOBS kit/act/noun, Data.DEST why/build_talk/kind/
+## returns/hazards/surface_minutes), so no number here is typed in by hand.
+func task_talk(where: String = "brief") -> Array:
+	var d: Dictionary = dest()
+	var j: Dictionary = Data.JOBS[job()]
+	var kind: String = d["kind"]
+	var ring: bool = kind == "ring"
+	var crew: bool = job() == "crew"
+	var returns: bool = bool(d["returns"])
+	match where:
+		"builder":
+			var last: String = "Add the return capsule and the fuel to launch it home." if returns \
+				else "Everything goes home by radio, so carry a dish that can send all the %s." % j["noun"]
+			return ["This task needs %s." % j["kit"][kind], String(d.get("build_talk", "")), last]
+		"site":
+			var move: String = "Thrust with UP, W or SPACE and steer with A and D" if ring \
+				else ("Walk with A and D" if crew else "Drive with A and D, dodge boulders with W and S")
+			var back: String = "fly back and press E at the orbiter to dock" if ring else "head back to the lander"
+			var watch: String = "Watch your battery: you need enough power to finish."
+			if crew:
+				watch = "Watch the suit's oxygen: head back before it runs low."
+			elif d.has("surface_minutes"):
+				watch = "Watch the hull heat: the lander lives only %d minutes here." % roundi(float(d["surface_minutes"]))
+			elif ring:
+				watch = "Watch the drone's gas, and keep clear of the big ring rocks."
+			elif has_hazard("night"):
+				watch = "Watch your battery: at night the panels stop."
+			return ["%s, and %s." % [move, j["act"][kind]], "%s, then %s." % [task_short(), back], watch]
+	var home: String = "When the work is done, the %s flies home to Earth." % j["home"] if returns and String(j["home"]) != "" \
+		else "Everything you find goes home by radio."
+	return [String(task().get("text", "")), String(d.get("why", "")), home]
+
+# ---------------------------------------------------------------- v8: checkpoints (EASY, solo)
+
+## The run as it was when the last flown section began, so an EASY player can fly that section again
+## (team request, 14 Nov). main.gd calls checkpoint() on every screen change. Game rule.
+const CHECKPOINT_SCREENS: Dictionary = {"launch": "THE LAUNCH", "flight": "THE FLIGHT", "landing": "THE LANDING", "surface": "THE SITE", "probe": "THE RING FLIGHT"}
+var _cp: Dictionary = {}
+
+func checkpoint(screen: String) -> void:
+	if not CHECKPOINT_SCREENS.has(screen) or Net.is_online() or run.is_empty():
+		return
+	_cp = {"screen": screen, "run": run.duplicate(true), "funds": funds, "missions": missions_flown, "best": best.duplicate()}
+
+## True on the report of an EASY solo mission that missed a goal: the last section can be flown again.
+func can_retry() -> bool:
+	return not _cp.is_empty() and int(diff("fail")) == 0 and not Net.is_online() and int(run.get("score", 100)) < 100
+
+## "THE LANDING": the section retry() goes back to ("" when there is none).
+func retry_name() -> String:
+	return String(CHECKPOINT_SCREENS.get(String(_cp.get("screen", "")), ""))
+
+## Puts the run, the credits and the records back to where the last section began and flies it again.
+func retry() -> void:
+	if _cp.is_empty():
+		return
+	run = (_cp["run"] as Dictionary).duplicate(true)
+	funds = int(_cp["funds"])
+	missions_flown = int(_cp["missions"])
+	best = (_cp["best"] as Dictionary).duplicate()
+	save_game()
+	goto(String(_cp["screen"]))
+

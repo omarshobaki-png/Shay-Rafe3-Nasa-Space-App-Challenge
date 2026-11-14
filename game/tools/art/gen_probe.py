@@ -466,10 +466,11 @@ def lamps():
 
 
 def icons():
-    """HUD icons, 11 x 11 cells: fuel, shield full, shield empty, gem full, gem empty, warning, gravity."""
-    fuel = ascii_sprite(["....o....", "...oyo...", "...oyo...", "..oyyfo..", "..oyffo..", ".oyyfffo.", ".oyffffo.",
-                         ".oyfffro.", "..offro..", "...ooo..."],
-                        {"o": OL, "y": hexc("ffd75e"), "f": hexc("ff9f43"), "r": hexc("b4501a")})
+    """HUD icons, 11 x 11 cells: nitrogen bottle, shield full, shield empty, gem full, gem empty, warning, gravity."""
+    # the drone's cold-gas thrusters blow compressed nitrogen (like NASA's MMU), so its tank is a pale gas bottle, not a fuel drop
+    fuel = ascii_sprite(["...ooo...", "..owwwo..", "...owo...", "..ooooo..", ".obllldo.", ".obllldo.", ".obllldo.",
+                         ".obllldo.", ".obllldo.", "..ooooo.."],
+                        {"o": OL, "w": hexc("c8ccd8"), "b": hexc("eef6ff"), "l": hexc("a8d0f0"), "d": hexc("5a86b0")})
     sh = [".ooooooo.", "owwlllllo", "owlccccdo", "owlccccdo", "olccccddo", "olcccdddo", ".occcddo.", ".occdddo.",
           "..ocddo..", "...ooo..."]
     full = ascii_sprite(sh, {"o": OL, "w": hexc("e4ffe8"), "l": hexc("a8ffb8"), "c": hexc("48d06a"), "d": hexc("1c8a44")})
@@ -584,3 +585,5 @@ if __name__ == "__main__":
         gen_3d()
     if what in ("all", "2d"):
         gen_2d()
+    if what == "icons":
+        save(icons(), "icons.png")
