@@ -183,7 +183,7 @@ Debug: run with `-- screen=builder dest=mars` (also `launch`, `flight`, `landing
 - **Screenshots** in this README are captured from the game itself.
 - **Research write-ups:** Claude compiled the NASA data sheet
   (`context/reference/NASA_Data_In_Game.pdf`, from the team's research notes and the sources in
-  `data.gd`), the science pitch guide (`context/reference/Science_Pitch_Guide.pdf`) and wrote the project website (`docs/index.html`). Claude also merged the partner's game versions with the multiplayer code. The team reviews them.
+  `data.gd`), the science pitch guide (`context/reference/Science_Pitch_Guide.pdf`) and helped build the project website (`docs/`, designed by Ahmad Taweel). Claude also merged the partner's game versions with the multiplayer code. The team reviews them.
 - **Multiplayer:** the scope is the team's (decision D7). Where it left gaps, the AI proposed small
   mechanics (a landing-site choice, the Scientist's parachute and legs job, a drone throttle, the Comms
   downlink pick, who decides each event, the team sync weights). They are marked "game rule" in

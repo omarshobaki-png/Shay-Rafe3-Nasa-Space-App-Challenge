@@ -28,8 +28,9 @@ This is **Space Mission Designer**, Team Shay Rafe3's entry for the NASA Space A
   of the root `README.md`.
 - **Don't commit or push.** The team commits. Don't add files over 50 MB; the Windows build goes to
   GitHub Releases, not git (`builds/` is ignored).
-- `docs/` is the GitHub Pages site. `docs/index.html` is the project website (for judges: challenge,
-  solution, NASA data, judging criteria), with `docs/img/` and `docs/NASA_Data_In_Game.pdf`. The game
+- `docs/` is the GitHub Pages site. `docs/index.html` is the project website (Ahmad's design: overview, the game,
+  missions, rocket-equation lab, NASA data, team), with `docs/styles.css`, `docs/main.js`, `docs/assets/`
+  and `docs/NASA_Data_In_Game.pdf`. The game
   lives in **`docs/play/`**. The "Web" preset in `game/export_presets.cfg` exports to `build/web/`
   (ignored by git), with threads off. Copy that output into **`docs/play/`** to publish it (never into
   `docs/` itself, which would overwrite the website), and keep the empty `docs/.nojekyll` file.
