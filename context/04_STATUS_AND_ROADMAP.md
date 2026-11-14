@@ -24,8 +24,11 @@ events, host-flown launch/cruise/surface for the others to watch, team sync on t
 `mp_test.gd` is updated. Checked headless: `node server/test-v5.js <godot> smoke` (66 boots, solo
 and `roles=engineer`), `... missions` (two clients complete Mars and Saturn with identical
 `Game.run`), `npm test` in `server/`, and `balance.gd` (BALANCE OK). **Not tested:** two real
-computers, the web build, a deployed relay (`net.gd` DEFAULT_URL points at
-`wss://smd-relay.fly.dev`, which is not deployed yet). Two new mappings need
+computers, a deployed relay (`net.gd` DEFAULT_URL points at `wss://smd-relay.fly.dev`, which is not
+deployed yet: until it is, HOST on the live site shows "The connection to the server was lost").
+**Web build re-exported 14 Nov with multiplayer** into `docs/play/` (Godot 4.7.2 templates now
+installed on this PC). In Chrome against a local relay, one tab hosted a room and a second tab joined
+it. A Windows build is in `builds/AstroPixel-windows.zip` (not in git; meant for GitHub Releases). Two new mappings need
 team approval (D7 note in `03_GAME_DESIGN.md`).
 
 Checked after the merge (headless only, not played by hand): `balance.gd` prints BALANCE OK, and
