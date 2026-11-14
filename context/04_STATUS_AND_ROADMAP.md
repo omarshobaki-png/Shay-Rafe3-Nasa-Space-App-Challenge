@@ -1,6 +1,22 @@
 # Status and roadmap
 
-_Last updated: 14 Nov 2026, when the partner's v5 source (AstroPixel) was merged into this repo._
+_Last updated: 14 Nov 2026, when the partner's v7 source (AstroPixel) was merged into this repo._
+
+## v7 is merged (14 Nov, morning). The partner calls it the last game update
+
+Branch `v7-partner` (off `v6-partner`), merged into `main` as 1d1476a. v7 does what the team asked
+after playing v6 (their words are in `game/docs/V7_PLAN.md`): the level must matter. New keys in
+`Data.DIFFICULTY`, read through `Game.diff()`: `hints` (EASY guide + auto-build, NORMAL one-line hint,
+HARD none), `assist`, `bite` (losses x0.5 / x1 / x1.6), `fail` (EASY can't lose, NORMAL loses
+samples or science, HARD a crash or empty battery ends the mission), `drain`. Small texts are coloured
+red (loss), yellow (risk), green (gain). New builder tab icons; the rover drains its battery while
+drilling; budgets retuned. Roadmap #2 (hints by difficulty) is done by this.
+Merge fixes (kept both sides): the stored storm in `event_by_id()` plus v7's `_bite_event()`; landing
+damage levels plus the legs-up crash; the drone throttle multiplied by `drain`; the comms downlink after
+v7's partial-result rule; `surface._finish()` driver-only.
+Checked headless: BALANCE OK, 9 screens x Moon/Mars/Saturn with no script errors. Not checked: online
+play after the merge, a full mission by hand, the web build in a browser. `docs/play/`, the website
+screenshots, README screenshots and both PDFs are refreshed for v7 (29 parts, 20 events).
 
 ## v6 is merged (14 Nov, morning)
 
@@ -95,7 +111,7 @@ sounds, flat UI, hard landing) need a hand playtest to confirm they're fixed.
 | # | Task | Why | Size |
 |---|---|---|---|
 | 1 | ✅ *Done in v4; needs a first-timer playtest.* **Builder UX**: a clear mission card at the top; visual slots on the ship in the hangar (click a slot → pick a part); a hint panel saying what's wrong and which part fixes it (reuse `role_issues()` text) | Team's top complaint; judges' first impression | L |
-| 2 | **Hints by difficulty**: Easy shows every hint and warns before a bad launch; Medium shows a warning only after a mistake, or hints that cost points; Hard has none, and only the report explains. Use CubeSat 101 Free-Advice quotes on Easy | Omar's notes; the challenge's "accessible to different knowledge levels" | M |
+| 2 | ✅ *Done in v7 (`hints` / `assist` keys).* **Hints by difficulty**: Easy shows every hint and warns before a bad launch; Medium shows a warning only after a mistake, or hints that cost points; Hard has none, and only the report explains. Use CubeSat 101 Free-Advice quotes on Easy | Omar's notes; the challenge's "accessible to different knowledge levels" | M |
 | 3 | ✅ *Done in v4 (BRAKE light, 4 m/s legs); needs a hand playtest.* **Easier landing** + a "BRAKE NOW" cue on Easy | Playability | S |
 | 4 | **Resource-efficiency rating** in the report (Ahmad), separate from success | Challenge: "rewards efficient resource use" | S |
 | 5 | **More RNG events** from real stories (`02_NASA_RESOURCES.md` §11), with chance and damage set by the design | "Not the same every time"; the lessons | M |

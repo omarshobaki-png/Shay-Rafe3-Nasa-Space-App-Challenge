@@ -33,7 +33,7 @@ The core rule: **reward smart, effective engineering decisions; everything else 
 | Simulation + evaluation | Launch → cruise → arrival → landing/surface or drone → home or downlink → report | Done (v3) |
 | Up to 4 players with roles | 1–4 players over the network, each on their own computer with their own role (Planner, Engineer, Scientist, Comms); a single player plays all roles offline | Partial: v3 has the 4 roles but only on one shared keyboard. **Networked play is to do** (roadmap #9) |
 | Feedback that explains why | Report with the cause chain + a tip + a real-mission comparison | Done (v3) |
-| Simple science, in-game | Tooltips with formulas and sources | Partial: **hints by difficulty are missing** |
+| Simple science, in-game | Tooltips with formulas and sources | Yes: hints by difficulty since v7 (guide and auto-build on Easy, none on Hard) |
 | Random events | Real DONKI storms | Partial: **only one event type** |
 | Difficulty levels | Moon / Mars / Saturn | Done |
 | Scoring / leaderboard | Score per role + credits | Partial: **no resource-efficiency rating (Ahmad), no leaderboard** |

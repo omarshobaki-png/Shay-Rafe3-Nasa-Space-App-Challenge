@@ -43,7 +43,7 @@ happened to.
 
 | 🪐 **8 destinations** | 🛠️ **Real engineering** | 🎲 **Real surprises** | 👩‍🚀 **Play as a team** |
 |---|---|---|---|
-| The Moon, Mercury, Venus and Mars to land on. Jupiter, Saturn, Uranus and Neptune to sample from orbit. 3 tasks each, from EASY to HARD. | Gravity, sunlight, distance, rocket lift and prices come from NASA and the makers. Margins follow JPL's early-design checklist. | 37 decision events taken from real missions: solar storms from NASA DONKI, Apollo 13's tank, Spirit's stuck wheel and more. | 4 roles: Planner, Engineer, Scientist, Comms. Each owns part of the ship and a job in flight. |
+| The Moon, Mercury, Venus and Mars to land on. Jupiter, Saturn, Uranus and Neptune to sample from orbit. 3 tasks each: EASY guides you, NORMAL gives one-line hints, HARD gives none and you can fail. | Gravity, sunlight, distance, rocket lift and prices come from NASA and the makers. Margins follow JPL's early-design checklist. | 20 decision events taken from real missions: solar storms from NASA DONKI, Galileo's stuck antenna, Spirit's sand trap and more. Harder levels make every loss bigger. | 4 roles: Planner, Engineer, Scientist, Comms. Each owns part of the ship and a job in flight. |
 
 ## How a mission goes
 
@@ -62,7 +62,7 @@ happened to.
 </tr>
 <tr>
 <td><b>3 · Fly the launch.</b> Throttle back through max-Q, drop the boosters, release the fairing and deploy your spacecraft.</td>
-<td><b>4 · Make the calls.</b> On the way out, at the target and on the way home, events force a decision. The odds and the price are shown before you choose.</td>
+<td><b>4 · Make the calls.</b> On the way out and at the target, events force a decision. The odds and the price are shown before you choose, coloured red for a loss, yellow for a risk and green for a gain.</td>
 </tr>
 <tr>
 <td><img src="screenshots/landing_venus.png" alt="Land"></td>
@@ -154,7 +154,7 @@ source, or says "game rule" or "game estimate". The in-game **NASA DATA** screen
 
 - `scripts/data.gd`: every number and its source.
 - `scripts/game.gd`: ship maths, simulation, margins, scoring, save, multiplayer state.
-- `scripts/events.gd`, `scripts/event_card.gd`: the 37 decision events and their pop-up.
+- `scripts/events.gd`, `scripts/event_card.gd`: the 20 decision events and their pop-up.
 - `scripts/preflight.gd`: GO / NO-GO rules, part needs and the builder checklist.
 - `scripts/net.gd`: the network layer. `scripts/team_ui.gd`: shared multiplayer UI.
 - `scripts/screens/*.gd`: menu, builder, launch, flight, landing, surface, probe (ring drone), report.
@@ -183,7 +183,7 @@ Debug: run with `-- screen=builder dest=mars` (also `launch`, `flight`, `landing
 - **Screenshots** in this README are captured from the game itself.
 - **Research write-ups:** Claude compiled the NASA data sheet
   (`context/reference/NASA_Data_In_Game.pdf`, from the team's research notes and the sources in
-  `data.gd`) and wrote the project website (`docs/index.html`). The team reviews them.
+  `data.gd`), the science pitch guide (`context/reference/Science_Pitch_Guide.pdf`) and wrote the project website (`docs/index.html`). Claude also merged the partner's game versions with the multiplayer code. The team reviews them.
 - **Multiplayer:** the scope is the team's (decision D7). Where it left gaps, the AI proposed small
   mechanics (a landing-site choice, the Scientist's parachute and legs job, a drone throttle, the Comms
   downlink pick, who decides each event, the team sync weights). They are marked "game rule" in
