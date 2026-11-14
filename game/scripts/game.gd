@@ -58,6 +58,7 @@ func dest() -> Dictionary:
 		var t: Dictionary = task()
 		d["samples_goal"] = int(t["samples"])
 		d["task"] = t["id"]
+		d["job"] = String(t.get("job", "drill"))
 		for k: String in ["goal", "budget", "returns", "objectives", "time_limit_days", "needs"]:
 			if t.has(k):
 				d[k] = t[k]
@@ -79,6 +80,24 @@ func set_task(i: int) -> void:
 	difficulty = int(task()["diff"])
 	last_task[dest_id] = task_idx
 	signed = {}
+	run.erase("job")   # a finished run's job must not leak into the next build
+
+## The job of the task: "drill" (samples), "photo" or "crew". During a run it is run["job"] (the debug hook
+## can force it), otherwise the chosen task's.
+func job() -> String:
+	if not run.is_empty() and run.has("job"):
+		return String(run["job"])
+	return String(task().get("job", "drill"))
+
+## Gb and science points one part adds to each sample (photo, station), or [0, 0]. On a photo task the camera
+## makes a full photo (Data.PHOTO_GB, Data.PHOTO_PTS: game rules).
+func part_science(id: String) -> Array:
+	var p: Dictionary = Data.PARTS[id]
+	if not p.has("gb"):
+		return [0.0, 0]
+	if id == "camera" and job() == "photo":
+		return [float(Data.PHOTO_GB[dest()["kind"]]), Data.PHOTO_PTS]
+	return [float(p["gb"]), int(p["pts"])]
 
 func traj() -> Dictionary:
 	var arr: Array = dest()["traj"]
@@ -95,6 +114,7 @@ func needs_shade() -> bool:
 func new_mission(id: String) -> void:
 	dest_id = id
 	task_idx = 1
+	run.erase("job")
 	for i: int in tasks().size():
 		if int(tasks()[i]["diff"]) == difficulty:
 			task_idx = i
@@ -131,8 +151,25 @@ func example_build() -> void:
 	rocket_id = ex[0]
 	traj_idx = ex[1]
 	build.merge(ex[2])
-	if not bool(dest()["returns"]):
+	var jb: String = job()
+	if jb == "photo":
+		build.erase("drill")
+		build.erase("dust")
+		build["camera"] = 1
+	elif jb == "crew":
+		build.erase("drill")
+		build.erase("rover")
+		build["crew"] = 1
+	if bool(dest()["returns"]):
+		build["ascent"] = 1
+	else:
 		build.erase("ascent")
+	# a heavier job (the crew's life support) can need more power than the base example
+	var pw: String = "rtg" if build.has("rtg") else "solar"
+	while calc()["status"]["power"] != "ok" and count(pw) < int(Data.PARTS[pw]["max"]):
+		build[pw] = count(pw) + 1
+		while calc()["status"]["battery"] != "ok" and count("battery") < int(Data.PARTS["battery"]["max"]) and dest()["kind"] == "land":
+			build["battery"] = count("battery") + 1
 	for a: String in ["lga", "mga", "hga"]:
 		for other: String in ["lga", "mga", "hga"]:
 			build.erase(other)
@@ -178,6 +215,8 @@ func part_available(id: String) -> bool:
 	if p.has("kinds") and not (p["kinds"] as Array).has(dest()["kind"]):
 		return false
 	if p.has("dests") and not (p["dests"] as Array).has(dest_id):
+		return false
+	if p.has("jobs") and not (p["jobs"] as Array).has(job()):
 		return false
 	return true
 
@@ -268,9 +307,10 @@ func calc() -> Dictionary:
 		if p.has("rate"):
 			var au: float = float(d["earth_au"])
 			rate = maxf(rate, minf(float(p["rate"]) / (au * au), float(p["rate_cap"])))
-		if p["cat"] == "science":
-			gb_per_sample += float(p["gb"])
-			pts += int(p["pts"])
+		if p.has("gb"):
+			var sci: Array = part_science(id)
+			gb_per_sample += float(sci[0])
+			pts += int(sci[1])
 		if p.has("touch"):
 			touch = maxf(touch, float(p["touch"]))
 	if id_has("rover_big"):
@@ -508,10 +548,15 @@ func role_issues(c: Dictionary) -> Dictionary:
 		if not id_has("drone"):
 			r["science"].append("No drone: nothing can collect ring samples.")
 	else:
-		if not id_has("drill"):
+		var jb: String = job()
+		if jb == "drill" and not id_has("drill"):
 			r["science"].append("No drill: you cannot pick up samples.")
-		if not id_has("rover") and not id_has("rover_big"):
-			r["science"].append("No rover: you can only reach rocks next to the lander.")
+		if jb == "crew" and not id_has("crew"):
+			r["science"].append("No crew cabin: nobody can set up the stations.")
+		if jb != "crew" and not id_has("rover") and not id_has("rover_big"):
+			r["science"].append("No rover: you can only reach what is next to the lander.")
+	if job() == "photo" and not id_has("camera"):
+		r["science"].append("No camera: you cannot take the photos.")
 		if d["air"] == "thick":
 			if not id_has("hull"):
 				r["science"].append("No pressure hull: the air crushes the lander.")
@@ -522,7 +567,7 @@ func role_issues(c: Dictionary) -> Dictionary:
 	if int(c["pts"]) <= 1:
 		r["science"].append("Add a science instrument.")
 	if bool(d["returns"]) and not id_has("ascent"):
-		r["science"].append("No ascent stage: samples cannot come home.")
+		r["science"].append("No return capsule: nothing can fly home.")
 	if float(c["rate"]) <= 0.0:
 		r["comms"].append("No antenna: you cannot talk to Earth.")
 	elif st["comms"] == "bad":
@@ -585,6 +630,7 @@ func start_run(seed_n: int = -1) -> void:
 		"phase_now": "launch",
 		"use": (c["use"] as Dictionary).duplicate(true),  # the resource ratings at launch, for the build report
 		"difficulty": difficulty,
+		"job": String(task().get("job", "drill")),
 	}
 	for o: String in dest()["objectives"]:
 		run["obj"][o] = false
@@ -753,7 +799,8 @@ func surface_result(samples: int, battery: float, data: float) -> void:
 	run["data"] = data
 	var goal: int = int(dest()["samples_goal"])
 	run["obj"]["samples"] = samples >= goal
-	note(samples >= goal, "Samples collected: %d of %d. Battery left: %d%%." % [samples, goal, roundi(100.0 * battery / maxf(1.0, float(run["wh"])))])
+	var what: String = {"photo": "Photos taken", "crew": "Science stations set up"}.get(job(), "Samples collected")
+	note(samples >= goal, "%s: %d of %d. Battery left: %d%%." % [what, samples, goal, roundi(100.0 * battery / maxf(1.0, float(run["wh"])))])
 
 func probe_result(samples: int, docked: bool, data: float) -> void:
 	run["phase_now"] = "site"
@@ -763,11 +810,12 @@ func probe_result(samples: int, docked: bool, data: float) -> void:
 	var goal: int = int(dest()["samples_goal"])
 	run["obj"]["samples"] = samples >= goal
 	run["obj"]["dock"] = docked
-	note(samples >= goal, "Ring samples collected: %d of %d." % [samples, goal])
+	var noun: String = String(Data.JOBS.get(job(), Data.JOBS["drill"])["noun"])
+	note(samples >= goal, "Ring %s %s: %d of %d." % [noun, "taken" if job() == "photo" else "collected", samples, goal])
 	if docked:
-		note(true, "The drone docked with the orbiter and handed over its samples.")
+		note(true, "The drone docked with the orbiter and handed over its %s." % noun)
 	else:
-		note(false, "The drone was lost: its samples never reached the orbiter.")
+		note(false, "The drone was lost: its %s never reached the orbiter." % noun)
 		run["data"] = 0.0
 
 ## Storage and radio speed as they are now, after broken parts and events.
@@ -784,7 +832,8 @@ func live_rate() -> float:
 			return rate * 0.1
 	return rate
 
-## Sends the science home and, where samples return, flies them back. Resolve the "home" events first.
+## Sends the science home by radio and, where the task returns something, launches the small capsule: the
+## sample capsule (drill) or the crew capsule (crew). The ship itself stays at the destination.
 func phase_home() -> void:
 	run["phase_now"] = "home"
 	var c: Dictionary = run["calc"]
@@ -811,18 +860,23 @@ func phase_home() -> void:
 		note(ok, "Sent %s of %s Gb to Earth (%d%%) at %s %s. Radio delay: %s." % [fmt(sent), fmt(data), roundi(pct), rate_txt, span, d["light_delay"]])
 	elif run["obj"].has("downlink"):
 		note(false, "No science data to send home.")
-	# Sample return
+	# The capsule: only what the task needs leaves; the lander stays
 	if bool(d["returns"]) and bool(run["obj"].get("land", false)):
 		var pct_b: float = 100.0 * float(run["battery"]) / maxf(1.0, float(run["wh"]))
+		var crew: bool = job() == "crew"
+		var cargo: String = "the crew" if crew else "the samples"
 		if not id_has("ascent"):
-			note(false, "No ascent stage: the samples stay on %s forever." % place().capitalize())
+			note(false, "No return capsule: %s stay on %s." % [cargo, place().capitalize()])
 		elif pct_b < 30.0:
-			note(false, "STRANDED. Battery at %d%%: game rule says the ascent needs 30%%. No way home." % roundi(pct_b))
+			note(false, "STRANDED. Battery at %d%%: game rule says the capsule needs 30%% to launch." % roundi(pct_b))
+		elif crew:
+			run["obj"]["return"] = true
+			note(true, "The crew capsule lifted off with both astronauts and landed on Earth. The lander stays on %s." % place().capitalize())
 		elif int(run["samples"]) == 0:
-			note(false, "The ascent stage launched, but with no samples on board.")
+			note(false, "The sample capsule launched, but with no samples on board.")
 		else:
 			run["obj"]["return"] = true
-			note(true, "The ascent stage lifted off and brought %d samples back to Earth." % int(run["samples"]))
+			note(true, "The sample capsule flew %d samples to Earth. The lander stays on %s." % [int(run["samples"]), place().capitalize()])
 
 # ---------------------------------------------------------------- decision events
 
@@ -831,10 +885,10 @@ func phase_home() -> void:
 func event_plan() -> void:
 	_rng.seed = int(run["seed"])
 	var d: Dictionary = dest()
-	var per_leg: int = int(diff("events_per_leg"))
-	var phases: Array = ["cruise", "site", "home"]
+	var phases: Array = ["cruise", "site"]   # v6: nothing happens after the site
 	var plan: Array = []
 	for pi: int in phases.size():
+		var per_leg: int = int(diff("events_" + String(phases[pi])))
 		var pool: Array = []
 		for ev: Dictionary in Events.LIST:
 			if Events.eligible(ev, phases[pi], dest_id, d, build):
@@ -866,7 +920,7 @@ func _dress_storm(ev: Dictionary) -> void:
 		st = _strongest(evs)
 	run["storm"] = st
 	var strong: bool = float(st["kp"]) >= 7.5
-	var chance: float = 0.7 if strong else 0.15
+	var chance: float = 0.4 if strong else 0.1   # game rule, half the v5 odds
 	ev["real"] = "Real storm of %s, Kp %s (NASA DONKI). %s" % [st["time"], str(st["kp"]), ev["real"]]
 	ev["title"] = "SOLAR STORM INCOMING" if strong else "SMALL SOLAR STORM"
 	var ch: Dictionary = ev["choices"][1]
@@ -884,10 +938,12 @@ func next_event(phase: String) -> Dictionary:
 	return {}
 
 ## A fresh, playable copy of any event by its id, whether or not this flight planned it (debug hooks, tests).
+## An id that no longer exists (old debug hooks) gives the solar storm.
 func event_by_id(id: String) -> Dictionary:
 	var ev: Dictionary = Events.by_id(id).duplicate(true)
 	if ev.is_empty():
-		return ev
+		id = "storm"
+		ev = Events.by_id(id).duplicate(true)
 	ev["at"] = 0.5
 	ev["done"] = false
 	if id == "storm":
@@ -1166,7 +1222,7 @@ func _break(target: String, ap: Dictionary = {}) -> String:
 		if id == target:
 			pool = [id]
 			break
-		if (target == "science" or target == "electronics") and p["cat"] == "science" and id != "drill":
+		if (target == "science" or target == "electronics") and _can_lose(id):
 			pool.append(id)
 		if p.has("rate") and float(p["rate"]) > best_rate:
 			best_rate = float(p["rate"])
@@ -1182,6 +1238,11 @@ func _break(target: String, ap: Dictionary = {}) -> String:
 	(ap["broken"] as Array).append(hit)
 	return String(Data.PARTS[hit]["name"])
 
+## An instrument an event may break or switch off: never the drill, and never the camera on a photo task
+## (losing the tool the task is made of would end it, and v6 events never end a mission).
+func _can_lose(id: String) -> bool:
+	return Data.PARTS[id]["cat"] == "science" and id != "drill" and not (id == "camera" and job() == "photo")
+
 ## After a power loss: instruments are switched off, hungriest first, until the ship makes what it uses.
 func _power_check(res: Dictionary) -> void:
 	var c: Dictionary = run["calc"]
@@ -1190,7 +1251,7 @@ func _power_check(res: Dictionary) -> void:
 		var worst: String = ""
 		for id: String in build:
 			var p: Dictionary = Data.PARTS[id]
-			if p["cat"] == "science" and id != "drill" and not run["broken"].has(id) and is_equal_approx(float(c["power_need"]), float(c["draw_ops"])):
+			if _can_lose(id) and not run["broken"].has(id) and is_equal_approx(float(c["power_need"]), float(c["draw_ops"])):
 				if worst == "" or float(p.get("draw", 0.0)) > float(Data.PARTS[worst].get("draw", 0.0)):
 					worst = id
 		if worst == "":
@@ -1241,18 +1302,19 @@ func finish() -> void:
 	var s_frac: float = minf(1.0, float(run["samples"]) / goal)
 	var pts: int = 0
 	for id: String in build:
-		if Data.PARTS[id]["cat"] == "science" and not run["broken"].has(id):
-			pts += int(Data.PARTS[id]["pts"])
+		if not run["broken"].has(id):
+			pts += int(part_science(id)[1])
 	var home_frac: float = float(run["sent"]) / float(run["data"]) if float(run["data"]) > 0.0 else 0.0
 	if bool(d["returns"]):
 		home_frac = 1.0 if bool(obj.get("return", false)) else 0.0
 	var rich: float = minf(1.0, pts / 6.0)
 	var sci: int = clampi(roundi(40.0 * s_frac + 35.0 * home_frac * s_frac + 25.0 * rich * s_frac) + int(run["score_bonus"]), 0, 100)
-	var sci_tip: String = "Full science: every sample, all of it home, rich instruments."
+	var noun: String = String(Data.JOBS.get(job(), Data.JOBS["drill"])["noun"])
+	var sci_tip: String = "Full science: all the %s, all of it home, rich instruments." % noun
 	if s_frac < 1.0:
-		sci_tip = "Collect all %d samples: you got %d." % [int(goal), int(run["samples"])]
+		sci_tip = "Get all %d %s: you got %d." % [int(goal), noun, int(run["samples"])]
 	elif home_frac < 0.999:
-		sci_tip = "Bring the samples home." if bool(d["returns"]) else "Only %d%% of the data reached Earth: faster dish, more margin." % roundi(home_frac * 100.0)
+		sci_tip = "Launch the capsule to Earth." if bool(d["returns"]) else "Only %d%% of the data reached Earth: faster dish, more margin." % roundi(home_frac * 100.0)
 	elif rich < 1.0:
 		sci_tip = "Carry richer instruments: 6 points a sample is full marks, you had %d." % pts
 	scores["science"] = {"name": "SCIENCE VALUE", "value": sci, "tip": sci_tip}
@@ -1330,6 +1392,7 @@ func finish() -> void:
 	run["report"]["grade_text"] = grade_text
 	run["report"]["grade_rule"] = Data.GRADE_RULE
 	run["report"]["task"] = task()
+	run["report"]["job"] = job()
 	save_game()
 
 const PHASE_NAMES: Dictionary = {"launch": "LAUNCH", "cruise": "CRUISE", "arrive": "ARRIVAL", "landing": "LANDING", "site": "AT THE SITE", "home": "SENDING IT HOME"}
@@ -1352,8 +1415,15 @@ func _report(scores: Dictionary) -> Dictionary:
 		if not bool(e["ok"]):
 			phases[-1]["ok"] = false
 	var objectives: Array = []
+	var jw: Dictionary = Data.JOBS.get(job(), Data.JOBS["drill"])
 	for o: String in run["obj"]:
-		objectives.append({"id": o, "name": String(Data.OBJ_NAMES[o]), "done": bool(run["obj"][o])})
+		var nm: String = String(Data.OBJ_NAMES[o])
+		if o == "samples":
+			nm = String(jw["obj"])
+		elif o == "return" and String(jw["home"]) != "":
+			var home: String = jw["home"]
+			nm = "%s%s reaches Earth" % [home.left(1).to_upper(), home.substr(1)]
+		objectives.append({"id": o, "name": nm, "done": bool(run["obj"][o])})
 	return {"phases": phases, "decisions": run["decisions"], "objectives": objectives, "scores": scores,
 		"total": run["total"], "credits": run["reward"], "build": run["use"],
 		"build_rule": Data.USE_RULE % int(float(Data.DIFFICULTY[int(run["difficulty"])]["over_mult"])),

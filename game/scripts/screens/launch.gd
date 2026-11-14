@@ -15,16 +15,20 @@ extends Control
 ## the rocket is the dynamic pressure q = 1/2 rho v^2; thrust and propellant flow follow each engine's
 ## specific impulse (Isp), which grows from sea level to vacuum; Falcon 9 and Falcon Heavy stage masses,
 ## thrusts and Isp are SpaceX's published figures, rounded; circular orbit speed at 200 km is 7.79 km/s.
-## Max-Q near 11-13 km at 35-43 kPa at full throttle (lower and earlier when throttled back) and the
-## fairing release above 100 km come out of the model; they are not scripted.
-## Game rules: flat 2D flight; a fixed pitch program (the flight computer steers, the player sets the
-## throttle and calls the staged events); one drag coefficient (0.32); Vulcan and Electron numbers are game
-## estimates shaped like the real rockets (Vulcan's upper stage is stronger than the real Centaur V to keep
-## the climb short); time runs 1 to 24 times faster than real; the ascent may use what a clean ascent
+## Max-Q near 12-15 km at 28-43 kPa and stage separation near 75 km (Falcon 9 and Falcon Heavy; Vulcan
+## about 93 km) come out of the model; they are not scripted. The fairing opens in orbit,
+## about 185-200 km up.
+## Game rules: flat 2D flight; a fixed pitch program; the flight computer also throttles through max-Q,
+## drops empty boosters and cuts the engine at orbit speed; the player acts three times (LIFT OFF, STAGE
+## SEPARATION, RELEASE THE SHIP: the fairing opens above 100 km and the ship deploys, in one go); one drag
+## coefficient (0.32); Vulcan and Electron numbers are game estimates shaped like the real rockets (Vulcan's
+## upper stage is stronger than the real Centaur V to keep the climb short); the clock runs 1.5 to 34 times
+## faster than real (the numbers on screen stay true); the ascent may use what a clean ascent
 ## needs plus a reserve (8% on NORMAL, 18% EASY, 3.9% HARD) of the upper stage's propellant (the rest is
 ## kept for the departure burn), and what a sloppy ascent needs beyond that is paid by the spacecraft's
 ## own tank through the rocket equation (Game.burn); the red line for max-Q (92% of the full-throttle peak
-## on NORMAL) and the stress it does are game rules scaled by the difficulty.
+## on NORMAL) and the stress it does are game rules scaled by the difficulty (only reached when the flight
+## computer is told not to throttle: debug_maxq, debug_breakup).
 
 const UI = preload("res://scripts/ui.gd")
 const Pix = preload("res://scripts/pix.gd")
@@ -41,7 +45,11 @@ const ORBIT_V: float = 7790.0
 const FAIRING_ALT: float = 100000.0
 const LADDER_TOP: float = 210000.0
 const THR_BUCKET: float = 0.8   # real rockets throttle down through max-Q (the Space Shuttle to 65-72%)
-const Q_ASK: float = 0.7        # game rule: the throttle-back direction shows at 70% of the red line
+const Q_ASK: float = 0.7        # game rule: the flight computer throttles back at 70% of the red line
+const COUNT_RATE: float = 1.5   # the 3-2-1 countdown runs 1.5 times faster than real seconds
+const DEP0: float = 0.6         # deployment: first part unfolds after this many seconds, then one every DEP_STEP
+const DEP_STEP: float = 0.45
+const SAY_HOLD: float = 2.6     # a status line from an event stays at least this long (real seconds)
 
 const RX: float = 336.0       # rocket centre x; these match tools/art/gen_flight.py (the pad art)
 const BASE_Y: float = 262.0
@@ -60,12 +68,12 @@ const CUTS: Dictionary = {"electron": [26, 36], "falcon9": [38, 67], "vulcan": [
 ## core runs at this share of thrust while the side boosters burn (real: it throttles down to save fuel).
 const LV: Dictionary = {
 	"falcon9": {"s1_dry": 25600.0, "s1_prop": 395700.0, "s1_t": 7607000.0, "s1_isp": [283.0, 312.0],
-		"s2_dry": 3900.0, "s2_prop": 92700.0, "s2_t": 981000.0, "s2_isp": 348.0, "fair": 1900.0, "area": 10.8, "hp": 155000.0, "center": 1.0, "boost": {}},
+		"s2_dry": 3900.0, "s2_prop": 92700.0, "s2_t": 981000.0, "s2_isp": 348.0, "fair": 1900.0, "area": 10.8, "hp": 80000.0, "center": 1.0, "boost": {}},
 	"heavy": {"s1_dry": 25600.0, "s1_prop": 395700.0, "s1_t": 7607000.0, "s1_isp": [283.0, 312.0],
-		"s2_dry": 3900.0, "s2_prop": 92700.0, "s2_t": 981000.0, "s2_isp": 348.0, "fair": 1900.0, "area": 32.0, "hp": 70000.0, "center": 0.55,
+		"s2_dry": 3900.0, "s2_prop": 92700.0, "s2_t": 981000.0, "s2_isp": 348.0, "fair": 1900.0, "area": 32.0, "hp": 45000.0, "center": 0.55,
 		"boost": {"n": 2, "dry": 22200.0, "prop": 395700.0, "t": 7607000.0, "isp": [283.0, 312.0], "solid": false}},
 	"vulcan": {"s1_dry": 35000.0, "s1_prop": 380000.0, "s1_t": 4900000.0, "s1_isp": [310.0, 339.0],
-		"s2_dry": 6000.0, "s2_prop": 54000.0, "s2_t": 600000.0, "s2_isp": 453.0, "fair": 4000.0, "area": 30.0, "hp": 85000.0, "center": 1.0,
+		"s2_dry": 6000.0, "s2_prop": 54000.0, "s2_t": 600000.0, "s2_isp": 453.0, "fair": 4000.0, "area": 30.0, "hp": 50000.0, "center": 1.0,
 		"boost": {"n": 6, "dry": 6500.0, "prop": 41000.0, "t": 1100000.0, "isp": [250.0, 275.0], "solid": true}},
 	"electron": {"s1_dry": 1000.0, "s1_prop": 9250.0, "s1_t": 200000.0, "s1_isp": [311.0, 311.0],
 		"s2_dry": 250.0, "s2_prop": 2050.0, "s2_t": 25800.0, "s2_isp": 343.0, "fair": 50.0, "area": 1.13, "hp": 90000.0, "center": 1.0, "boost": {}},
@@ -212,7 +220,7 @@ class Ascent extends RefCounted:
 var a: Ascent = null
 var lv: Dictionary = {}
 var lv_id: String = ""
-var mode: String = "pad"    # pad, count, fly, coast, cam, deploy, done, fail
+var mode: String = "pad"    # pad, count, fly, coast (in orbit, waiting for RELEASE), release, deploy, done, fail
 var in_cam: bool = false
 var count_t: float = 0.0
 var mode_t: float = 0.0
@@ -245,8 +253,9 @@ var band: float = 1.0
 var dmg_mult: float = 1.0
 var ship_dv: float = 0.0         # m/s the spacecraft must make up
 var notes: Array[Array] = []      # [ok, text] for the log at the end
-var flash_msg: String = ""
+var flash_msg: String = ""       # a status line from an event (boosters dropped, engine cut, not yet)
 var flash_t: float = 9.0
+var s2_t: float = -1.0           # real seconds since the upper stage lit (time speeds up after a moment)
 var fail_title: String = ""
 var fail_why: String = ""
 var fail_real: String = ""
@@ -267,11 +276,6 @@ var shake: float = 0.0
 var flash_age: float = 9.0
 var boom_age: float = -1.0
 var ign_t: float = -1.0
-
-# log ticker
-var shown: int = 0
-var lines: Array[Dictionary] = []
-var new_t: float = 99.0
 
 # textures (kept in members so they are never freed)
 var tex_rocket: Texture2D = null
@@ -298,9 +302,7 @@ var tumbles: Dictionary = {}      # name -> Texture2D strip of 16 square frames
 var nozzles: Array[Vector2] = []
 
 # on-screen buttons (touch and mouse)
-const BTN_ACT: Rect2 = Rect2(516, 266, 118, 27)
-const BTN_UP: Rect2 = Rect2(12, 158, 62, 17)
-const BTN_DN: Rect2 = Rect2(78, 158, 62, 17)
+const BTN_ACT: Rect2 = Rect2(424, 222, 208, 68)   # the one prompt box; tapping it is the same as SPACE
 const BTN_HELP: Rect2 = Rect2(614, 6, 20, 17)
 
 func _ready() -> void:
@@ -361,13 +363,9 @@ func _setup() -> void:
 	p1_0 = a.p1
 	pb_0 = a.pb
 	seq.clear()
-	seq.append("ignite")
-	if a.boost_on:
-		seq.append("boosters")
-	for e: String in ["stage", "fairing", "cutoff", "deploy"]:
+	for e: String in ["ignite", "stage", "release"]:  # the three moments the player acts
 		seq.append(e)
 	_setup_ship()
-	_update_log(true)
 
 ## The upper stage is full; the ascent may use only `usable` kg of it. The rest is the departure burn
 ## toward the destination after the parking orbit (real: interplanetary upper stages restart in orbit).
@@ -414,8 +412,6 @@ func _clean_use(p2_load: float) -> float:
 		if c.s1_on and c.p1 <= 0.0:
 			meco_alt = c.alt
 			c.drop_stage()
-		if not c.s1_on and c.fair_on and c.alt >= FAIRING_ALT:
-			c.fair_on = false
 		if c.speed() >= ORBIT_V or (not c.s1_on and c.s2_lit and c.p2 <= 0.0):
 			break
 		c.step(0.2)
@@ -447,7 +443,6 @@ func _process(delta: float) -> void:
 
 func _tick(dt: float) -> void:
 	t += dt
-	new_t += dt
 	flash_t += dt
 	flash_age += dt
 	shake = maxf(0.0, shake - dt * 3.0)
@@ -459,12 +454,12 @@ func _tick(dt: float) -> void:
 	match mode:
 		"count":
 			_step_count(dt)
-		"fly", "coast":
+		"fly", "coast", "release":
 			_step_fly(dt)
 		"deploy":
 			_step_deploy(dt)
 		"done":
-			if mode_t > 0.6 and not bool(Game.run.get("launched", false)):
+			if mode_t > 0.3 and not bool(Game.run.get("launched", false)):
 				Game.run["launched"] = true
 				Audio.loop("thrust", false)
 				Game.goto("flight")
@@ -473,7 +468,6 @@ func _tick(dt: float) -> void:
 		_autopilot()
 	_step_parts(dt)
 	_step_falling(dt)
-	_update_log(false)
 
 func _set_mode(m: String) -> void:
 	mode = m
@@ -481,7 +475,7 @@ func _set_mode(m: String) -> void:
 
 func _step_count(dt: float) -> void:
 	var c0: float = count_t
-	count_t += dt
+	count_t += dt * COUNT_RATE
 	for i: int in 3:
 		if c0 < float(i) and count_t >= float(i):
 			Audio.play("countdown_beep", -5.0)
@@ -515,23 +509,17 @@ func _ignite() -> void:
 		_spark(Vector2(RX + sd * 4.0, DECK_Y - 4.0), Vector2(sd * randf_range(50, 190), -randf_range(10, 110)), randf_range(0.35, 0.8), Color("ffb84d"))
 
 ## Time runs faster than real, slower around the moments the player must act.
+## Liftoff near real time, then faster and faster; the upper stage burn runs fastest.
 func _warp() -> float:
-	if mode == "coast":
+	if mode != "fly":
 		return 4.0
-	var nx: String = _next()
-	if _due(nx) and nx != "fairing":
-		return 1.0
-	if a.t < 6.0:
-		return 1.5
-	if maxq_task == 1:
-		return 2.0
-	if nx == "cutoff" and a.s2_burning():  # the last 3 real seconds before orbit speed run near real time
-		var tgo: float = (ORBIT_V - a.speed()) / maxf(a.accel, 1.0)
-		return clampf(tgo / 3.0, 1.0, 24.0)
-	var km: float = a.alt / 1000.0
-	if km < 22.0:
-		return 3.0
-	return clampf(3.0 + (km - 22.0) / 40.0 * 9.0, 3.0, 24.0 if not a.s1_on else 12.0)
+	if _due(_next()):  # stage 1 is empty: the rocket coasts until the player separates it, then the clock
+		return 1.0 if due_since < 0.0 or a.t - due_since < 3.0 else 0.25  # slows so a slow press costs little
+	if a.s1_on:
+		return clampf(1.5 + (a.t - 4.0) * 0.36, 1.5, 30.0)
+	if s2_t < 0.0:
+		return 2.0  # separation and ignition stay visible
+	return clampf(4.0 + s2_t * 30.0, 4.0, 34.0)
 
 func _step_fly(dt: float) -> void:
 	var sim: float = dt * _warp()
@@ -545,11 +533,14 @@ func _step_fly(dt: float) -> void:
 	if not was_lit and a.s2_lit:
 		Audio.play("ignition", -8.0, 1.5)
 		flash_age = 0.0
+		s2_t = 0.0
 	var h: float = _h_px()
 	hv = (h - last_h) / maxf(dt, 0.001)
 	last_h = h
 	if stage_t >= 0.0:
 		stage_t += dt
+	if s2_t >= 0.0:
+		s2_t += dt
 	var lit: bool = a.burning()
 	Audio.loop("thrust", lit, -14.0 + 6.0 * a.thr)
 	if lit:
@@ -560,34 +551,38 @@ func _step_fly(dt: float) -> void:
 		if alarm_t <= 0.0:
 			alarm_t = 0.9
 			Audio.play("alarm", -8.0)
-	if mode == "coast" and mode_t > 1.6:
-		_set_mode("cam")
+	if mode == "release" and mode_t > 1.3:  # the fairing halves have flown off: cut to the stage camera
 		in_cam = true
 		Audio.loop("thrust", false)
-		Audio.play("radio_blip", -6.0)
+		_deploy()
 
-## After each physics step: pressure damage, the max-Q directions, running out of fuel.
+## After each physics step: pressure damage, what the flight computer does by itself (throttle through
+## max-Q, drop empty boosters, cut the engine at orbit speed), running out of fuel.
 func _after_step(dt: float) -> void:
 	if a.q > q_seen:
 		q_seen = a.q
 		q_seen_alt = a.alt
 	if a.q > q_red and a.s1_on:
 		dmg += (a.q / q_red - 1.0) * 40.0 * dmg_mult * dt
-		if Game.difficulty == 0:
+		if band > 1.2:
 			dmg = minf(dmg, 95.0)  # EASY: the rocket complains but never breaks up
 		if dmg >= 100.0:
 			_breakup()
 			return
-	if a.s1_on:
+	if a.s1_on and mode == "fly":
 		if maxq_task == 0 and a.q > Q_ASK * q_red:
-			maxq_task = 2 if a.thr <= THR_BUCKET + 0.01 else 1
-		if maxq_task == 1 and a.thr <= THR_BUCKET + 0.01:
-			maxq_task = 2
-		if (maxq_task == 1 or maxq_task == 2) and a.alt > q_peak_alt + 3000.0 and a.q < 0.6 * q_red:
-			maxq_missed = maxq_task == 1
+			maxq_task = 1
+			if not auto_noq:
+				a.thr = THR_BUCKET
+		if maxq_task == 1 and a.alt > q_peak_alt + 3000.0 and a.q < 0.6 * q_red:
 			maxq_task = 3
-	if maxq_task == 3 and a.thr >= 0.99:
-		maxq_task = 4
+			maxq_missed = a.thr > THR_BUCKET + 0.01
+			a.thr = 1.0
+			_say("PAST MAX-Q: BACK TO FULL THRUST")
+		if a.boost_on and a.pb <= 0.0:
+			_drop_boosters()
+	if mode == "fly" and a.s2_burning() and a.speed() >= ORBIT_V:
+		_cutoff()
 	if _due(_next()):
 		if due_since < 0.0:
 			due_since = a.t
@@ -606,25 +601,25 @@ func _next() -> String:
 
 func _due(ev: String) -> bool:
 	match ev:
-		"boosters":
-			return a.pb <= 0.0
 		"stage":
 			return a.p1 <= 0.0 and not a.boost_on
-		"fairing":
-			return a.alt >= FAIRING_ALT and not a.s1_on
-		"cutoff":
-			return a.speed() >= ORBIT_V - _tol()
+		"release":
+			return mode == "coast"
 	return false
 
 func _tol() -> float:
 	return 40.0 * band
 
-func _flash(s: String) -> void:
+## A status line from an event; it stays SAY_HOLD seconds unless a player prompt needs the box.
+func _say(s: String) -> void:
 	flash_msg = s
 	flash_t = 0.0
+
+func _flash(s: String) -> void:
+	_say(s)
 	Audio.play("error", -8.0)
 
-## SPACE, ENTER or the big button: the next staged event.
+## SPACE, ENTER or the big prompt box: the one thing the prompt asks for.
 func _act() -> void:
 	if help_open:
 		help_open = false
@@ -635,8 +630,10 @@ func _act() -> void:
 			_set_mode("count")
 			Audio.play("radio_blip", -6.0)
 			return
-		"cam":
-			_deploy()
+		"coast":
+			if _due("release"):
+				_drop_fairing()
+				_set_mode("release")
 			return
 		"fail":
 			if mode_t < 1.2:
@@ -647,53 +644,16 @@ func _act() -> void:
 			return
 	if mode != "fly":
 		return
-	var nx: String = _next()
+	if _next() != "stage":
+		return
+	if not _due("stage"):
+		_flash("WAIT: STAGE 1 STILL HAS FUEL")
+		return
+	# a late press costs a little: the empty stage coasts while gravity slows it (paid by the ship's tank)
 	var lat: float = a.t - due_since if due_since >= 0.0 else 0.0
-	match nx:
-		"boosters":
-			var left: float = a.pb / maxf(1.0, pb_0)
-			if left > 0.08 * band:
-				_flash("NOT YET: THE BOOSTERS STILL HAVE %d%% FUEL" % ceili(left * 100.0))
-				return
-			if a.pb > 0.0:
-				notes.append([false, "Boosters dropped early: %s kg of their fuel thrown away." % _n(a.pb)])
-			elif lat > 3.0:
-				notes.append([false, "Boosters dropped %d s late: carrying empty tanks cost speed." % roundi(lat)])
-			_drop_boosters()
-		"stage":
-			var left1: float = a.p1 / maxf(1.0, p1_0)
-			if a.boost_on:
-				_flash("FIRST DROP THE BOOSTERS")
-				return
-			if left1 > 0.06 * band:
-				_flash("NOT YET: STAGE 1 STILL HAS %d%% FUEL" % ceili(left1 * 100.0))
-				return
-			if a.p1 > 0.0:
-				notes.append([false, "Stage 1 dropped early: %s kg of its fuel thrown away; the second stage burned longer." % _n(a.p1)])
-			elif lat > 3.0:
-				notes.append([false, "Stage 1 dropped %d s late: coasting let gravity take about %d m/s." % [roundi(lat), roundi(lat * G0)]])
-			_drop_stage()
-		"fairing":
-			if a.s1_on:
-				_flash("FIRST SEPARATE STAGE 1")
-				return
-			var early_km: float = (FAIRING_ALT - a.alt) / 1000.0
-			if early_km > 30.0 * band:
-				_flash("NOT YET: THE AIR IS STILL TOO THICK AT %d km" % floori(a.alt / 1000.0))
-				return
-			if early_km > 0.0:
-				var hurt: float = early_km / (30.0 * band) * 45.0 * dmg_mult
-				dmg += hurt
-				notes.append([false, "Fairing opened at %d km, below 100 km: air friction heated the spacecraft (%d%% stress)." % [floori(a.alt / 1000.0), roundi(hurt)]])
-			elif lat > 20.0:
-				notes.append([true, "Fairing dropped late (%d km): its %s kg rode along a little longer." % [floori(a.alt / 1000.0), Game.fmt(lv["fair"])]])
-			_drop_fairing()
-		"cutoff":
-			var v: float = a.speed()
-			if v < ORBIT_V - 500.0 * band:
-				_flash("NOT YET: %s OF %s m/s" % [_n(v), _n(ORBIT_V)])
-				return
-			_cutoff()
+	if lat > 3.0:
+		notes.append([false, "Stage 1 separated %d s late: coasting let gravity take about %d m/s." % [roundi(lat), roundi(lat * G0)]])
+	_drop_stage()
 
 func _advance() -> void:
 	ev_i += 1
@@ -730,7 +690,7 @@ func _drop_boosters() -> void:
 		_release("boost0", Vector2(-24, 8), -2.5)
 		_release("boost1", Vector2(24, 8), 2.5)
 	_sep_puffs(tex_rocket.get_height() * 0.45, 10)
-	_advance()
+	_say("BOOSTERS EMPTY: THEY DROP AWAY BY THEMSELVES")
 
 func _drop_stage() -> void:
 	a.drop_stage()
@@ -761,7 +721,6 @@ func _cutoff() -> void:
 			notes.append([false, "Engine cut late at %s m/s: the orbit came out %d m/s too fast." % [_n(cut_v), roundi(cut_v - ORBIT_V)]])
 	Audio.loop("thrust", false)
 	Audio.play("radio_blip", -4.0)
-	_advance()
 	_set_mode("coast")
 
 ## The upper stage ran out before the engine was cut.
@@ -783,8 +742,6 @@ func _stage2_dry() -> void:
 		ship_dv += cut_v - ORBIT_V - _tol()
 		notes.append([false, "The engine was never cut: the orbit came out %d m/s too fast." % roundi(cut_v - ORBIT_V)])
 	_flash("STAGE 2 RAN DRY")
-	if _next() == "cutoff":
-		_advance()
 	_set_mode("coast")
 
 func _breakup() -> void:
@@ -819,16 +776,15 @@ func _deploy() -> void:
 	Audio.play("stage_sep", -6.0, 1.6)
 	for i: int in 12:
 		_spark(Vector2(320 + randf_range(-30, 30), 214), Vector2(randf_range(-80, 80), randf_range(-60, 10)), 0.6, Color("fff3b0"), 0.0)
-	_advance()
 
 func _deploy_end() -> float:
-	return 1.4 + 0.7 * groups.size() + 0.4
+	return DEP0 + DEP_STEP * groups.size() + 0.3
 
 func _step_deploy(dt: float) -> void:
 	var d0: float = dep_t
 	dep_t += dt
 	for i: int in groups.size():
-		var at: float = 1.4 + 0.7 * i
+		var at: float = DEP0 + DEP_STEP * i
 		if d0 < at and dep_t >= at:
 			Audio.play("radio_blip", -8.0, 1.0 + 0.15 * i)
 	var end: float = _deploy_end()
@@ -842,7 +798,7 @@ func _step_deploy(dt: float) -> void:
 			_set_mode("fail")
 			return
 		Audio.play("success", -4.0)
-	if dep_t > end + 2.8 and mode == "deploy":
+	if dep_t > end + 1.8 and mode == "deploy":
 		_set_mode("done")
 
 ## The log lines for the report, and the price of a sloppy ascent.
@@ -851,6 +807,8 @@ func _finish_notes() -> void:
 	notes.push_front([dmg < 20.0, "Ascent on %s: max-Q %d kPa at %d km (red line %d kPa)." % [rk, roundi(q_seen / 1000.0), roundi(q_seen_alt / 1000.0), roundi(q_red / 1000.0)]])
 	if maxq_missed:
 		notes.append([false, "No throttle-back through max-Q. Real rockets throttle down there to protect the structure."])
+	elif maxq_task >= 1:
+		notes.append([true, "Through max-Q the flight computer throttled down to %d%%, as real rockets do." % roundi(THR_BUCKET * 100.0)])
 	if dmg >= 50.0:
 		var hit: String = _break_part()
 		if hit != "":
@@ -873,7 +831,7 @@ func _finish_notes() -> void:
 			Game.fail("SHORT OF ORBIT. The spacecraft needed %d m/s to finish the climb and its tank ran dry. A cleaner climb or more fuel would have saved it." % roundi(ship_dv))
 			return
 		Game.note(false, "The spacecraft's own engine made up %d m/s with %s kg of its fuel." % [roundi(ship_dv), _n(used)])
-	Game.note(true, "Spacecraft deployed in orbit: 200 km up at 7.8 km/s.")
+	Game.note(true, "Spacecraft deployed in orbit: %d km up at 7.8 km/s." % roundi(a.alt / 1000.0))
 
 func _break_part() -> String:
 	var pick: String = ""
@@ -893,24 +851,6 @@ func _break_part() -> String:
 
 # ------------------------------------------------------------------ input
 
-func _throttle(d: int) -> void:
-	if help_open or mode != "fly" or a.cut:
-		return
-	if a.alt < 500.0:
-		_flash("THROTTLE STAYS AT 100% UNTIL THE TOWER IS CLEAR")
-		return
-	if not a.s1_on:
-		_flash("THE UPPER STAGE ALWAYS RUNS AT FULL THRUST")
-		return
-	var lo: float = a.floor_thr()
-	var nt: float = clampf(snappedf(a.thr + 0.1 * d, 0.1), lo, 1.0)
-	if is_equal_approx(nt, a.thr):
-		if d < 0:
-			_flash("LOWEST SAFE THROTTLE: %d%%" % roundi(lo * 100.0))
-		return
-	a.thr = nt
-	Audio.play("click", -10.0, 1.0 + 0.3 * a.thr)
-
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed:
 		var ke: InputEventKey = event as InputEventKey
@@ -918,10 +858,6 @@ func _input(event: InputEvent) -> void:
 			KEY_SPACE, KEY_ENTER, KEY_KP_ENTER:
 				if not ke.echo:
 					_act()
-			KEY_UP, KEY_W:
-				_throttle(1)
-			KEY_DOWN, KEY_S:
-				_throttle(-1)
 			KEY_SLASH, KEY_QUESTION, KEY_H, KEY_F1:
 				if not ke.echo:
 					help_open = not help_open
@@ -940,31 +876,20 @@ func _gui_input(event: InputEvent) -> void:
 			help_open = false
 		elif BTN_ACT.has_point(p):
 			_act()
-		elif BTN_UP.has_point(p) and _hud_on():
-			_throttle(1)
-		elif BTN_DN.has_point(p) and _hud_on():
-			_throttle(-1)
 		accept_event()
 
 # ------------------------------------------------------------------ autopilot (debug hooks)
 
+## Presses the prompt the moment it shows (the flight computer does the rest by itself).
 func _autopilot() -> void:
 	if help_open:
 		return
 	match mode:
 		"pad":
 			_act()
-		"cam":
-			if mode_t > 0.8:
-				_act()
-		"fly":
-			if not auto_noq:
-				if maxq_task == 1:
-					_throttle(-1)
-				elif maxq_task == 3:
-					_throttle(1)
+		"fly", "coast":
 			var nx: String = _next()
-			if _due(nx) and nx != hold_ev and (nx != "cutoff" or a.speed() >= ORBIT_V):
+			if _due(nx) and nx != hold_ev and mode_t > 0.4:
 				_act()
 
 # ------------------------------------------------------------------ particles
@@ -1045,7 +970,7 @@ func _draw() -> void:
 		_draw_cam()
 	else:
 		_draw_ascent()
-	if mode == "cam" and mode_t < 0.4:
+	if in_cam and mode == "deploy" and mode_t < 0.4:
 		draw_rect(Rect2(0, 0, 640, CON_Y), Color(0, 0, 0, 1.0 - floorf(mode_t / 0.1) * 0.25))
 	_draw_console()
 	_draw_hud()
@@ -1222,7 +1147,7 @@ func _ship_build() -> Dictionary:
 	var b: Dictionary = stowed.duplicate()
 	if mode == "deploy" or mode == "done":
 		for i: int in groups.size():
-			if dep_t >= 1.4 + 0.7 * i:
+			if dep_t >= DEP0 + DEP_STEP * i:
 				for id: String in groups[i]:
 					b[id] = Game.build[id]
 	return b
@@ -1245,7 +1170,7 @@ func _draw_cam() -> void:
 	if (mode == "deploy" or mode == "done") and dep_t < 0.5:
 		Fx.glow(self, Vector2(320, ring_top + 2.0), 30.0 * (1.0 - dep_t * 2.0), Color(1, 1, 0.9, 0.6), true)
 	for i: int in groups.size():
-		var at: float = 1.4 + 0.7 * i
+		var at: float = DEP0 + DEP_STEP * i
 		if d >= at and d < at + 0.6:
 			for j: int in 4:
 				Fx.sparkle(self, origin + Vector2(-50 + j * 33, -10 + (j % 2) * 18), (d - at) / 0.6, UI.YELLOW, 1)
@@ -1272,208 +1197,86 @@ func _txt_r(xr: float, y: float, s: String, size: int, c: Color) -> void:
 func _draw_hud() -> void:
 	if _hud_on():
 		_draw_gauges()
-		_draw_ladder()
-		_draw_clock()
-	_draw_direction()
-	Pix.button(self, BTN_HELP, "?", "btn", "pressed" if help_open else "normal")
-
-func _clock_s() -> String:
-	if mode == "pad" or mode == "count":
-		return "T-%d" % maxi(0, ceili(3.0 - count_t))
-	var s: int = int(a.t)
-	return "T+%d:%02d" % [s / 60, s % 60]
-
-func _event_name() -> String:
-	if mode == "pad":
-		return "READY ON THE PAD"
-	if mode == "count":
-		return "IGNITION" if count_t >= 2.4 else ("ARMS CLEAR" if count_t >= 1.0 else "COUNTDOWN")
-	if mode == "fail":
-		return "LAUNCH FAILED"
-	if mode == "coast":
-		return "ENGINE CUT: IN ORBIT"
-	if maxq_task == 1 or maxq_task == 2:
-		return "MAX-Q"
-	if a.s1_on:
-		if a.boost_on and a.pb <= 0.0:
-			return "BOOSTERS EMPTY"
-		if a.p1 <= 0.0:
-			return "STAGE 1 EMPTY"
-		return "LIFTOFF" if a.t < 12.0 else "STAGE 1 BURN"
-	if not a.s2_lit:
-		return "STAGE SEPARATION"
-	return "STAGE 2 BURN"
-
-func _draw_clock() -> void:
-	var r: Rect2 = Rect2(226, 6, 188, 34)
-	Pix.panel(self, r)
-	_txt(Vector2(r.position.x + 8.0, 29), _clock_s(), 20, UI.YELLOW if mode == "pad" or mode == "count" else UI.TEXT)
-	var rk: String = String(Data.ROCKETS[lv_id]["name"]) if Data.ROCKETS.has(lv_id) else lv_id
-	_txt_r(r.end.x - 7.0, 19, rk, 10, UI.DIM)
-	var ec: Color = UI.RED if mode == "fail" or (maxq_task <= 2 and a.q > q_red) else (UI.YELLOW if maxq_task == 1 or maxq_task == 2 else UI.GREEN)
-	_txt_r(r.end.x - 7.0, 32, _event_name(), 10, ec)
 	if mode == "count" and count_t < 2.4:
 		Pix.title_c(self, 386.0, 120.0, str(ceili(3.0 - count_t)), Color.WHITE if fposmod(count_t, 1.0) < 0.12 else UI.YELLOW, 3)
+	if not help_open:
+		_draw_direction()
+	Pix.button(self, BTN_HELP, "?", "btn", "pressed" if help_open else "normal")
 
+## Three readouts in plain words: altitude, speed (toward orbit speed), air pressure (with its red line).
 func _draw_gauges() -> void:
-	Pix.panel(self, Rect2(6, 6, 140, 230))
+	var stress: bool = dmg > 1.0
+	Pix.panel(self, Rect2(6, 6, 150, 142 if stress else 128))
 	var km: float = a.alt / 1000.0
-	_txt(Vector2(12, 18), "ALTITUDE", 10, UI.DIM)
-	_txt(Vector2(12, 38), ("%.1f km" % km) if km < 100.0 else ("%d km" % roundi(km)), 20, UI.YELLOW)
-	_txt(Vector2(12, 52), "VERTICAL SPEED", 10, UI.DIM)
-	var vy: int = roundi(a.vy)
-	_txt(Vector2(12, 72), "%s%s m/s" % ["+" if vy > 0 else "", _n(vy)], 20, UI.TEXT if vy >= 0 else UI.ORANGE)
+	_txt(Vector2(13, 18), "ALTITUDE", 10, UI.DIM)
+	_txt(Vector2(13, 38), ("%.1f km" % km) if km < 100.0 else ("%d km" % roundi(km)), 20, UI.YELLOW)
 	var v: float = a.speed()
-	_txt(Vector2(12, 88), "SPEED", 10, UI.DIM)
-	_txt_r(140, 88, "%s m/s" % _n(v), 10, UI.TEXT)
-	Pix.gauge(self, Rect2(12, 91, 128, 8), v / (ORBIT_V * 1.06), UI.CYAN, 1.0 / 1.06)
+	_txt(Vector2(13, 56), "SPEED", 10, UI.DIM)
+	_txt_r(149, 56, "ORBIT %s" % _n(ORBIT_V), 10, UI.DIM)
+	_txt(Vector2(13, 76), "%s m/s" % _n(v), 20, UI.TEXT)
+	Pix.gauge(self, Rect2(13, 80, 136, 7), v / (ORBIT_V * 1.06), UI.CYAN, 1.0 / 1.06)
 	var qc: Color = UI.RED if a.q > q_red else (UI.YELLOW if a.q > 0.75 * q_red else UI.GREEN)
-	if dmg > 1.0:
-		_txt(Vector2(12, 112), "STRESS %d%%" % roundi(dmg), 10, UI.RED if dmg > 50.0 else UI.ORANGE)
-	else:
-		_txt(Vector2(12, 112), "PRESSURE", 10, UI.DIM)
-	_txt_r(140, 112, "%d kPa" % roundi(a.q / 1000.0), 10, qc if a.q > 0.75 * q_red else UI.TEXT)
-	var red_x: float = 14.0 + floorf(123.0 / 1.35)
-	Pix.gauge(self, Rect2(12, 115, 128, 8), a.q / (q_red * 1.35), qc, 1.0 / 1.35)
-	draw_rect(Rect2(red_x + 1.0, 117, 137.0 - red_x, 4), Color(0.85, 0.15, 0.15, 0.55))  # the red zone
-	_txt(Vector2(12, 134), "THROTTLE", 10, UI.DIM)
-	_txt_r(140, 134, "%d%%" % roundi(a.thr * 100.0), 10, UI.YELLOW if a.thr < 0.99 else UI.TEXT)
-	var lo: float = a.floor_thr() if mode == "fly" else 0.4
-	for i: int in 10:
-		var on: bool = a.thr >= (i + 1) * 0.1 - 0.001
-		var c: Color = UI.GREEN if on else Color("1a2038")
-		if not on and (i + 1) * 0.1 <= lo - 0.05:
-			c = Color("3a1a26")
-		draw_rect(Rect2(12 + i * 13, 139, 11, 12), Color("05070d"))
-		draw_rect(Rect2(13 + i * 13, 140, 9, 10), c)
-		if on:
-			draw_rect(Rect2(13 + i * 13, 140, 9, 2), UI.GREEN.lightened(0.5))
-	var st: String = "normal" if mode == "fly" else "disabled"
-	Pix.button(self, BTN_UP, "UP / W", "btn", st)
-	Pix.button(self, BTN_DN, "DOWN / S", "btn", st)
-	_txt(Vector2(12, 190), "FUEL", 10, UI.DIM)
-	var y: float = 192.0
-	if pb_0 > 0.0:
-		_fuel_row(y, "BOOST", a.pb / pb_0, a.boost_on)
-		y += 13.0
-	_fuel_row(y, "STAGE 1", a.p1 / p1_0, a.s1_on)
-	y += 13.0
-	_fuel_row(y, "STAGE 2", (a.p2 - a.p2_min) / maxf(1.0, p2_0), true)
+	_txt(Vector2(13, 100), "AIR PRESSURE", 10, UI.DIM)
+	_txt_r(149, 100, "LIMIT %d" % roundi(q_red / 1000.0), 10, UI.RED if a.q > q_red else UI.DIM)
+	_txt(Vector2(13, 120), "%d kPa" % roundi(a.q / 1000.0), 20, qc if a.q > 0.75 * q_red else UI.TEXT)
+	var red_x: float = 15.0 + floorf(131.0 / 1.35)
+	Pix.gauge(self, Rect2(13, 124, 136, 7), a.q / (q_red * 1.35), qc, 1.0 / 1.35)
+	draw_rect(Rect2(red_x + 1.0, 126, 146.0 - red_x, 3), Color(0.85, 0.15, 0.15, 0.55))  # the red zone
+	if stress:
+		_txt(Vector2(13, 143), "STRESS %d%%" % roundi(dmg), 10, UI.RED if dmg > 50.0 else UI.ORANGE)
 
-func _fuel_row(y: float, label: String, frac: float, attached: bool) -> void:
-	_txt(Vector2(12, y + 9.0), label, 10, UI.TEXT if attached else UI.DIM)
-	if not attached:
-		_txt_r(140, y + 9.0, "DROPPED", 10, UI.DIM)
-		return
-	var c: Color = UI.GREEN if frac > 0.25 else (UI.YELLOW if frac > 0.08 else UI.RED)
-	Pix.gauge(self, Rect2(62, y + 2.0, 78, 8), frac, c)
-
-## Altitude ladder on the right edge, square-root scale so the low milestones get room.
-func _draw_ladder() -> void:
-	var x: float = 618.0
-	var y0: float = 254.0
-	var hgt: float = 222.0
-	Pix.panel(self, Rect2(x, y0 - hgt - 4.0, 16, hgt + 8.0))
-	var marks: Array = [[q_peak_alt, "MAX-Q"], [meco_alt, "STAGING"], [FAIRING_ALT, "FAIRING 100 km"], [ORBIT_ALT, "ORBIT 200 km"]]
-	var nx: String = _next()
-	var nxt_i: int = 0
-	match nx:
-		"boosters", "stage":
-			nxt_i = 1
-		"fairing":
-			nxt_i = 2
-		"cutoff":
-			nxt_i = 3
-		"deploy", "":
-			nxt_i = 4
-	if maxq_task <= 2 and nxt_i <= 1:
-		nxt_i = 0
-	for i: int in marks.size():
-		var m: Array = marks[i]
-		var my: float = floorf(y0 - hgt * sqrt(clampf(float(m[0]) / LADDER_TOP, 0.0, 1.0)))
-		var col: Color = UI.CYAN if i < nxt_i else (UI.YELLOW if i == nxt_i else UI.DIM)
-		draw_rect(Rect2(x + 2.0, my, 12, 1), col)
-		if i == 1 and absf(meco_alt - FAIRING_ALT) < 9000.0:
-			continue  # staging and the fairing nearly coincide: one label is enough
-		Pix.text_o(self, Vector2(x - 4.0 - Pix.text_w(String(m[1]), 10), my + 4.0), String(m[1]), 10, col)
-	var ay: float = floorf(y0 - hgt * sqrt(clampf(a.alt / LADDER_TOP, 0.0, 1.0)))
-	draw_rect(Rect2(x + 3.0, ay - 2.0, 8, 5), UI.YELLOW)
-	draw_rect(Rect2(x + 1.0, ay, 12, 1), Color.WHITE)
-
-## [key, text, urgent]: the one thing to do now. It stays until the player has done it.
+## The one thing on screen to read: [key, big text, small line]. A key means the player must act; the
+## prompt stays until they do. Without a key it is a status line saying what the rocket does by itself.
 func _direction() -> Array:
 	match mode:
 		"pad":
-			return ["SPACE", "START THE COUNTDOWN", true]
+			return ["SPACE", "LIFT OFF", "READY ON THE PAD"]
 		"count":
-			return ["", "COUNTDOWN: THE ENGINES START AT ZERO", false]
+			return ["", "", "COUNTDOWN. THE ENGINES START AT ZERO."]
 		"coast":
-			return ["", "ENGINE OFF. SWITCHING TO THE STAGE 2 CAMERA", false]
-		"cam":
-			return ["SPACE", "DEPLOY YOUR SPACECRAFT", true]
+			return ["SPACE", "RELEASE THE SHIP", "IN ORBIT: %d km UP, 7.8 km/s" % roundi(a.alt / 1000.0)]
+		"release":
+			return ["", "", "THE NOSE SHELL (FAIRING) OPENS: UP HERE THE AIR IS TOO THIN TO HURT THE SHIP."]
 		"deploy", "done":
-			return ["", "THE SPACECRAFT UNFOLDS ITS PANELS AND ANTENNAS", false]
+			return ["", "", "THE SHIP SPRINGS FREE AND UNFOLDS ITS PANELS AND ANTENNAS."]
 		"fail":
-			return ["SPACE", "SEE THE MISSION REPORT", mode_t > 1.2]
+			return ["SPACE", "SEE THE REPORT", "LAUNCH FAILED"] if mode_t > 1.2 else ["", "", ""]
+	if _next() == "stage" and _due("stage"):
+		return ["SPACE", "STAGE SEPARATION", "STAGE 1 IS EMPTY"]
+	if flash_t < SAY_HOLD and flash_msg != "":
+		return ["", "", flash_msg]
 	if maxq_task == 1:
-		return ["DOWN", "THROTTLE BACK TO 80%: AIR PRESSURE IS RISING", true]
-	if maxq_task == 3:
-		return ["UP", "PAST MAX-Q: FULL THROTTLE AGAIN", true]
-	var nx: String = _next()
-	var now: bool = _due(nx)
-	match nx:
-		"boosters":
-			return ["SPACE", "BOOSTERS EMPTY: DROP THEM NOW" if now else "DROP THE BOOSTERS WHEN THEIR FUEL HITS 0", now]
-		"stage":
-			return ["SPACE", "STAGE 1 EMPTY: SEPARATE IT NOW" if now else "SEPARATE STAGE 1 WHEN ITS FUEL HITS 0", now]
-		"fairing":
-			return ["SPACE", "ABOVE 100 km: DROP THE FAIRING NOW" if now else "DROP THE FAIRING ABOVE 100 km", now]
-		"cutoff":
-			return ["SPACE", "ORBIT SPEED: CUT THE ENGINE NOW" if now else "CUT THE ENGINE AT ORBIT SPEED, 7,790 m/s", now]
-	return ["", "", false]
-
-func _act_label() -> String:
-	match mode:
-		"pad":
-			return "START"
-		"cam":
-			return "DEPLOY"
-		"fail":
-			return "REPORT"
-		"fly":
-			match _next():
-				"boosters":
-					return "DROP BOOSTERS"
-				"stage":
-					return "SEPARATE"
-				"fairing":
-					return "DROP FAIRING"
-				"cutoff":
-					return "CUT ENGINE"
-	return "WAIT"
+		return ["", "", "MAX-Q: THE AIR PUSHES HARDEST HERE. THE ROCKET THROTTLES DOWN TO %d%%." % roundi(THR_BUCKET * 100.0)]
+	if a.s1_on:
+		return ["", "", "LIFTOFF! THE ROCKET CLEARS THE TOWER." if a.t < 12.0 else "STAGE 1 CLIMBS AND TILTS TOWARD ORBIT."]
+	if not a.s2_lit:
+		return ["", "", "STAGE 1 FALLS AWAY. STAGE 2 LIGHTS UP."]
+	return ["", "", "STAGE 2 SPEEDS UP TO ORBIT SPEED. ITS ENGINE STOPS BY ITSELF."]
 
 func _draw_direction() -> void:
 	var d: Array = _direction()
 	var key: String = d[0]
-	var txt: String = d[1]
-	var urgent: bool = d[2]
-	if txt != "":
-		var col: Color = UI.YELLOW if urgent and int(t * 3.0) % 3 != 0 else (UI.TEXT if key != "" else UI.DIM)
-		var w: float = Pix.text_w(txt, 10) + 16.0 + (maxf(13.0, Pix.text_w(key, 10) + 7.0) + 4.0 if key != "" else 0.0)
-		var x: float = floorf(clampf(330.0 - w / 2.0, 152.0, 510.0 - w))
-		Pix.panel(self, Rect2(x, 268, w, 24), UI.YELLOW if urgent else UI.BORDER)
-		if key != "":
-			Pix.key_hint(self, Vector2(x + 8.0, 273), key, txt, col)
-		else:
-			Pix.text_o(self, Vector2(x + 8.0, 283), txt, 10, col)
-	if flash_t < 2.2 and flash_msg != "":
-		Pix.text_oc(self, 330.0, 258.0, flash_msg, 10, UI.ORANGE)
-	if mode == "deploy" or mode == "done" or mode == "coast":
+	var big: String = d[1]
+	var small: String = d[2]
+	var r: Rect2 = BTN_ACT
+	var cx: float = r.position.x + floorf(r.size.x / 2.0)
+	if key != "":
+		var hot: bool = int(t * 2.5) % 2 == 0
+		Pix.panel(self, r, UI.YELLOW if hot else UI.ORANGE, Color(0.06, 0.05, 0.02, 0.92))
+		Pix.text_oc(self, cx, r.position.y + 15.0, small, 10, UI.DIM)
+		Pix.text_oc(self, cx, r.position.y + 39.0, big, 20, UI.YELLOW if hot else Color.WHITE)
+		var hint: String = "PRESS OR TAP"
+		var w: float = maxf(13.0, Pix.text_w(key, 10) + 7.0) + 4.0 + Pix.text_w(hint, 10)
+		Pix.key_hint(self, Vector2(cx - floorf(w / 2.0), r.position.y + 47.0), key, hint, UI.TEXT)
 		return
-	var lab: String = _act_label()
-	var ready: bool = lab != "WAIT" and not (mode == "fail" and mode_t < 1.2)
-	var go: bool = ready and (mode != "fly" or _due(_next()))
-	Pix.button(self, BTN_ACT, lab, "btn_go" if go else "btn", "normal" if ready else "disabled")
+	if small == "":
+		return
+	var ls: PackedStringArray = _wrap(small, 32)
+	var h: float = 12.0 * ls.size() + 12.0
+	var box: Rect2 = Rect2(r.position.x, r.end.y - h, r.size.x, h)
+	Pix.panel(self, box)
+	for i: int in ls.size():
+		_txt(Vector2(box.position.x + 8.0, box.position.y + 15.0 + 12.0 * i), ls[i], 10, UI.TEXT)
 
 func _draw_fail() -> void:
 	var r: Rect2 = Rect2(160, 56, 320, 160)
@@ -1484,24 +1287,22 @@ func _draw_fail() -> void:
 	Pix.para(self, Vector2(r.position.x + 12.0, r.position.y + 118.0), fail_real, r.size.x - 24.0, UI.DIM)
 
 func _draw_help() -> void:
-	var r: Rect2 = Rect2(160, 46, 320, 206)
+	var r: Rect2 = Rect2(160, 56, 320, 170)
 	Pix.panel(self, r, UI.CYAN, Color(0.02, 0.03, 0.07, 0.95))
-	Pix.title_c(self, 320.0, r.position.y + 20.0, "CONTROLS", UI.CYAN)
+	Pix.title_c(self, 320.0, r.position.y + 20.0, "HOW TO LAUNCH", UI.CYAN)
 	var y: float = r.position.y + 32.0
-	var rows: Array = [["UP", "MORE THROTTLE (also W)"], ["DOWN", "LESS THROTTLE (also S)"], ["SPACE", "NEXT STAGED EVENT (or the big button)"], ["?", "SHOW OR HIDE THIS LIST"]]
-	for row: Array in rows:
-		Pix.key_hint(self, Vector2(r.position.x + 14.0, y), String(row[0]), String(row[1]))
-		y += 17.0
-	_txt(Vector2(r.position.x + 14.0, y + 12.0), "STAGED EVENTS, IN ORDER", 10, UI.YELLOW)
-	y += 16.0
-	var names: Dictionary = {"ignite": "IGNITION AND LIFTOFF", "boosters": "DROP THE BOOSTERS", "stage": "STAGE SEPARATION",
-		"fairing": "FAIRING RELEASE (ABOVE 100 km)", "cutoff": "ENGINE CUT AT ORBIT SPEED", "deploy": "DEPLOY THE SPACECRAFT"}
+	Pix.key_hint(self, Vector2(r.position.x + 14.0, y), "SPACE", "DO WHAT THE YELLOW BOX ASKS (or tap it)")
+	Pix.key_hint(self, Vector2(r.position.x + 14.0, y + 17.0), "?", "SHOW OR HIDE THIS LIST")
+	y += 46.0
+	_txt(Vector2(r.position.x + 14.0, y), "YOU DO THREE THINGS, IN ORDER", 10, UI.YELLOW)
+	var names: Dictionary = {"ignite": "LIFT OFF", "stage": "STAGE SEPARATION (when stage 1 is empty)", "release": "RELEASE THE SHIP (in orbit)"}
 	for i: int in seq.size():
 		var done: bool = i < ev_i
-		var mark: String = "DONE" if done else ("NEXT" if i == ev_i else "")
-		_txt(Vector2(r.position.x + 18.0, y + 10.0), mark, 10, UI.GREEN if done else UI.YELLOW)
-		_txt(Vector2(r.position.x + 52.0, y + 10.0), String(names[seq[i]]), 10, UI.GREEN if done else (UI.TEXT if i == ev_i else UI.DIM))
-		y += 12.0
+		_txt(Vector2(r.position.x + 18.0, y + 14.0), "DONE" if done else ("NEXT" if i == ev_i else ""), 10, UI.GREEN if done else UI.YELLOW)
+		_txt(Vector2(r.position.x + 52.0, y + 14.0), String(names[seq[i]]), 10, UI.GREEN if done else (UI.TEXT if i == ev_i else UI.DIM))
+		y += 13.0
+	_txt(Vector2(r.position.x + 14.0, y + 22.0), "The flight computer steers, throttles and drops", 10, UI.DIM)
+	_txt(Vector2(r.position.x + 14.0, y + 34.0), "the boosters. The clock runs sped up.", 10, UI.DIM)
 
 # ------------------------------------------------------------------ console (as on the flight screen)
 
@@ -1518,85 +1319,55 @@ func _wrap(s: String, n: int) -> PackedStringArray:
 		out.append(line)
 	return out
 
-func _update_log(silent: bool) -> void:
-	var lg: Array = Game.run.get("log", [])
-	while shown < lg.size():
-		var e: Dictionary = lg[shown]
-		var ok: bool = e["ok"]
-		for s: String in _wrap(String(e["text"]), 70):
-			lines.append({"s": s, "ok": ok, "e": shown})
-		shown += 1
-		if not silent:
-			new_t = 0.0
-
 ## One plain-words line about what is happening (the gloss for each launch word).
 func _teach() -> String:
 	var c: Dictionary = Game.run.get("calc", {})
 	match mode:
 		"pad", "count":
-			return "Rocket limit on this path: %s kg. Your ship: %s kg." % [Game.fmt(c.get("cap", 0)), Game.fmt(c.get("mass", 0))]
-		"cam", "deploy", "done":
+			return "Your ship weighs %s kg. This rocket can send up to %s kg on this path." % [Game.fmt(c.get("mass", 0)), Game.fmt(c.get("cap", 0))]
+		"coast", "release":
+			return "Orbit: 7.8 km/s sideways, so the ship falls around the Earth instead of down."
+		"deploy", "done":
 			return "Springs push the ship free of the stage, then it unfolds."
 		"fail":
 			return "The report shows what to change next time."
-	if maxq_task == 1 or maxq_task == 2:
-		return "Max-Q: the moment the air pushes hardest on the rocket."
-	match _next():
-		"boosters":
-			return "Boosters burn out first; empty tanks are dead weight."
-		"stage":
-			return "Staging: drop the empty stage so the light one speeds up."
-		"fairing":
-			return "The fairing (nose shell) shields the ship from the air."
-		"cutoff":
-			return "Orbit: 7.8 km/s sideways, so you fall around the Earth."
-	return ""
+	if maxq_task == 1:
+		return "Max-Q is the moment the air pushes hardest on the rocket: about %d km up." % roundi(q_peak_alt / 1000.0)
+	if a.s1_on:
+		return "Boosters burn out first; empty tanks are dead weight, so they drop off." if a.boost_on else "The rocket tilts over to build up sideways speed: that is what orbit needs."
+	return "Staging: drop the empty stage so the lighter one speeds up."
 
 func _lamp(center: Vector2, state: int) -> void:
 	draw_texture_rect_region(tex_lamp, Rect2(center - Vector2(5, 5), Vector2(11, 11)), Rect2(state * 11, 0, 11, 11))
 
 func _draw_console() -> void:
 	draw_texture(tex_console, Vector2(0, CON_Y))
-	var r: Dictionary = Game.run
 	var ring: bool = String(Game.dest().get("kind", "land")) == "ring"
-	var names: Array[String] = ["LIFT", "CRUISE", "ORBIT", "RINGS" if ring else "LAND", "HOME"]
-	for i: int in 5:
+	var names: Array[String] = ["LIFT", "CRUISE", "ORBIT", "RINGS" if ring else "LAND", "TASK"]
+	for i: int in names.size():
 		var state: int = 0
 		if i == 0:
 			state = 3 if mode == "fail" else (1 if mode == "done" else (2 if int(t * 3.0) % 2 == 0 else 0))
 		var cx: float = 24.0 + i * 35.0
 		_lamp(Vector2(cx, CON_Y + 14.0), state)
 		Pix.text_c(self, cx, CON_Y + 31.0, names[i], 10, UI.TEXT if i == 0 else UI.DIM)
+	var r: Dictionary = Game.run
 	var prop0: float = maxf(1.0, float(r["calc"]["prop"]))
 	_cgauge(CON_Y + 36.0, "FUEL", float(r["prop"]) / prop0, "%s kg" % _n(float(r["prop"])))
 	var bat: float = float(r["battery"]) / maxf(1.0, float(r["wh"]))
 	_cgauge(CON_Y + 47.0, "BATT", bat, "%d%%" % roundi(bat * 100.0) if float(r["wh"]) > 0.0 else "none")
-	_txt(Vector2(192, CON_Y + 17.0), _teach(), 10, UI.CYAN)
-	var first: int = maxi(0, lines.size() - 3)
-	while first > 0 and int(lines[first - 1]["e"]) == shown - 1:  # a long newest entry shows from its start
-		first -= 1
-	var typed: int = int(new_t * 140.0)
-	for i: int in range(first, mini(first + 3, lines.size())):
-		var ln: Dictionary = lines[i]
-		var y: float = CON_Y + 28.0 + (i - first) * 11.0
-		var newest: bool = int(ln["e"]) == shown - 1
-		var s: String = String(ln["s"])
-		if newest:
-			s = s.substr(0, maxi(0, typed))
-			typed -= String(ln["s"]).length()
-		var ok: bool = ln["ok"]
-		if i == 0 or int(lines[i - 1]["e"]) != int(ln["e"]):
-			draw_rect(Rect2(192, y - 6.0, 4, 4), (UI.GREEN if ok else UI.RED) if newest else UI.BORDER)
-		_txt(Vector2(200, y), s, 10, (UI.TEXT if ok else UI.RED) if newest else UI.DIM)
-
-func _n(v: float) -> String:
-	return Game.fmt(roundi(v)) if absf(v) >= 100.0 else str(roundi(v))
+	var ls: PackedStringArray = _wrap(_teach(), 72)
+	for i: int in mini(3, ls.size()):
+		_txt(Vector2(192, CON_Y + 22.0 + 12.0 * i), ls[i], 10, UI.CYAN)
 
 func _cgauge(y: float, label: String, frac: float, value: String) -> void:
 	_txt(Vector2(8, y + 8.0), label, 10, UI.DIM)
 	var col: Color = UI.GREEN if frac > 0.35 else (UI.YELLOW if frac > 0.15 else UI.RED)
 	Pix.gauge(self, Rect2(34, y, 80, 8), frac, col)
 	_txt(Vector2(118, y + 8.0), value, 10, UI.TEXT)
+
+func _n(v: float) -> String:
+	return Game.fmt(roundi(v)) if absf(v) >= 100.0 else str(roundi(v))
 
 # ------------------------------------------------------------------ debug hooks (tools/dev/shot.sh call=...)
 
@@ -1625,29 +1396,32 @@ func debug_maxq() -> void:  # full throttle into max-Q: the red gauge and the th
 func debug_bucket() -> void:  # flying the max-Q throttle-back correctly
 	_skip(func() -> bool: return mode == "fly" and a.alt > q_peak_alt)
 
-func debug_boosters() -> void:
-	hold_ev = "boosters"
-	_skip(func() -> bool: return mode == "fly" and (_next() != "boosters" or _due("boosters")))
-	if _next() == "boosters":
-		_act()
+func debug_boosters() -> void:  # just after the flight computer dropped the boosters (or liftoff without any)
+	_skip(func() -> bool: return mode == "fly" and a.t > 5.0 and not a.boost_on)
 
-func debug_staging() -> void:
+func debug_staging() -> void:  # the STAGE SEPARATION prompt, then the press
 	hold_ev = "stage"
 	_skip(func() -> bool: return mode == "fly" and _next() == "stage" and _due("stage"))
 	_act()
 
-func debug_fairing() -> void:
-	hold_ev = "fairing"
-	_skip(func() -> bool: return mode == "fly" and _next() == "fairing" and _due("fairing"))
+func debug_sep_prompt() -> void:  # the STAGE SEPARATION prompt waiting for the player
+	hold_ev = "stage"
+	_skip(func() -> bool: return mode == "fly" and _next() == "stage" and _due("stage"))
+
+func debug_fairing() -> void:  # in orbit: RELEASE THE SHIP pressed, the fairing halves fly off
+	hold_ev = "release"
+	_skip(func() -> bool: return _due("release"))
 	_act()
 
-func debug_cutoff() -> void:
-	hold_ev = "cutoff"
-	_skip(func() -> bool: return mode == "fly" and _next() == "cutoff" and ORBIT_V - a.speed() < 300.0)
+func debug_cutoff() -> void:  # stage 2 burning, just short of orbit speed
+	_skip(func() -> bool: return mode == "fly" and not a.s1_on and ORBIT_V - a.speed() < 300.0)
 
-func debug_deploy() -> void:
-	_skip(func() -> bool: return mode == "cam")
-	_act()
+func debug_orbit() -> void:  # in orbit, the RELEASE THE SHIP prompt waiting for the player
+	hold_ev = "release"
+	_skip(func() -> bool: return _due("release"))
+
+func debug_deploy() -> void:  # the stage camera: the ship springs free and unfolds
+	_skip(func() -> bool: return mode == "deploy" and dep_t > DEP0 + DEP_STEP)
 
 func debug_fail() -> void:  # a ship the rocket cannot carry: its stage runs dry short of orbit
 	_act()
@@ -1667,6 +1441,9 @@ func debug_breakup() -> void:  # never throttles back on HARD: the rocket breaks
 func debug_autopilot() -> void:  # flies a clean ascent, three times faster, and ends on the flight screen
 	auto = true
 	speed_mult = 3.0
+
+func debug_auto() -> void:  # same as debug_autopilot (the name the other screens use)
+	debug_autopilot()
 
 func debug_noq() -> void:  # calls every event on time but never throttles back
 	auto = true
@@ -1700,6 +1477,14 @@ func debug_report(noq: bool = false, slow: bool = false) -> void:
 			marks[key] = true
 			print("  %5.1f s real  T+%4d s  %-6s next=%-8s alt %6.1f km  v %5d  q %4.1f kPa  thr %.1f  p1 %d%%  p2 %d%%" % [frames / 30.0, int(a.t), mode, _next(), a.alt / 1000.0, int(a.speed()), a.q / 1000.0, a.thr, int(100 * a.p1 / p1_0), int(100 * (a.p2 - a.p2_min) / p2_0)])
 	print("LAUNCH %s diff %d noq %s: %s after %.1f s real (T+%d s). max-Q %.1f kPa at %.1f km, red %.1f; stress %d%%; ship paid %d m/s, fuel %.0f -> %.0f kg; stage 2 left %d%%; meco %.0f km" % [lv_id, Game.difficulty, str(noq), mode, frames / 30.0, int(a.t), q_seen / 1000.0, q_seen_alt / 1000.0, q_red / 1000.0, roundi(dmg), roundi(ship_dv), fuel0, float(Game.run["prop"]), int(100 * (a.p2 - a.p2_min) / p2_0), meco_alt / 1000.0])
+	get_tree().quit()
+
+## Prints where max-Q and stage separation fall for every launcher (tools/dev only; quits).
+func debug_meco() -> void:
+	for id: String in LV:
+		Game.rocket_id = id
+		_setup()
+		print("MECO %-8s max-Q %.1f km  staging %.1f km  stage 2 clean use %d%% of its tank" % [id, q_peak_alt / 1000.0, meco_alt / 1000.0, roundi(100.0 * p2_clean / float(lv["s2_prop"]))])
 	get_tree().quit()
 
 func debug_report_noq() -> void:

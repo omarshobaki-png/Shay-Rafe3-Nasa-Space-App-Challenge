@@ -25,6 +25,10 @@ const BODY_R: float = 10.0
 const PLANET_Y: float = 262.0
 const PLANET_PAR: float = 0.25
 const FUEL_BASE: float = 45.0   # seconds of thrust at Saturn on NORMAL
+const PHOTO_GB: float = 1.5       # game rule: data one photo adds
+const PHOTO_HOLD: float = 1.0     # game rule: seconds to hold the key with the feature in the frame
+const FRAME_HALF: Vector2 = Vector2(56, 36)   # half size of the viewfinder frame around the drone
+const HARD_ROCK_EASE: float = 0.85  # game rule: HARD boulder count x0.85 after the v5 testers (applied on top of Game.diff)
 const NEAR: Array[Vector3] = [Vector3(640, 322, 0), Vector3(1230, 128, 1), Vector3(1560, 336, 2),
 	Vector3(2080, 312, 0), Vector3(2440, 118, 1), Vector3(2760, 330, 2)]
 const URANUS_BANDS: Array[float] = [175.0, 200.0, 227.0]   # the narrow rings (art rows): the rocks hide in them, the samples in the lanes
@@ -91,6 +95,16 @@ var glitch: float = 0.0        # seconds left of a static burst (the controls dr
 var glitch_gap: float = 1.0
 var ev_shown: int = 0          # site decisions shown this sortie
 var help_open: bool = false
+var job: String = "drill"
+var confirm: bool = false       # the "return to the ship?" box is open: the action is paused
+var confirm_t: float = 0.0
+var armed: bool = true          # false after KEEP FLYING until the drone has left the dock zone
+var confirm_btns: Array[Button] = []
+var in_frame: int = -1          # photo: the feature inside the viewfinder frame
+var shoot_p: float = 0.0        # photo: 0..1 how far the shot is
+var shoot_i: int = -1
+var shooting: bool = false
+var photo_flash: float = 0.0
 var help_btn: Button = null
 var auto: bool = false          # debug: a simple autopilot flies the whole run
 var freeze_at: float = -1.0     # debug: stop the clock here so a screenshot catches a short effect
@@ -169,6 +183,7 @@ func _ready() -> void:
 	for i: int in 3:
 		tex_near.append(_art("near_%d" % i))
 	fxr.seed = 99
+	job = _job()
 	goal = int(d["samples_goal"])
 	# gravity is the real one from Data; the thrust is tuned so the drone flies well on every world (game rule)
 	var g: float = float(d["gravity"])
@@ -178,6 +193,8 @@ func _ready() -> void:
 	fuel = fuel_max
 	rock_w = 0.6 * (0.6 + 0.4 * Game.diff("drone_rocks"))
 	hp_max = 4 if Game.tech.has("armor") else 2
+	if String(sk.get("layout", "")) == "lanes":
+		hp_max += 1   # game rule: Uranus's narrow lanes are the tightest flying, so the drone gets one more hit
 	if Game.diff("drone_rocks") < 0.8:
 		hp_max += 1    # EASY: one more hit
 	hp = clampi(hp_max + int(Game.run.get("hull_delta", 0)), 1, hp_max)
@@ -194,6 +211,8 @@ func _ready() -> void:
 		end_title = "NO DRONE ON BOARD"
 		msg = "Nothing can go into the rings."
 	var defs: Array = [["<", 8, "l"], [">", 52, "r"], ["THRUST", 548, "u"]]
+	if job == "photo":
+		defs.append(["PHOTO", 456, "s"])
 	for dd: Array in defs:
 		var b: Button = Button.new()
 		b.text = dd[0]
@@ -202,7 +221,7 @@ func _ready() -> void:
 		b.visible = DisplayServer.is_touchscreen_available()  # the keys do it on a desktop
 		add_child(b)
 		b.position = Vector2(float(dd[1]), 292)
-		b.size = Vector2(84 if dd[2] == "u" else 40, 34)
+		b.size = Vector2(84 if dd[2] == "u" or dd[2] == "s" else 40, 34)
 		var key: String = dd[2]
 		b.button_down.connect(func() -> void: hold[key] = true)
 		b.button_up.connect(func() -> void: hold.erase(key))
@@ -220,6 +239,9 @@ func _exit_tree() -> void:
 ## What the instruments make per sample: only the ones that still work.
 func _reload_instruments() -> void:
 	gb_sample = 0.0
+	if job == "photo":
+		gb_sample = PHOTO_GB
+		return
 	for id: String in Game.build:
 		var p: Dictionary = Data.PARTS[id]
 		if p["cat"] == "science" and not Game.run["broken"].has(id):
@@ -231,8 +253,11 @@ func _make_field() -> void:
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = 2017
 	var picks: Array = sk["picks"]
-	var n_rocks: int = maxi(3, roundi(float(picks.size()) * Game.diff("drone_rocks")))
+	var rk: float = Game.diff("drone_rocks")
+	var n_rocks: int = maxi(3, roundi(float(picks.size()) * rk * (HARD_ROCK_EASE if rk > 1.0 else 1.0)))
 	var layout: String = sk["layout"]
+	if layout == "lanes" and rk > 1.0:
+		n_rocks = maxi(3, roundi(n_rocks * 0.75))   # game rule: Uranus's narrow lanes leave less room to dodge on HARD
 	for i: int in n_rocks:
 		var m: int = int(picks[i % picks.size()])
 		var r: float = ROCK_R[m]
@@ -322,6 +347,11 @@ func _physics_process(delta: float) -> void:
 		if auto:
 			_auto_card()
 		return
+	if confirm:
+		confirm_t += delta
+		if auto and confirm_t > 0.6:
+			_answer(true)
+		return
 	if freeze_at >= 0.0 and t >= freeze_at:
 		return
 	t += delta
@@ -337,17 +367,18 @@ func _physics_process(delta: float) -> void:
 			set_physics_process(false)
 			Engine.time_scale = 1.0
 			Game.probe_result(got, docked, data)
-			Game.run["mode"] = "home"
-			Game.goto("flight")
+			Game.goto("cheer")
 		return
 	if auto:
 		_autopilot()
 	_tick_radiation(delta)
 	var up: bool = hold.has("u") or Input.is_action_pressed("ui_up") or Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_SPACE)
+	var shoot: bool = job == "photo" and (hold.has("s") or Input.is_physical_key_pressed(KEY_F) or Input.is_physical_key_pressed(KEY_C))
 	var lft: bool = hold.has("l") or Input.is_action_pressed("ui_left") or Input.is_physical_key_pressed(KEY_A)
 	var rgt: bool = hold.has("r") or Input.is_action_pressed("ui_right") or Input.is_physical_key_pressed(KEY_D)
 	if glitch > 0.0:
 		up = false    # the electronics drop the commands
+		shoot = false
 		lft = false
 		rgt = false
 	thrusting = up and fuel > 0.0
@@ -377,10 +408,12 @@ func _physics_process(delta: float) -> void:
 	if pos.y < 10.0:
 		pos.y = 10.0
 		vel.y = 0.0
+	if job == "photo":
+		_tick_photo(delta, shoot)
 	# samples
 	for s: Dictionary in ice:
 		var sp: Vector2 = s["p"]
-		if not s["taken"] and _drone_dist(sp) < 20.0:
+		if job == "drill" and not s["taken"] and _drone_dist(sp) < 20.0:
 			s["taken"] = true
 			got += 1
 			Audio.play("pickup", -3.0, 1.0 + got * 0.06)
@@ -415,10 +448,81 @@ func _physics_process(delta: float) -> void:
 	if pos.y > 330.0:
 		_end(false, "DRONE LOST", "It burned up in the air, as Cassini did in 2017.", "burn")
 	# docking
-	if pos.distance_to(DOCK + Vector2(0, 46)) < 22.0 and vel.length() < 60.0 and t > 3.0:
-		_end(true, "DOCKED!", "Samples are safe on the orbiter.", "dock")
+	var dz: float = pos.distance_to(DOCK + Vector2(0, 46))
+	if dz > 90.0:
+		armed = true
+	if armed and dz < 22.0 and vel.length() < 60.0 and t > 3.0:
+		_open_confirm()
+		return
 	_spawn_trails(delta)
 	_check_events()
+
+## Photo job: the nearest marked feature inside the frame; hold the key and the shot closes in.
+func _tick_photo(delta: float, shoot: bool) -> void:
+	in_frame = -1
+	var best: float = 1e9
+	for i: int in ice.size():
+		var d: Vector2 = (ice[i]["p"] as Vector2) - pos
+		if not ice[i]["taken"] and absf(d.x) < FRAME_HALF.x and absf(d.y) < FRAME_HALF.y and d.length() < best:
+			best = d.length()
+			in_frame = i
+	shooting = shoot
+	if shoot and in_frame >= 0:
+		if in_frame != shoot_i:
+			shoot_i = in_frame
+			shoot_p = 0.0
+		shoot_p += delta / PHOTO_HOLD
+		if shoot_p >= 1.0:
+			_take_photo(in_frame)
+	else:
+		shoot_p = maxf(0.0, shoot_p - 2.0 * delta)
+
+func _take_photo(i: int) -> void:
+	var sp: Vector2 = ice[i]["p"]
+	ice[i]["taken"] = true
+	shoot_p = 0.0
+	shoot_i = -1
+	got += 1
+	data += gb_sample
+	photo_flash = 0.3
+	Audio.play("pickup", -3.0, 1.0 + got * 0.06)
+	floaters.append({"p": sp, "age": 0.0, "s": "+1 PHOTO", "bad": false})
+	gems.append({"a": sp - Vector2(_cam(), 0), "b": _slot_pos(mini(got, goal) - 1), "age": 0.0, "life": 0.8, "hud": true, "ph": true})
+	if got == goal:
+		goal_t = t
+
+## Pause and ask: never dock by accident.
+func _open_confirm() -> void:
+	if confirm or state != "fly":
+		return
+	confirm = true
+	confirm_t = 0.0
+	hold.clear()
+	thrusting = false
+	steer = 0
+	help_open = false
+	Audio.loop("thrust", false)
+	var labels: Array[String] = ["YES, DOCK (Enter)", "KEEP FLYING (Esc)"]
+	for i: int in 2:
+		var yes: bool = i == 0
+		var b: Button = UI.go_button(labels[i], func() -> void: _answer(true), 10) if yes else UI.button(labels[i], func() -> void: _answer(false), 10)
+		b.focus_mode = Control.FOCUS_NONE
+		add_child(b)
+		b.position = Vector2(126 + i * 198, 190)
+		b.size = Vector2(188, 30)
+		confirm_btns.append(b)
+
+func _answer(yes: bool) -> void:
+	if not confirm:
+		return
+	confirm = false
+	for b: Button in confirm_btns:
+		b.queue_free()
+	confirm_btns.clear()
+	if yes:
+		_end(true, "DOCKED!", "%s are safe on the orbiter." % ("Photos" if job == "photo" else "Samples"), "dock")
+	else:
+		armed = false
 
 ## A boulder hit: `n` hull points lost.
 func _hurt(n: int, from: Vector2, radius: float) -> void:
@@ -457,7 +561,7 @@ func _tick_radiation(delta: float) -> void:
 
 ## Decision cards at the site: one after the first samples, one before the flight back.
 func _check_events() -> void:
-	if state != "fly" or Game.run.is_empty() or ev_shown >= 2 or bool(Game.run.get("dead", false)):
+	if state != "fly" or confirm or Game.run.is_empty() or ev_shown >= 2 or bool(Game.run.get("dead", false)):
 		return
 	var ev: Dictionary = Game.next_event("site")
 	if ev.is_empty():
@@ -554,6 +658,7 @@ func _tick_fx(delta: float) -> void:
 	flash_t -= delta
 	hull_flash -= delta
 	slot_flash -= delta
+	photo_flash -= delta
 	for list: Array in [puffs, sparks, floaters, gems, debris]:
 		for i: int in range(list.size() - 1, -1, -1):
 			var e: Dictionary = list[i]
@@ -581,6 +686,15 @@ func _process(delta: float) -> void:
 
 func _input(event: InputEvent) -> void:
 	var k: InputEventKey = event as InputEventKey
+	if confirm:
+		if k != null and k.pressed and not k.echo and (k.keycode == KEY_ENTER or k.keycode == KEY_KP_ENTER or k.keycode == KEY_ESCAPE):
+			_answer(k.keycode != KEY_ESCAPE)
+			get_viewport().set_input_as_handled()
+		return
+	if k != null and k.pressed and not k.echo and k.keycode == KEY_E and state == "fly" and t > 3.0 and not EventCard.is_open() \
+			and pos.distance_to(DOCK + Vector2(0, 46)) < 60.0:
+		_open_confirm()
+		return
 	if k != null and k.pressed and not k.echo and (k.keycode == KEY_H or k.keycode == KEY_SLASH or k.keycode == KEY_QUESTION) and not EventCard.is_open():
 		help_open = not help_open
 
@@ -616,8 +730,10 @@ func _draw() -> void:
 	_draw_orbiter(cam)
 	_draw_drone(cam)
 	_draw_front(cam)
+	_draw_finder(cam)
 	draw_set_transform(Vector2.ZERO)
 	Fx.flash(self, 0.12 - flash_t, 0.12, Color(1, 1, 1, 0.4))
+	Fx.flash(self, 0.3 - photo_flash, 0.3, Color(1, 1, 1, 0.9))
 	_draw_glitch()
 	_draw_hud(cam)
 
@@ -675,6 +791,8 @@ func _draw_ice(cam: float) -> void:
 		Fx.glow(self, sp, 10.0 + 3.0 * pulse, Color(gc.r, gc.g, gc.b, 0.3 + 0.25 * pulse + 0.2 * _shade(p.x)), true)
 		var cyc: float = fposmod(t * 0.8 + ph, 1.0)
 		_cell(tex_crystal, sp, 1 + int((cyc - 0.82) / 0.06) if cyc > 0.82 else 0, int(sd["v"]), Vector2(15, 15))
+		if job == "photo" and int(t * 2.0) % 2 == 0:
+			_corners(Rect2(sp - Vector2(13, 13), Vector2(26, 26)), UI.YELLOW, 4)
 
 func _draw_rocks(cam: float) -> void:
 	for i: int in rocks.size():
@@ -776,6 +894,56 @@ func _draw_drone(cam: float) -> void:
 	if not warn.is_empty() and int(t * 8.0) % 2 == 0:
 		_cell(tex_icons, dp + Vector2(0, -34), 5, 0, Vector2(11, 11))
 
+## Four corner marks of a viewfinder frame.
+func _corners(r: Rect2, c: Color, arm: int) -> void:
+	var a: Vector2 = r.position.floor()
+	var b: Vector2 = (r.position + r.size).floor()
+	for q: int in 4:
+		var x: float = a.x if q % 2 == 0 else b.x - 2.0
+		var y: float = a.y if q / 2 == 0 else b.y - 2.0
+		var dx: float = 0.0 if q % 2 == 0 else -float(arm - 2)
+		var dy: float = 0.0 if q / 2 == 0 else -float(arm - 2)
+		draw_rect(Rect2(x + dx, y, arm, 2), c)
+		draw_rect(Rect2(x, y + dy, 2, arm), c)
+
+## A small framed photo: white border, dark sky, a bright ring band and a planet limb. `lit` false draws an empty slot.
+func _photo_icon(center: Vector2, w: int, h: int, lit: bool) -> void:
+	var r: Rect2 = Rect2((center - Vector2(w, h) / 2.0).floor(), Vector2(w, h))
+	if not lit:
+		_corners(r, Color(UI.DIM, 0.7), 4)
+		return
+	draw_rect(r, Color("e8ecff"))
+	var gc: Color = sk["glint"]
+	draw_rect(r.grow(-1), Color("0c1226"))
+	draw_rect(Rect2(r.position + Vector2(1, floorf(h * 0.35)), Vector2(w - 2, maxf(1.0, floorf(h * 0.22)))), gc.lerp(Color.WHITE, 0.3))
+	draw_rect(Rect2(r.position + Vector2(1, h - 3), Vector2(w - 2, 2)), Color("3a4a7a"))
+
+## The viewfinder: the frame around the drone closes in on the feature while the key is held.
+func _draw_finder(cam: float) -> void:
+	if state != "fly" or job != "photo" or confirm or (in_frame < 0 and not shooting):
+		return
+	var c: Vector2 = (pos - Vector2(cam, 0)).floor()
+	var col: Color = UI.GREEN
+	var half: Vector2 = FRAME_HALF
+	if in_frame >= 0:
+		var tp: Vector2 = (ice[in_frame]["p"] as Vector2) - Vector2(cam, 0)
+		var k: float = shoot_p * shoot_p if shoot_i == in_frame else 0.0
+		c = c.lerp(tp, k).floor()
+		half = FRAME_HALF.lerp(Vector2(15, 15), k)
+		if shoot_p > 0.0:
+			col = UI.YELLOW if shoot_p < 0.85 else Color.WHITE
+	else:
+		col = Color(UI.YELLOW, 0.6)
+	_corners(Rect2(c - half, half * 2.0), col, 7)
+	if in_frame >= 0:
+		draw_rect(Rect2(c.x - 1, c.y - 4, 1, 3), col)
+		draw_rect(Rect2(c.x - 1, c.y + 2, 1, 3), col)
+		draw_rect(Rect2(c.x - 4, c.y - 1, 3, 1), col)
+		draw_rect(Rect2(c.x + 2, c.y - 1, 3, 1), col)
+		var bw: float = 40.0
+		draw_rect(Rect2(c.x - bw / 2.0 - 1, c.y + half.y + 4, bw + 2, 5), Color("05070e"))
+		draw_rect(Rect2(c.x - bw / 2.0, c.y + half.y + 5, floorf(bw * shoot_p), 3), col)
+
 ## Dark grit and big boulders close to the camera, sliding past faster than the play layer.
 func _draw_front(cam: float) -> void:
 	Pix.tiled(self, tex_grit, 138, cam * 1.35 + t * 2.0)
@@ -821,7 +989,10 @@ func _draw_hud(cam: float) -> void:
 	for i: int in goal:
 		var just: bool = slot_flash > 0.0 and i == mini(got, goal) - 1
 		var filled: bool = i < got - (1 if _gem_flying() else 0)
-		_cell(tex_icons, _slot_pos(i), 3 if filled else 4, 0, Vector2(11, 11))
+		if job == "photo":
+			_photo_icon(_slot_pos(i), 9, 9, filled)
+		else:
+			_cell(tex_icons, _slot_pos(i), 3 if filled else 4, 0, Vector2(11, 11))
 		if just:
 			Fx.sparkle(self, _slot_pos(i), 1.0 - slot_flash / 0.25, Color.WHITE)
 	if got > goal:
@@ -831,6 +1002,10 @@ func _draw_hud(cam: float) -> void:
 	Pix.text(self, Vector2(gx + 19.0, 20), "%.2f m/s2" % float(Game.dest()["gravity"]), 10, UI.TEXT)
 	if rad_on:
 		_draw_rad_meter()
+	# big counter: what the task counts
+	Pix.panel(self, Rect2(512, 6, 94, 34))
+	Pix.text(self, Vector2(520, 17), "PHOTOS" if job == "photo" else "SAMPLES", 10, UI.DIM)
+	Pix.text(self, Vector2(520, 36), "%d / %d" % [got, goal], 20, UI.TEXT)
 	# samples on their way to a slot or up into the orbiter
 	var gc: Color = sk["glint"]
 	for e: Dictionary in gems:
@@ -839,7 +1014,10 @@ func _draw_hud(cam: float) -> void:
 		var b: Vector2 = e["b"]
 		var gp: Vector2 = a.lerp(b, k * k) + Vector2(0, -24.0 * sin(k * PI))
 		Fx.glow(self, gp, 8.0, Color(gc.r, gc.g, gc.b, 0.4), true)
-		_cell(tex_icons, gp, 3, 0, Vector2(11, 11))
+		if bool(e.get("ph", false)):
+			_photo_icon(gp, roundi(lerpf(26.0, 9.0, k)), roundi(lerpf(20.0, 9.0, k)), true)
+		else:
+			_cell(tex_icons, gp, 3, 0, Vector2(11, 11))
 	_draw_fact()
 	# the dock, when it is off screen
 	var dk: float = DOCK.x - cam
@@ -848,20 +1026,32 @@ func _draw_hud(cam: float) -> void:
 		draw_texture_rect_region(tex_arrow, Rect2(8.0 - bob, 150, 19, 15), Rect2(19, 0, 19, 15), UI.GREEN)
 		Pix.text(self, Vector2(8, 176), "DOCK", 10, UI.TEXT)
 	# what to do: one direction, until it is done
-	if state == "fly" and not EventCard.is_open():
+	if state == "fly" and not confirm and not EventCard.is_open():
 		var dir: Array = _direction(dk)
 		if not dir.is_empty():
 			_hint(320.0, String(dir[0]), int(dir[1]), UI.YELLOW)
 	if help_open:
 		_draw_help()
-	else:
-		pass
+	if confirm:
+		_draw_confirm()
 	# end banner
 	if state != "fly":
 		var tw: float = maxf(Pix.text_w(end_title, 20), Pix.text_w(msg, 10)) + 28.0
 		Pix.panel(self, Rect2(floorf(320.0 - tw / 2.0), 58, tw, 46), UI.GREEN if docked else UI.RED)
 		Pix.text_c(self, 320, 82, end_title, 20, UI.TEXT)
 		Pix.text_c(self, 320, 96, msg, 10, UI.DIM)
+
+## The question before docking. The two buttons are real Buttons placed over the bottom of the box.
+func _draw_confirm() -> void:
+	draw_rect(Rect2(0, 0, 640, 360), Color(0.02, 0.03, 0.06, 0.55))
+	Pix.panel(self, Rect2(110, 92, 420, 138), UI.CYAN)
+	Pix.text_c(self, 320, 120, "RETURN TO THE SHIP?", 20, UI.TEXT)
+	var noun: String = "PHOTOS" if job == "photo" else "SAMPLES"
+	Pix.text_c(self, 320, 150, "THE DRONE HAS %d OF %d %s" % [got, goal, noun], 20, UI.YELLOW if got < goal else UI.GREEN)
+	if got < goal:
+		Pix.text_c(self, 320, 172, "NOT ENOUGH YET: %d MORE %s NEEDED" % [goal - got, noun], 10, UI.YELLOW)
+	else:
+		Pix.text_c(self, 320, 172, "THE GOAL IS DONE. READY TO DOCK.", 10, UI.DIM)
 
 func _draw_rad_meter() -> void:
 	Pix.panel(self, Rect2(6, 29, 238, 16))
@@ -910,6 +1100,10 @@ func _direction(dk: float) -> Array:
 		return ["HOLD THRUST" if touch else "HOLD UP TO THRUST", 0]
 	if low_fuel and int(t * 3.0) % 3 != 0:
 		return ["LOW FUEL: FLY BACK AND DOCK", -1]
+	if job == "photo" and got < goal:
+		if in_frame >= 0:
+			return ["HOLD PHOTO" if touch else "HOLD F: TAKE THE PHOTO", 0]
+		return ["FLY TO A MARKED SPOT: %d OF %d" % [got, goal], 1]
 	if got == 0:
 		return ["FLY RIGHT: GRAB THE GLOWING %s" % sk["grain"], 1]
 	if got < goal:
@@ -918,15 +1112,18 @@ func _direction(dk: float) -> Array:
 
 func _draw_help() -> void:
 	var x: float = 296.0
-	var y: float = 262.0
-	Pix.panel(self, Rect2(x, y, 242, 80))
+	var o: float = 16.0 if job == "photo" else 0.0
+	var y: float = 262.0 - o
+	Pix.panel(self, Rect2(x, y, 242, 80 + o))
 	Pix.text(self, Vector2(x + 8, y + 14), "CONTROLS", 10, UI.TEXT)
 	var kx: float = x + 8.0
 	Pix.key_hint(self, Vector2(kx, y + 20), "UP", "OR W OR SPACE: THRUST")
 	var kw: float = Pix.keycap(self, Vector2(kx, y + 38), "<") + 2.0
 	Pix.key_hint(self, Vector2(kx + kw, y + 38), ">", "OR A D: STEER")
-	Pix.text(self, Vector2(x + 8, y + 62), "DOCK: GO SLOWLY UNDER THE PORT", 10, UI.DIM)
-	Pix.text(self, Vector2(x + 8, y + 72), "CLOSE: ? OR H", 10, UI.DIM)
+	if job == "photo":
+		Pix.key_hint(self, Vector2(kx, y + 56), "F", "HOLD: TAKE A PHOTO")
+	Pix.text(self, Vector2(x + 8, y + 62 + o), "DOCK: UNDER THE PORT, OR PRESS E", 10, UI.DIM)
+	Pix.text(self, Vector2(x + 8, y + 72 + o), "CLOSE: ? OR H", 10, UI.DIM)
 
 func _gem_flying() -> bool:
 	for e: Dictionary in gems:
@@ -1017,7 +1214,33 @@ func debug_carry() -> void:
 ## Docked: latched, samples going up.
 func debug_dock() -> void:
 	_debug_at(DOCK + Vector2(6, 52), Vector2(0, -20), goal)
+	_open_confirm()
+	_answer(true)
 	freeze_at = t + 1.6
+
+## The "return to the ship?" box (half the goal in the hold, so the "not enough" line shows).
+func debug_confirm() -> void:
+	_debug_at(DOCK + Vector2(10, 56), Vector2(0, -10), maxi(1, goal / 2))
+	_open_confirm()
+
+## KEEP FLYING answered: the box must stay shut until the drone has left the zone.
+func debug_keep() -> void:
+	debug_confirm()
+	_answer(false)
+	freeze_at = t + 0.3
+
+## Photo job: the frame closes in on a feature (halfway through the shot).
+func debug_photo() -> void:
+	var tp: Vector2 = ice[ice.size() / 3]["p"]
+	_debug_at(tp + Vector2(-26, 10), Vector2(0, -gpx * 0.1), 1)
+	hold["s"] = true
+	freeze_at = t + 0.5
+
+## Photo job: the flash and the photo flying to the row.
+func debug_photo_taken() -> void:
+	debug_photo()
+	freeze_at = t + 0.25
+	_take_photo(ice.size() / 3)
 
 ## Smashed by a boulder.
 func debug_fail() -> void:
@@ -1104,6 +1327,10 @@ func _autopilot() -> void:
 	var want_y: float = 164.0 if home else 196.0
 	if not home and skin == "uranus":
 		want_y = URANUS_LANES[int(pos.x / 400.0) % 2]
+	if not home and job == "photo":
+		var nf: int = _next_feature()
+		if nf >= 0:
+			want_y = (ice[nf]["p"] as Vector2).y
 	# steer round a boulder that is about to be in the way
 	for r: Dictionary in rocks:
 		var rp: Vector2 = _rock_pos(r)
@@ -1115,9 +1342,31 @@ func _autopilot() -> void:
 				want_y = rp.y + rr
 	var want_vx: float = clampf((DOCK.x - pos.x) * 0.8, -110.0, 110.0) if home else 90.0
 	hold.clear()
+	if job == "photo" and not home:
+		var tg: int = _next_feature()
+		if tg >= 0:
+			var tp: Vector2 = ice[tg]["p"]
+			want_vx = clampf((tp.x - pos.x) * 0.8, -60.0, 90.0)
+			if in_frame >= 0:
+				hold["s"] = true
 	if pos.y + vel.y * 0.45 > want_y:
 		hold["u"] = true
 	if vel.x < want_vx - 6.0:
 		hold["r"] = true
 	elif vel.x > want_vx + 6.0:
 		hold["l"] = true
+
+## Autopilot: the nearest feature still to photograph, not behind the drone if possible.
+func _next_feature() -> int:
+	var best: int = -1
+	var bd: float = 1e9
+	for i: int in ice.size():
+		var p: Vector2 = ice[i]["p"]
+		var d: float = absf(p.x - pos.x) + (0.0 if p.x > pos.x - 40.0 else 400.0)
+		if not ice[i]["taken"] and d < bd:
+			bd = d
+			best = i
+	return best
+
+func _job() -> String:
+	return String(Game.run.get("job", Game.task().get("job", "drill")))

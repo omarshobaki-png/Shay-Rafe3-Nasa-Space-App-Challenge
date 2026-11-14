@@ -2,6 +2,7 @@
 
     python tools/art/gen_parts.py            (everything)
     python tools/art/gen_parts.py bus hga    (only the sprites whose name starts so)
+    python tools/art/gen_parts.py crew guide (v6: the crew cabin and its icon, the builder's guide and ghost cursor)
 
 Each sprite is cropped to its pixels; where it sits on the ship (top-left corner, relative to the
 centre of the bus) is written into the generated table inside scripts/ship_kit.gd.
@@ -394,6 +395,235 @@ def icon_hull():
     return _outline(img, P["ol"], True)
 
 
+# ------------------------------------------------------------------ v6: crew cabin, the guide, the ghost cursor
+
+CREW_AT = (-22, -50)    # top-left of the crew cabin on the ship: it stands on the deck, docking port on top
+
+
+def crew_cabin(w=44, h=32, small=False):
+    """Crew cabin for two astronauts: a squat white pressure can with a red band, round windows, a hatch,
+    a gold foil skirt and a docking port on top (the ascent stage or the dish stands there)."""
+    img = np.zeros((h, w, 4), dtype=np.uint8)
+    cx = (w - 1) / 2.0
+    rx = w / 2.0 - 1.0
+    ry = 2.0 if small else 4.0
+    top = int(ry) + 1               # y of the top rim's centre line
+    bot = h - int(ry) - 2           # y of the bottom rim's centre line
+
+    def tone(x, ramp):
+        t = (x - 1) / max(1.0, w - 3.0)
+        return ramp[0] if t < 0.18 else ramp[1] if t < 0.62 else ramp[2] if t < 0.86 else ramp[3]
+    for x in range(1, w - 1):
+        dx = (x - cx) / rx
+        e = ry * (1.0 - min(1.0, dx * dx)) ** 0.5
+        y_top = int(round(top - e))
+        y_rim = int(round(top + e))
+        y_bot = int(round(bot + e))
+        for y in range(y_top, y_bot + 1):
+            if y <= y_rim:              # the lid, seen from above
+                c = "metal4" if (y == y_top and dx < 0.3) else ("metal3" if dx < 0.45 else "metal2")
+            elif y >= y_bot - (1 if small else 3):   # gold foil skirt
+                c = tone(x, ("gold4", "gold3", "gold2", "gold1"))
+                if y == y_bot:
+                    c = "gold0" if dx > -0.6 else "gold1"
+            else:
+                c = tone(x, ("paint4", "paint3", "paint2", "paint1"))
+            px(img, x, y, c)
+        # red band under the lid, like the return capsule
+        for y in ((y_rim + 1, y_rim + 2) if not small else (y_rim + 1,)):
+            px(img, x, y, "red3" if dx < -0.5 else "red2" if dx < 0.6 else "red1")
+    # docking port on the lid
+    pr = 3 if small else 5
+    rect(img, int(cx - pr), top - 2, int(cx + pr) + 1, top, "metal1")
+    rect(img, int(cx - pr) + 1, top - 1, int(cx + pr), top - 1, "jet1")
+    rect(img, int(cx - pr), top - 2, int(cx + pr) + 1, top - 2, "metal4")
+    if small:
+        rect(img, 3, top + 4, 6, top + 7, "metal1")      # one window
+        rect(img, 4, top + 5, 5, top + 6, "glass1")
+        px(img, 4, top + 5, "glass3")
+        rect(img, 11, top + 4, 16, h - 5, "orange1")     # hatch
+        rect(img, 12, top + 5, 15, h - 6, "jet2")
+        rect(img, 11, top + 4, 16, top + 4, "orange3")
+        px(img, 15, top + 8, "metal3")
+        return _outline(img, P["ol"], True)
+    # two round windows on the lit side
+    for wx in (6, 13):
+        wy = top + 8
+        rect(img, wx, wy, wx + 4, wy + 4, "metal1")
+        rect(img, wx + 1, wy + 1, wx + 3, wy + 3, "glass1")
+        px(img, wx + 1, wy + 1, "glass3")
+        px(img, wx + 2, wy + 1, "glass2")
+        px(img, wx + 1, wy + 2, "glass2")
+        for (ax, ay) in ((wx, wy), (wx + 4, wy), (wx, wy + 4), (wx + 4, wy + 4)):
+            px(img, ax, ay, "paint3" if wx == 13 else "paint4")
+    # the hatch: orange frame, dark door, a small port and a handle
+    hx0, hx1, hy0, hy1 = 23, 31, top + 5, bot - 2
+    rect(img, hx0, hy0, hx1, hy1, "orange1")
+    rect(img, hx0, hy0, hx1, hy0, "orange3")
+    rect(img, hx0, hy0, hx0, hy1, "orange2")
+    rect(img, hx0 + 1, hy0 + 1, hx1 - 1, hy1 - 1, "jet2")
+    rect(img, hx0 + 1, hy0 + 1, hx1 - 1, hy0 + 1, "jet3")
+    rect(img, hx0 + 3, hy0 + 3, hx0 + 5, hy0 + 4, "glass2")
+    px(img, hx0 + 3, hy0 + 3, "glass3")
+    rect(img, hx1 - 2, hy0 + 8, hx1 - 2, hy0 + 10, "metal3")
+    for (ax, ay) in ((hx0, hy0), (hx1, hy0), (hx0, hy1), (hx1, hy1)):
+        img[ay, ax] = 0
+    # panel seam and a status light
+    rect(img, 35, top + 6, 35, bot - 3, "paint1")
+    px(img, 38, top + 6, "green3")
+    return _outline(img, P["ol"], True)
+
+
+GUIDE_W, GUIDE_H = 32, 36
+
+
+def guide_frame(face):
+    """The mission engineer who talks the player through the build: dark hair, headset with a mic,
+    a blue team polo with a white collar and a round mission patch. face: idle | blink | talk | happy."""
+    sk = [_rgb(h) for h in ("8a4a32", "c0754c", "e6a074", "f8c8a0")]
+    hr = [_rgb(h) for h in ("1c1218", "3a2420", "5e3a2a", "86583a")]
+    bl = [_rgb(h) for h in ("12285a", "1d4590", "2f66c0", "5c94e0")]
+    img = np.zeros((GUIDE_H, GUIDE_W, 4), dtype=np.uint8)
+
+    def put(x, y, c):
+        if 0 <= y < GUIDE_H and 0 <= x < GUIDE_W:
+            img[y, x] = P[c] if isinstance(c, str) else c
+    # shirt: shoulders out to the frame, lit from the upper left
+    for y in range(23, GUIDE_H):
+        half = min(15, 7 + (y - 23) * 3)
+        for x in range(16 - half, 16 + half):
+            t = (x - (16 - half)) / max(1, 2 * half - 1)
+            c = bl[3] if (t < 0.12 and y < 30) else bl[2] if t < 0.55 else bl[1] if t < 0.88 else bl[0]
+            if y == GUIDE_H - 1:
+                c = bl[0] if t > 0.3 else bl[1]
+            put(x, y, c)
+    # neck and the white collar
+    for y in range(20, 25):
+        for x in range(13, 19):
+            put(x, y, sk[1] if x > 16 or y > 22 else sk[2])
+    for (x0, y0) in ((10, 23), (11, 24), (12, 25), (13, 26)):     # left collar flap
+        rect(img, x0, y0, x0 + 2, y0, "paint4")
+    for (x0, y0) in ((19, 23), (18, 24), (17, 25), (16, 26)):     # right collar flap
+        rect(img, x0 + 1, y0, x0 + 3, y0, "paint2")
+    put(15, 27, bl[0])
+    put(15, 28, "paint3")                                        # placket button
+    # round mission patch on the chest
+    for (x, y) in ((21, 29), (22, 29), (20, 30), (21, 30), (22, 30), (23, 30), (20, 31), (21, 31), (22, 31), (23, 31), (21, 32), (22, 32)):
+        put(x, y, "glass1")
+    put(21, 30, "paint4")
+    put(22, 31, "red2")
+    put(23, 30, "gold3")
+    # head: an oval, shaded on the right
+    for y in range(4, 22):
+        for x in range(8, 24):
+            dx, dy = (x - 15.5) / 7.6, (y - 12.5) / 9.2
+            if dx * dx + dy * dy <= 1.0:
+                put(x, y, sk[3] if (dx < -0.35 and dy < 0.1) else sk[2] if dx < 0.45 else sk[1])
+    for y in range(17, 22):                                      # jaw shadow
+        for x in range(9, 23):
+            if img[y, x, 3] and (x > 18 or y > 19):
+                put(x, y, sk[1] if y < 21 else sk[0])
+    # hair: a cap over the top with a side part and a lit strip
+    for y in range(2, 10):
+        for x in range(7, 25):
+            dx, dy = (x - 15.5) / 8.4, (y - 9.5) / 7.2
+            if dx * dx + dy * dy <= 1.0 and (y < 7 or x < 10 or x > 21 or (y < 8 and 12 < x < 20)):
+                put(x, y, hr[2] if (dx < -0.2 and dy < -0.5) else hr[1] if dx < 0.5 else hr[0])
+    for x in range(10, 15):
+        put(x, 3, hr[3])
+    put(12, 4, hr[3])
+    put(17, 4, hr[0])
+    put(18, 5, hr[0])                                            # the part
+    # headset: band over the hair, ear cups, mic boom to the mouth
+    for x in range(8, 24):
+        dx = (x - 15.5) / 8.0
+        y = int(round(9.0 - 7.2 * (1.0 - min(1.0, dx * dx)) ** 0.5))
+        put(x, y, "jet3" if x < 14 else "jet2")
+    for (x0, x1) in ((6, 8), (23, 25)):
+        rect(img, x0, 10, x1, 15, "jet2")
+        rect(img, x0, 10, x1, 10, "jet3")
+        rect(img, x0, 15, x1, 15, "jet1")
+    put(7, 12, "orange2")
+    for (x, y) in ((8, 16), (9, 17), (10, 18), (11, 18), (12, 19)):
+        put(x, y, "metal2")
+    put(13, 19, "jet1")
+    put(13, 18, "jet2")
+    # face
+    ey = 12
+    if face == "blink":
+        for ex in (12, 19):
+            put(ex, ey + 1, hr[1])
+            put(ex + 1, ey + 1, hr[1])
+    elif face == "happy":
+        for ex in (12, 19):                                       # closed, smiling eyes
+            put(ex, ey + 1, hr[1])
+            put(ex + 1, ey, hr[1])
+            put(ex + 2, ey + 1, hr[1])
+    else:
+        for ex in (12, 19):
+            put(ex, ey, "paint4")
+            put(ex + 1, ey, hr[0])
+            put(ex + 1, ey + 1, hr[0])
+            put(ex, ey + 1, hr[1])
+    for ex in (12, 19):                                           # brows
+        put(ex, ey - 2, hr[1])
+        put(ex + 1, ey - 2, hr[1])
+    put(16, 14, sk[1])                                            # nose
+    put(16, 15, sk[1])
+    put(15, 15, sk[3])
+    if face == "talk":
+        rect(img, 14, 17, 17, 18, "red0")
+        rect(img, 15, 18, 16, 18, "red2")
+        put(14, 17, sk[1])
+        put(17, 17, sk[1])
+    elif face == "happy":
+        rect(img, 13, 17, 18, 17, "red0")
+        rect(img, 14, 18, 17, 18, "red0")
+        rect(img, 14, 17, 17, 17, "paint4")
+        put(12, 16, sk[1])
+        put(19, 16, sk[1])
+    else:                                                        # a small smile
+        put(14, 16, "red1")
+        put(15, 17, "red1")
+        put(16, 17, "red1")
+        put(17, 16, "red1")
+    for (x, y) in ((10, 15), (21, 15)):                           # cheeks
+        put(x, y, _rgb("e88a72"))
+    return _outline(img, P["ol"], True)
+
+
+def guide_sheet():
+    """4 frames side by side: idle, blink, talk, happy."""
+    return np.concatenate([guide_frame(f) for f in ("idle", "blink", "talk", "happy")], axis=1)
+
+
+def ghost_cursor():
+    """Two frames of 12 x 15: an arrow pointer, and the same pressed down (one pixel lower, greyer)."""
+    rows = ["W...........",
+            "WW..........",
+            "WwW.........",
+            "WwwW........",
+            "WwwwW.......",
+            "WwwwwW......",
+            "WwwwwwW.....",
+            "WwwwwwwW....",
+            "WwwwwWWWW...",
+            "WwWwwW......",
+            "WW.WwwW.....",
+            "W..WwwW.....",
+            "....WwwW....",
+            ".....WW....."]
+    out = []
+    for pressed in (False, True):
+        img = np.zeros((15, 12, 4), dtype=np.uint8)
+        for y, row in enumerate(rows):
+            for x, ch in enumerate(row):
+                if ch != ".":
+                    c = ("paint2" if pressed else "paint4") if ch == "w" else "jet1"
+                    img[y + (1 if pressed else 0), x] = P[c]
+        out.append(img)
+    return np.concatenate(out, axis=1)
+
 # ------------------------------------------------------------------ main
 
 def save(name, img):
@@ -484,6 +714,19 @@ def main():
     for n, fn in (("icon_sunshade", icon_sunshade), ("icon_hull", icon_hull)):
         if wanted(n):
             save(n, fn())
+    if wanted("crew"):
+        img, ox, oy = crop(crew_cabin())
+        save("crew", img)
+        table["crew"] = [CREW_AT[0] + ox, CREW_AT[1] + oy, img.shape[1], img.shape[0]]
+        icon = np.zeros((24, 24, 4), dtype=np.uint8)
+        icon[3:21, 1:23] = crew_cabin(22, 18, True)
+        save("icon_crew", icon)
+        print("crew", table["crew"])
+    if wanted("guide"):
+        vab = os.path.join(ROOT, "art", "vab")
+        Image.fromarray(guide_sheet()).save(os.path.join(vab, "guide.png"))
+        Image.fromarray(ghost_cursor()).save(os.path.join(vab, "cursor.png"))
+        print("guide.png, cursor.png")
     with open(TABLE, "w") as fh:
         json.dump(table, fh)
     write_table(table)
