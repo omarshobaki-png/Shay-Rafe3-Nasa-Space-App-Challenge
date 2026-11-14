@@ -1229,7 +1229,8 @@ func _draw_join(pr: Rect2) -> void:
 	_para(Vector2(x, pr.position.y + 56), "1 to 4 players, each on their own computer. Each player takes a role: Planner, Engineer, Scientist or Comms. One player hosts and gets a 4-letter code; the others join with it.", 528.0, UI.DIM, 3)
 	_field(Rect2(x, pr.position.y + 108, 200, 22), "name", "YOUR NAME", name_text, "TYPE YOUR NAME")
 	if connecting:
-		Pix.text(cv, Vector2(x, pr.position.y + 170), "CONNECTING" + ".".repeat(int(t * 3.0) % 4), 10, UI.YELLOW)
+		var dots: String = ".".repeat(int(t * 3.0) % 4)
+		Pix.text(cv, Vector2(x, pr.position.y + 170), ("WAKING THE SERVER, UP TO A MINUTE" if Net.is_waking() else "CONNECTING") + dots, 10, UI.YELLOW)
 		_button(Rect2(x, pr.position.y + 186, 120, 24), "o:leave", "CANCEL", "btn_grey")
 	else:
 		Pix.text(cv, Vector2(x, pr.position.y + 158), "START A NEW ROOM", 10, UI.CYAN)

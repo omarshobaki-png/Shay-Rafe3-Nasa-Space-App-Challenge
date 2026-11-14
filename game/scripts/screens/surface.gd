@@ -1562,6 +1562,9 @@ func _draw_hud(night: float) -> void:
 		_draw_heat()
 	# the one direction, at the bottom, big
 	var dr: Array = _direction()
+	if String(dr[0]) == "E" and DisplayServer.is_touchscreen_available():
+		var b: String = {"drill": "DRILL", "photo": "PHOTO", "crew": "SET UP"}.get(job, "ACTION")   # the touch button's label
+		dr = [b, String(dr[1]).replace(" E ", " " + b + " "), dr[2]]
 	var words: String = String(dr[1])
 	if assist < 2 and not bool(dr[2]):
 		words = ""   # NORMAL and HARD: no step-by-step directions, only warnings and the end

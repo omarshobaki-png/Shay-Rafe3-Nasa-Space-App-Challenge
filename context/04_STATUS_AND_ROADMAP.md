@@ -2,6 +2,20 @@
 
 _Last updated: 14 Nov 2026, when the partner's v8 (the final game version) was merged and published._
 
+## Phone play, option A (14 Nov, Claude): built and tested, NOT yet copied to `docs/play/`
+
+So judges can scan the deck's QR and play for a minute. Taps already arrive as mouse clicks and v8 already
+shows touch buttons (BRAKE, < >, HOLD: BURN, rover buttons), so the changes are small:
+- `flight.gd`: holding a finger anywhere fast-forwards the cruise (was SPACE only); the hint says
+  SCREEN / BUTTON instead of SPACE on a touch screen.
+- `landing.gd`, `surface.gd`: hints name the touch button (BRAKE, PHOTO, DRILL, SET UP) instead of SPACE / E.
+- `export_presets.cfg` (Web → `html/head_include`): a "turn your phone sideways" screen in portrait, and on
+  the first tap the page goes full screen and locks landscape (Android Chrome; iPhone Safari ignores both).
+Tested in a touch-emulated phone-sized Chrome (Playwright, 915×412): Moon and Mars played start to rover
+with taps and holds only. Headless boot of every screen for all 3 destinations: no script errors. Not
+tested: a real phone, iPhone Safari, two-finger input (brake and steer at once still can't work: one touch
+= one mouse), the help (?) overlays, which still list keyboard keys.
+
 ## v8 is merged and published (14 Nov). The partner calls it the final version
 
 Applied from `AstroPixel-v8.patch` (made on 607a34f) with no conflicts. Checked headless after the merge:

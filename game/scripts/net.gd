@@ -37,7 +37,7 @@ signal received(kind: String, data: Dictionary, from_id: int)   ## a message fro
 
 const ALL_ROLES: Array[String] = ["planner", "engineer", "science", "comms"]
 ## Relay server address. Override for local testing with:  godot ... -- server=ws://127.0.0.1:8080
-const DEFAULT_URL: String = "wss://smd-relay.fly.dev"   # Set to the real URL after team deployment.
+const DEFAULT_URL: String = "wss://smd-relay.onrender.com"   # The deployed relay (Render, see render.yaml).
 
 var _lobby: Dictionary = {}
 var _online: bool = false
@@ -54,8 +54,16 @@ func host(player_name: String = "") -> void:
 func join(code: String, player_name: String = "") -> void:
 	_connect_room({"t": "join", "code": code.strip_edges().to_upper(), "name": player_name})
 
+## True while HOST / JOIN is still waiting for a sleeping server to wake (Data.NET_WAKE).
+func is_waking() -> bool:
+	return _retry_request.size() > 0 or (_retries > 0 and not _online)
+
 ## Leaves the room and goes back to offline solo play.
 func leave() -> void:
+	_wake_until = 0
+	_retry_at = 0
+	_retries = 0
+	_retry_request = {}
 	if _peer != null:
 		_peer.close(1000, "LEAVING")
 	_peer = null
@@ -111,6 +119,10 @@ func lobby() -> Dictionary:
 func send(kind: String, data: Dictionary) -> void:
 	if not _online:
 		return
+	# "state" is a full snapshot that the next one replaces: over a slow internet link, skip it while
+	# earlier data is still waiting to go out, instead of overflowing the send buffer.
+	if kind == "state" and _peer != null and _peer.get_current_outbound_buffered_amount() > int(Data.NET_WAKE["state_backlog_bytes"]):
+		return
 	_send_online({"t": "msg", "kind": kind, "data": data})
 
 
@@ -151,6 +163,11 @@ var _url: String = DEFAULT_URL
 var _pending: Dictionary = {}
 var _joined_id: int = 0
 var _connect_deadline: int = 0
+var _reached: bool = false            # the socket opened at least once for this HOST / JOIN
+var _wake_until: int = 0              # retry a failed connection until then (the server may be asleep)
+var _retry_at: int = 0
+var _retries: int = 0
+var _retry_request: Dictionary = {}
 var _next_ping: int = 0
 var _nettest: String = ""
 var _nettest_deadline: int = 0
@@ -165,10 +182,15 @@ func _my_player() -> Dictionary:
 
 func _connect_room(request: Dictionary) -> void:
 	leave()
+	_reached = false
+	_wake_until = Time.get_ticks_msec() + int(float(Data.NET_WAKE["secs"]) * 1000.0)
+	_open_peer(request)
+
+func _open_peer(request: Dictionary) -> void:
 	_pending = request
 	_peer = WebSocketPeer.new()
 	_peer.inbound_buffer_size = 131072
-	_peer.outbound_buffer_size = 131072
+	_peer.outbound_buffer_size = int(Data.NET_WAKE["out_buffer_bytes"])
 	_connect_deadline = Time.get_ticks_msec() + 8000
 	_next_ping = Time.get_ticks_msec() + 20000
 	if _peer.connect_to_url(_url) != OK:
@@ -188,6 +210,17 @@ func _write(message: Dictionary) -> void:
 		_fail("SEND FAILED")
 
 func _fail(reason: String) -> void:
+	var now: int = Time.get_ticks_msec()
+	if not _online and not _reached and now < _wake_until and not _pending.is_empty():
+		# never reached the server: it may be waking up, so try again shortly (nothing was sent yet)
+		_retry_request = _pending
+		_retries += 1
+		if _peer != null:
+			_peer.close()
+		_peer = null
+		_pending = {}
+		_retry_at = now + int(float(Data.NET_WAKE["retry_secs"]) * 1000.0)
+		return
 	leave()
 	disconnected.emit(reason)
 
@@ -197,10 +230,16 @@ func _process(_delta: float) -> void:
 		_nettest_deadline = 0
 		_nettest_disconnected("TEST TIMEOUT")
 	if _peer == null:
+		if _retry_at > 0 and now >= _retry_at:
+			var request: Dictionary = _retry_request
+			_retry_at = 0
+			_retry_request = {}
+			_open_peer(request)
 		return
 	_peer.poll()
 	var state: int = _peer.get_ready_state()
 	if state == WebSocketPeer.STATE_OPEN:
+		_reached = true
 		if not _pending.is_empty():
 			var request: Dictionary = _pending
 			_pending = {}

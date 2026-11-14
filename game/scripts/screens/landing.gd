@@ -1143,6 +1143,9 @@ func _draw_direction() -> void:
 	var dir: PackedStringArray = _direction()
 	if dir.is_empty():
 		return
+	if DisplayServer.is_touchscreen_available():
+		for i: int in dir.size():
+			dir[i] = dir[i].replace("SPACE", "BRAKE")   # phones brake with the on-screen BRAKE button
 	var parts: PackedStringArray = dir[0].replace("]", "[").split("[")
 	var w: float = 0.0
 	for i: int in parts.size():
@@ -1219,6 +1222,8 @@ func _draw_cue() -> void:
 		_:
 			head = "FALLING"
 			sub = "BRAKE NOW comes in %d s" % ceili(burn_in) if burn_in < 60.0 else "wait for BRAKE NOW"
+	if DisplayServer.is_touchscreen_available():
+		sub = sub.replace("SPACE", "BRAKE")   # phones: the on-screen BRAKE button
 	if air == "thick":
 		var over: bool = on_slab_now()
 		head = "OVER THE SLAB" if over else "OVER ROUGH ROCK"

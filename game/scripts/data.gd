@@ -605,6 +605,10 @@ const TALK: Dictionary = {"cps": 55.0, "hold_s": 2.5, "hold_per_char": 0.02, "pa
 
 ## Network send rates for flight controls and the host's simulation state.
 const NET_RATES: Dictionary = {"input_hz": 20.0, "state_hz": 15.0, "src": "game rule"}
+## The relay runs on Render's free plan, which sleeps after 15 min without traffic and takes about a minute
+## to wake. While HOST / JOIN has not reached the server yet, Net retries every retry_secs for up to secs.
+## Over the internet a player may skip "state" snapshots while more than state_backlog_bytes wait to be sent.
+const NET_WAKE: Dictionary = {"secs": 90.0, "retry_secs": 3.0, "out_buffer_bytes": 1048576, "state_backlog_bytes": 65536, "src": "game rule (Render free plan: ~50 s cold start, render.com/docs/free)"}
 
 ## Team sync score on the report: weights of the three parts, and the times that score full and zero marks.
 const TEAM_SYNC: Dictionary = {

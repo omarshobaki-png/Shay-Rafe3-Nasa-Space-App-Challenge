@@ -296,6 +296,8 @@ func _gui_input(event: InputEvent) -> void:
 			Audio.play("click", -8.0)
 		elif _burn_btn_on() and BURN_BTN.has_point(mb.position):
 			btn_hold = true
+		elif _coasting():
+			btn_hold = true   # phones have no SPACE key: holding a finger anywhere fast-forwards the cruise
 	else:
 		btn_hold = false
 
@@ -1615,6 +1617,8 @@ func _draw_direction() -> void:
 	var dr: Array = _direction() if driver else ["", "THE HOST IS FLYING. YOU ARE WATCHING."]
 	var key: String = dr[0]
 	var words: String = dr[1]
+	if key == "SPACE" and DisplayServer.is_touchscreen_available():
+		key = "BUTTON" if _burn_btn_on() else "SCREEN"   # on a phone: hold the HOLD: BURN button, or anywhere
 	if words != "":
 		var kw: float = (Pix.text_w(key, 10) + 7.0 + 4.0) if key != "" else 0.0
 		var w: float = kw + Pix.text_w(words, 10) + 14.0
