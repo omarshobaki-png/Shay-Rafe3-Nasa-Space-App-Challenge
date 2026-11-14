@@ -1,0 +1,14 @@
+# Render blueprint for the multiplayer relay (server/). One free web service; rooms live in memory,
+# so keep exactly one instance. The free plan sleeps after 15 minutes without traffic and wakes on the
+# next request (the game sends a wake-up request first). See server/README.md.
+services:
+  - type: web
+    name: smd-relay
+    runtime: node
+    plan: free
+    region: frankfurt
+    rootDir: server
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /
+    autoDeploy: true

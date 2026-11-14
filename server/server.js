@@ -1,5 +1,6 @@
 'use strict';
 const { randomInt } = require('node:crypto');
+const http = require('node:http');
 const { WebSocketServer, WebSocket } = require('ws');
 
 const ROLES = ['planner', 'engineer', 'science', 'comms'];
@@ -10,7 +11,13 @@ const LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 // Clock injection lets tests exercise the real 30-minute boundary without waiting.
 function createRelay({ port = Number(process.env.PORT || 8080), now = Date.now } = {}) {
   const rooms = new Map();
-  const wss = new WebSocketServer({ port, host: '0.0.0.0', maxPayload: MAX_BYTES, perMessageDeflate: false });
+  // A plain HTTP GET gets "ok" (host health checks, and waking a sleeping free-tier server); WebSockets upgrade.
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('SMD relay ok');
+  });
+  const wss = new WebSocketServer({ server, maxPayload: MAX_BYTES, perMessageDeflate: false });
+  server.listen(port, '0.0.0.0');
   function send(ws, message) {
     if (ws.readyState === WebSocket.OPEN) {
       if (ws.bufferedAmount > MAX_BYTES * 16) return ws.terminate();
@@ -137,7 +144,7 @@ function createRelay({ port = Number(process.env.PORT || 8080), now = Date.now }
   return { wss, rooms, sweep, close: () => {
     clearInterval(timer);
     for (const ws of wss.clients) ws.terminate();
-    return new Promise(resolve => wss.close(resolve));
+    return new Promise(resolve => wss.close(() => server.close(() => resolve())));
   } };
 }
 
