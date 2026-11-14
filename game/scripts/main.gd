@@ -10,12 +10,15 @@ const SCREENS: Dictionary = {
 	"landing": preload("res://scripts/screens/landing.gd"),
 	"surface": preload("res://scripts/screens/surface.gd"),
 	"probe": preload("res://scripts/screens/probe.gd"),
+	"cheer": preload("res://scripts/screens/cheer.gd"),
 	"report": preload("res://scripts/screens/report.gd"),
 	"kit": preload("res://scripts/screens/kit_test.gd"),  # dev-only contact sheet
 	"fx": preload("res://scripts/screens/fx_test.gd"),    # dev-only contact sheet
 }
 
 var current: Node = null
+var auto_play: bool = false   # debug hook auto=1: every screen flies itself, the run ends at the report
+var auto_shot: String = ""
 var fade: ColorRect = null
 const MUSIC: Dictionary = {"menu": "theme", "builder": "theme", "report": "theme"}
 
@@ -32,15 +35,23 @@ func _ready() -> void:
 		var kv: PackedStringArray = a.split("=", true, 1)
 		if kv.size() == 2:
 			args[kv[0]] = kv[1]
+	auto_play = args.has("auto")
+	if auto_play:
+		auto_shot = String(args.get("shot", ""))
+		args.erase("shot")
 	if args.has("screen"):
 		if args.has("diff"):
 			Game.difficulty = int(String(args["diff"]))  # 0 easy, 1 normal, 2 hard
 		Game.new_mission(String(args.get("dest", "moon")))
+		if args.has("task"):
+			Game.set_task(int(String(args["task"])))  # 0, 1 or 2
 		Game.example_build()
 		var sc: String = args["screen"]
 		if sc != "menu" and sc != "builder" and sc != "kit" and sc != "fx":
 			Game.start_run()
 			Game.run["mode"] = String(args.get("mode", "out"))
+			if args.has("job"):
+				Game.run["job"] = String(args["job"])  # drill | photo | crew: test a job on any task
 			# screen=launch starts at the pad; screen=flight starts at the cruise (launch already done);
 			# every later screen also gets the cruise and the arrival done for it
 			if sc != "launch" and String(Game.run["mode"]) == "out" or (sc != "launch" and sc != "flight"):
@@ -49,13 +60,14 @@ func _ready() -> void:
 			if sc != "launch" and sc != "flight":
 				Game.phase_cruise()
 				Game.phase_arrive()
-			if sc == "report":
+			if sc == "report" or sc == "cheer":
 				if String(Game.dest().get("kind", "land")) == "ring":
 					Game.probe_result(int(Game.dest()["samples_goal"]), true, 2.0)
 				else:
 					Game.surface_result(int(Game.dest()["samples_goal"]), 2000.0, 2.0)
-				Game.phase_home()
-				Game.finish()
+				if sc == "report":
+					Game.phase_home()
+					Game.finish()
 		goto(sc)
 		if args.has("tab"):
 			current.set("tab", String(args["tab"]))
@@ -66,6 +78,7 @@ func _ready() -> void:
 				if current.has_method(m):
 					current.call(m)
 	else:
+		_fit_window()
 		goto("menu")
 	if args.has("mptest"):
 		# dev only: a scripted 2-player online mission (scripts/mp_test.gd)
@@ -76,7 +89,38 @@ func _ready() -> void:
 		get_viewport().get_texture().get_image().save_png(String(args["shot"]))
 		get_tree().quit()
 
+## The game fills the screen. Whole-number scaling keeps the pixels crisp, so it is used unless it would
+## leave wide black bars; a browser tab is never a whole multiple of 640x360, so the web build always stretches.
+func _fit_window() -> void:
+	var win: Window = get_window()
+	if OS.has_feature("web"):
+		win.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
+		return
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	var scr: Vector2i = DisplayServer.screen_get_size()
+	var k: float = minf(scr.x / 640.0, scr.y / 360.0)
+	win.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_INTEGER if k - floorf(k) < 0.25 else Window.CONTENT_SCALE_STRETCH_FRACTIONAL
+
+## F11 switches between full screen and a window.
+func _input(event: InputEvent) -> void:
+	var k: InputEventKey = event as InputEventKey
+	if k != null and k.pressed and not k.echo and k.keycode == KEY_F11 and not OS.has_feature("web"):
+		var full: bool = DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED if full else DisplayServer.WINDOW_MODE_FULLSCREEN)
+
 func goto(screen: String) -> void:
+	# the site is done: send home what the task needs, score the mission, then the discovery cutscene.
+	# No cutscene when there is nothing to cheer about.
+	if screen == "cheer":
+		# online, only the host scores the run; the others get the finished run with the "goto"
+		var remote: bool = Net.is_online() and not Net.is_host()
+		if not remote:
+			Game.phase_home()
+			Game.finish()
+		if bool(Game.run.get("dead", false)) or int(Game.run.get("samples", 0)) <= 0 or not bool(Game.run["obj"].get("dock", true)):
+			screen = "report"
+		if Net.is_online() and Net.is_host():
+			Game.host_send_goto(screen)
 	# the outbound flight begins with the launch screen, which hands over to "flight" for the cruise
 	if screen == "flight" and String(Game.run.get("mode", "out")) == "out" and not bool(Game.run.get("launched", false)):
 		screen = "launch"
@@ -88,6 +132,16 @@ func goto(screen: String) -> void:
 	node.size = Vector2(640, 360)
 	current = node
 	add_child(node)
+	if auto_play:
+		print("SCREEN ", screen)
+		for m: String in ["debug_auto", "debug_autopilot"]:
+			if node.has_method(m):
+				node.call_deferred(m)
+				break
+		if screen == "report":
+			var rp: Dictionary = Game.run.get("report", {})
+			print("RESULT %s task=%d job=%s grade=%s score=%s obj=%s" % [Game.dest_id, Game.task_idx, String(Game.run.get("job", "?")), String(rp.get("grade", "")), str(rp.get("score", Game.run.get("score", "?"))), str(Game.run.get("obj", {}))])
+			_auto_end()
 	# fade in from black on every screen change
 	if fade.get_parent() == null:
 		add_child(fade)
@@ -101,6 +155,12 @@ func goto(screen: String) -> void:
 		Audio.call("scene", screen)  # audio.gd picks the music and ambience for this screen
 	else:
 		Audio.music(String(MUSIC.get(screen, "mission")))
+
+func _auto_end() -> void:
+	await get_tree().create_timer(1.5).timeout
+	if auto_shot != "":
+		get_viewport().get_texture().get_image().save_png(auto_shot)
+	get_tree().quit()
 
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), UI.BG)

@@ -482,6 +482,38 @@ func _draw_comet() -> void:
 		draw_rect(Rect2(p.floor(), Vector2.ONE), Color(0.75, 0.9, 1.0, 0.6 * (1.0 - j / 16.0)))
 	draw_rect(Rect2(head.floor() - Vector2.ONE, Vector2(2, 2)), Color(0.92, 0.97, 1.0))
 
+## The job of a task: "drill" (samples), "photo" or "crew". Read defensively: the core may not set it yet.
+func _tjob(tk: Dictionary) -> String:
+	return String(tk.get("job", "drill"))
+
+func _job_word(job: String) -> String:
+	return {"photo": "PHOTOS", "crew": "CREW"}.get(job, "SAMPLES")
+
+## What reaches Earth, in plain words.
+func _goes_to_earth(tk: Dictionary) -> String:
+	var job: String = _tjob(tk)
+	if job == "crew":
+		return "data + the crew"
+	if job == "drill" and bool(tk.get("returns", false)):
+		return "data + sample capsule"
+	return "data by radio"
+
+## 12x12 job icon on whole pixels: a sample jar, a camera (drawn), a helmet.
+func _job_icon(pos: Vector2, job: String, c: Color) -> void:
+	var p: Vector2 = pos.floor()
+	if job == "photo":
+		draw_rect(Rect2(p.x + 1, p.y + 3, 10, 7), c)
+		draw_rect(Rect2(p.x + 3, p.y + 1, 3, 2), c)
+		draw_rect(Rect2(p.x + 4, p.y + 4, 4, 4), Color(0.05, 0.05, 0.1))
+		draw_rect(Rect2(p.x + 5, p.y + 5, 2, 2), C_TXT)
+	else:
+		Pix.icon(self, "icon_helmet" if job == "crew" else "icon_sample", p)
+
+func _draw_job(x: float, y: float, tk: Dictionary, c: Color) -> void:
+	var job: String = _tjob(tk)
+	_job_icon(Vector2(x, y - 9), job, c)
+	Pix.text(self, Vector2(x + 16, y), _job_word(job), 10, c)
+
 ## The mission card of the picked world.
 func _draw_card() -> void:
 	var id: String = sel
@@ -509,7 +541,7 @@ func _draw_card() -> void:
 	var vy: float = y0 + 112.0
 	draw_texture(v1, Vector2(x0, vy - v1.get_height()))
 	draw_texture(v2, Vector2(x0 + 44.0, vy - v2.get_height() - (8.0 + roundf(sin(t * 2.0)) if ring else 0.0)))
-	Pix.text(self, Vector2(x0 + 96, y0 + 98), "ORBIT, THEN FLY A DRONE" if ring else "LAND, THEN DRIVE A ROVER", 10, C_TXT)
+	Pix.text(self, Vector2(x0 + 96, y0 + 98), "ORBIT, THEN FLY A DRONE" if ring else ("LAND, THEN WALK AS AN ASTRONAUT" if String(Game.task().get("job", "drill")) == "crew" else "LAND, THEN DRIVE A ROVER"), 10, C_TXT)
 	var facts: Array = d["facts"]
 	var fact: String = String(facts[clampi(int(FACT_IDX.get(id, 0)), 0, facts.size() - 1)])
 	_img("ic_fact", Vector2(x0 - 1, y0 + 120))
@@ -526,6 +558,7 @@ func _draw_card() -> void:
 		if on:
 			_brackets(tr.grow(1.0), C_HI)
 		Pix.text(self, tr.position + Vector2(8, 16), String(tk["name"]), 10, C_HI if on else C_TXT)
+		_draw_job(tr.position.x + 150.0, tr.position.y + 16, tk, C_DIM)
 		var lv: String = String(tk["level"])
 		Pix.text(self, Vector2(tr.end.x - 8 - Pix.text_w(lv, 10), tr.position.y + 16), lv, 10, LEVEL_COL[clampi(int(tk["diff"]), 0, 2)])
 	if not tasks.is_empty():
@@ -631,7 +664,11 @@ func _draw_brief(pr: Rect2) -> void:
 				Pix.text(self, Vector2(x + 16, ry + 14), String(tk["name"]), 10, C_TXT)
 				var lv: String = String(tk["level"])
 				Pix.text(self, Vector2(x + 24 + Pix.text_w(String(tk["name"]), 10), ry + 14), lv, 10, LEVEL_COL[clampi(int(tk["diff"]), 0, 2)])
-				ry += 12.0 * _para(Vector2(x + 16, ry + 26), String(tk["text"]), 380.0, C_TXT, 2) + 30.0
+				_draw_job(x + 24.0 + Pix.text_w(String(tk["name"]), 10) + Pix.text_w(lv, 10) + 12.0, ry + 14, tk, C_DIM)
+				var ly0: float = ry + 26.0 + 12.0 * _para(Vector2(x + 16, ry + 26), String(tk["text"]), 380.0, C_TXT, 2)
+				Pix.text(self, Vector2(x + 16, ly0 + 2), "GOES TO EARTH:", 10, C_DIM)
+				Pix.text(self, Vector2(x + 16 + Pix.text_w("GOES TO EARTH: ", 10), ly0 + 2), _goes_to_earth(tk), 10, C_HI)
+				ry = ly0 + 18.0
 			1:
 				_critical_row(Vector2(x + 16, ry + 15), sel)
 				var ny: float = ry + 29.0
@@ -639,7 +676,7 @@ func _draw_brief(pr: Rect2) -> void:
 					_img("ic_dash", Vector2(x + 14, ny - 10))
 					Pix.text(self, Vector2(x + 30, ny), line, 10, C_TXT)
 					ny += 12.0
-				ry = ny + 12.0
+				ry = ny + 8.0
 			2:
 				var ly: float = ry + 14.0
 				for line: String in _enders(sel):
@@ -649,7 +686,7 @@ func _draw_brief(pr: Rect2) -> void:
 	# the three steps of every mission, the first lit
 	var steps: Array[String] = ["BUILD THE SHIP", "FLY IT", "READ THE REPORT"]
 	var sx: float = x
-	var sy: float = pr.end.y - 70.0
+	var sy: float = pr.end.y - 66.0
 	for i: int in 3:
 		var w: float = 160.0
 		var tr: Rect2 = Rect2(sx + i * (w + 8), sy, w, 26)

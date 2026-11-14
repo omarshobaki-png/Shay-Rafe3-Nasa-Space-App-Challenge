@@ -87,8 +87,14 @@ func _balance(id: String, ti: int) -> void:
 	var who: String = "%s/%s" % [id, game.call("task")["id"]]
 	var base: Dictionary = {"bus": 1, "shield": 1}
 	var gear: Array = [[]]
+	var jb: String = game.call("job")
 	if land:
-		base.merge({"drill": 1, "rover": 1, "camera": 1})   # a lander without a camera is nobody's mission
+		if jb == "crew":
+			base.merge({"crew": 1, "camera": 1})
+		elif jb == "photo":
+			base.merge({"rover": 1, "camera": 1})
+		else:
+			base.merge({"drill": 1, "rover": 1, "camera": 1})   # a lander without a camera is nobody's mission
 		if d["air"] != "none":
 			base["heatshield"] = 1
 		if d["air"] == "thin":
@@ -100,12 +106,12 @@ func _balance(id: String, ti: int) -> void:
 		if bool(d["returns"]):
 			base["ascent"] = 1
 	else:
-		base.merge({"drone": 1, "dust": 1})
+		base.merge({"drone": 1, "camera" if jb == "photo" else "dust": 1})
 	if float(d["sun_wm2"]) > float(data.get("SHADE_ABOVE_WM2")):
 		base["sunshade"] = 1
 	var best: Dictionary = {}
 	var tried: int = 0
-	var sci: Array = ["spectro", "mag", "dust" if land else "camera"]
+	var sci: Array = ["spectro", "mag", "dust" if land or jb == "photo" else "camera"]
 	for rk: String in data.get("ROCKETS"):
 		if not (data.get("ROCKETS")[rk]["cap"] as Dictionary).has(id):
 			continue
@@ -197,22 +203,27 @@ func _events() -> void:
 	var list: Array = events.get("LIST")
 	var phases: Dictionary = {}
 	var seen: Dictionary = {}
-	_check(list.size() >= 28, "only %d events" % list.size())
+	var from_n: Dictionary = {"ship": 0, "earth": 0}
+	var num: RegEx = RegEx.create_from_string("[0-9]+([.][0-9]+)?")
+	_check(list.size() >= 16 and list.size() <= 20, "%d events (v6: 16 to 20)" % list.size())
 	for ev: Dictionary in list:
 		var id: String = ev["id"]
 		_check(not seen.has(id), "event id twice: " + id)
 		seen[id] = true
 		phases[ev["phase"]] = true
+		_check(["cruise", "site"].has(ev["phase"]), "%s: phase %s (v6: cruise or site only)" % [id, ev["phase"]])
+		_check(from_n.has(ev.get("from", "")), "%s: from must be ship or earth" % id)
+		from_n[ev.get("from", "ship")] = int(from_n.get(ev.get("from", "ship"), 0)) + 1
 		_check(String(ev["title"]).length() <= 28, "%s: title over 28 characters" % id)
-		_check(String(ev["text"]).length() <= 150, "%s: text is %d characters (150)" % [id, String(ev["text"]).length()])
+		_check(String(ev["text"]).length() <= 90, "%s: text is %d characters (90)" % [id, String(ev["text"]).length()])
 		_check(String(ev["real"]).length() <= (93 if id == "storm" else 140), "%s: real is %d characters" % [id, String(ev["real"]).length()])
 		_check(["planner", "engineer", "science", "comms"].has(ev["role"]), "%s: role" % id)
 		var n: int = (ev["choices"] as Array).size()
-		_check(n == 2 or n == 3, "%s: %d choices" % [id, n])
+		_check(n == 2, "%s: %d choices (v6: 2)" % [id, n])
 		var open: bool = false
 		for ch: Dictionary in ev["choices"]:
 			_check(String(ch["label"]).length() <= 22, "%s: label '%s' over 22 characters" % [id, ch["label"]])
-			_check(String(ch["text"]).length() <= 90, "%s: choice text is %d characters: %s" % [id, String(ch["text"]).length(), ch["text"]])
+			_check(String(ch["text"]).length() <= 60, "%s: choice text is %d characters (60): %s" % [id, String(ch["text"]).length(), ch["text"]])
 			_check(ch.has("cost") or ch.has("risk"), "%s: choice '%s' has neither a cost nor a risk" % [id, ch["label"]])
 			var paid: bool = ch.has("needs_part")
 			for k: String in events.get("PAID_KEYS"):
@@ -220,56 +231,70 @@ func _events() -> void:
 					paid = true
 			if not paid:
 				open = true
+			# every number in the choice text is one of its effects (or its odds)
+			var ok_nums: Array = []
+			var risk: Dictionary = ch.get("risk", {})
+			for e: Dictionary in [ch.get("cost", {}), risk.get("bad", {}), ch.get("gain", {})]:
+				_check(not e.has("fail"), "%s: an effect ends the mission (v6: no fail)" % id)
+				for k: String in e:
+					if e[k] is float or e[k] is int:
+						var v: float = absf(float(e[k]))
+						ok_nums.append_array([v, roundf((1.0 - v) * 100.0)])
+			if risk.has("chance"):
+				ok_nums.append_array([roundf(float(risk["chance"]) * 100.0), roundf((1.0 - float(risk["chance"])) * 100.0)])
+			for m: RegExMatch in num.search_all(String(ch["text"]).replace("{pct}", "")):
+				_check(ok_nums.has(float(m.get_string())), "%s: '%s' says %s, which is not one of its effects" % [id, ch["text"], m.get_string()])
 			for s: String in [String(ev["title"]), String(ev["text"]), String(ev["real"]), String(ch["label"]), String(ch["text"])]:
 				for i: int in s.length():
 					_check(s.unicode_at(i) < 127, "%s: not ASCII: %s" % [id, s])
 		_check(open, "%s: no choice that every ship can take" % id)
-	_check(phases.size() == 3, "events do not cover the three phases")
-	# every destination has enough different events for the hardest setting, with its example ship
+	_check(phases.size() == 2, "events do not cover the cruise and the site")
+	_check(from_n["ship"] >= list.size() * 0.55 and from_n["earth"] >= list.size() * 0.25, "ship %d / earth %d: v6 wants about two thirds hazards" % [from_n["ship"], from_n["earth"]])
+	# every task meets enough different events for the hardest setting, with its example ship
 	for did: String in data.get("DEST"):
-		game.call("new_mission", did)
-		game.call("set_task", 2)
-		game.call("example_build")
-		for ph: String in ["cruise", "site", "home"]:
-			var pool: int = 0
-			for ev: Dictionary in list:
-				if events.call("eligible", ev, ph, did, game.call("dest"), game.get("build")):
-					pool += 1
-					seen[ev["id"]] = "used"
-			_check(pool >= 3, "%s: only %d %s events (HARD needs 3)" % [did, pool, ph])
-		game.call("start_run", 7)
-		var ids: Dictionary = {}
-		for ev: Dictionary in game.get("run")["events"]:
-			_check(not ids.has(ev["id"]), "%s: event %s twice in one flight" % [did, ev["id"]])
-			ids[ev["id"]] = true
-			_check(String(ev["real"]).length() <= 140, "%s: real is %d characters after dressing" % [ev["id"], String(ev["real"]).length()])
-		_check(ids.size() == 9, "%s: HARD flight has %d events, not 9" % [did, ids.size()])
+		for ti: int in 3:
+			game.call("new_mission", did)
+			game.call("set_task", ti)
+			game.call("example_build")
+			for ph: String in ["cruise", "site"]:
+				var pool: int = 0
+				for ev: Dictionary in list:
+					if events.call("eligible", ev, ph, did, game.call("dest"), game.get("build")):
+						pool += 1
+						seen[ev["id"]] = "used"
+				_check(pool >= 2, "%s task %d: only %d %s events" % [did, ti, pool, ph])
+			game.call("set_task", ti)
+			game.set("difficulty", 2)   # the HARD counts on every task
+			game.call("start_run", 7)
+			var ids: Dictionary = {}
+			for ev: Dictionary in game.get("run")["events"]:
+				_check(not ids.has(ev["id"]), "%s: event %s twice in one flight" % [did, ev["id"]])
+				ids[ev["id"]] = true
+				_check(String(ev["real"]).length() <= 140, "%s: real is %d characters after dressing" % [ev["id"], String(ev["real"]).length()])
+			_check(ids.size() == 3, "%s task %d: HARD flight has %d events, not 3" % [did, ti, ids.size()])
 	game.set("difficulty", 1)
-	# the easy Moon task sends data instead of flying samples home: it meets the downlink events
 	game.call("new_mission", "moon")
 	game.call("set_task", 0)
 	game.call("example_build")
 	game.call("start_run", 3)
-	_check(not bool(game.call("dest")["returns"]) and not bool(game.call("id_has", "ascent")) and (game.get("run")["events"] as Array).size() == 3, "moon scout task: returns, ascent or events are wrong")
-	for did2: String in data.get("DEST"):
-		for tj: int in 2:
-			game.call("new_mission", did2)
-			game.call("set_task", tj)
-			game.call("example_build")
-			for ev: Dictionary in list:
-				if events.call("eligible", ev, ev["phase"], did2, game.call("dest"), game.get("build")):
-					seen[ev["id"]] = "used"
+	_check(not bool(game.call("dest")["returns"]) and not bool(game.call("id_has", "ascent")) and (game.get("run")["events"] as Array).size() == 2, "moon photo task: returns, capsule or events are wrong")
 	game.set("difficulty", 1)
 	for id: String in seen:
 		_check(seen[id] is String, "event %s can never happen on any example ship" % id)
 	# every choice of every event resolves, on a destination where it can happen
 	var resolved: int = 0
 	for ev: Dictionary in list:
-		for did: String in data.get("DEST"):
+		var found: bool = false
+		for key: String in _all_tasks():
+			if found:
+				break
+			var did: String = key.get_slice("/", 0)
 			game.call("new_mission", did)
+			game.call("set_task", int(key.get_slice("/", 1)))
 			game.call("example_build")
 			if not events.call("eligible", ev, ev["phase"], did, game.call("dest"), game.get("build")):
 				continue
+			found = true
 			for ci: int in (ev["choices"] as Array).size():
 				for seed_n: int in 4:
 					game.call("start_run", seed_n)
@@ -286,8 +311,15 @@ func _events() -> void:
 					_check(String(res["text"]).length() <= 120, "%s: result text over 120" % ev["id"])
 					_check(bool(info["can"]) != res.has("refused"), "%s choice %d: can/refused disagree" % [ev["id"], ci])
 					resolved += 1
-			break
+	game.set("difficulty", 1)
 	print("events: %d, every choice resolved (%d runs)" % [list.size(), resolved])
+
+func _all_tasks() -> Array:
+	var out: Array = []
+	for did: String in data.get("DEST"):
+		for ti: int in 3:
+			out.append("%s/%d" % [did, ti])
+	return out
 
 # ---------------------------------------------------------------- whole flights
 
@@ -419,9 +451,9 @@ func _flights() -> void:
 	game.call("example_build")
 	game.get("build")["prop"] = 1
 	game.call("start_run", 1)
-	var ev: Dictionary = (events.call("by_id", "units") as Dictionary).duplicate(true)
+	var ev: Dictionary = (events.call("by_id", "wheel") as Dictionary).duplicate(true)
 	ev["done"] = false
-	_check(not bool(game.call("event_choice", ev, 1)["can"]) or String(game.call("event_choice", ev, 1)["warn"]) != "", "a ship short of fuel can take the correction burn without a warning")
+	_check(not bool(game.call("event_choice", ev, 0)["can"]) or String(game.call("event_choice", ev, 0)["warn"]) != "", "a ship short of fuel can take the thruster burn without a warning")
 
 # ---------------------------------------------------------------- the board, the part labels, the checklist
 
@@ -474,8 +506,14 @@ func _preflight_one(id: String, ti: int) -> void:
 				_check(bool(game.call("part_available", pid)), "%s: %s is REQUIRED but cannot be used here" % [id, pid])
 			if pn["level"] == "not_needed":
 				_check(not bool(game.call("id_has", pid)), "%s: the example ship carries %s, labelled NOT NEEDED" % [id, pid])
-		if ti == 1:
-			print("required %-8s %s" % [id, ", ".join(req)])
+		print("required %-8s %-6s %s" % [id, game.call("job"), ", ".join(req)])
+		# the job decides the science parts
+		var want: Dictionary = {"photo": {"camera": "required", "drill": "not_needed"},
+			"crew": {"crew": "required", "ascent": "required", "rover": "not_needed", "drill": "not_needed"},
+			"drill": {"crew": "not_needed"}}[game.call("job")]
+		for pid: String in want:
+			_check(pre.call("part_need", pid)["level"] == want[pid], "%s task %d: part_need(%s) is %s, not %s" % [id, ti, pid, pre.call("part_need", pid)["level"], want[pid]])
+		_check(String(game.call("task").get("job", "")) != "", "%s task %d has no job" % [id, ti])
 		for s: Dictionary in pre.call("stations"):
 			if float(s["frac"]) >= 0.0 and float(s["lo"]) >= 0.0:
 				_check(float(s["frac"]) >= float(s["lo"]) - 0.001 and float(s["frac"]) <= float(s["hi"]) + 0.001, "%s: station %s gauge %.2f is outside its band %.2f..%.2f on the example ship" % [id, s["id"], s["frac"], s["lo"], s["hi"]])

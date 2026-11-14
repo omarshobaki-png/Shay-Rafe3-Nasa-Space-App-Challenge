@@ -35,7 +35,8 @@ const DEV_DAYS_PER_KIND: float = 30.0
 const DEV_NUCLEAR_DAYS: float = 300.0
 
 ## Difficulty is the player's choice (Game.difficulty), never the planet's. All game rules. Read with Game.diff(key).
-##   events_per_leg   decision events on the way, at the site and after it
+##   events_cruise    decision events on the way      events_site  decision events at the site (none after it)
+##   events_per_leg   the larger of those two (kept for old readers)
 ##   burn_band        width of the green band of the arrival burn (x)
 ##   landing_forgive  touchdown speed limit (x); Game.landing_setup() already applies it to "touch"
 ##   surface_hazards  rocks and craters on the rover's lane (x)
@@ -44,9 +45,9 @@ const DEV_NUCLEAR_DAYS: float = 300.0
 ##   over_mult        a resource is OVER above the need plus this many margins (see USE_RULE)
 ##   storm_strong     chance that a solar storm is the strongest real one of the year
 const DIFFICULTY: Array = [
-	{"name": "EASY", "events_per_leg": 1.0, "burn_band": 1.5, "landing_forgive": 1.3, "surface_hazards": 0.6, "drone_rocks": 0.7, "budget_slack": 1.15, "over_mult": 4.0, "storm_strong": 0.15},
-	{"name": "NORMAL", "events_per_leg": 2.0, "burn_band": 1.0, "landing_forgive": 1.0, "surface_hazards": 1.0, "drone_rocks": 1.0, "budget_slack": 1.0, "over_mult": 3.0, "storm_strong": 0.35},
-	{"name": "HARD", "events_per_leg": 3.0, "burn_band": 0.7, "landing_forgive": 0.85, "surface_hazards": 1.4, "drone_rocks": 1.4, "budget_slack": 0.95, "over_mult": 2.0, "storm_strong": 0.6},
+	{"name": "EASY", "events_per_leg": 1.0, "events_cruise": 1.0, "events_site": 1.0, "burn_band": 1.5, "landing_forgive": 1.3, "surface_hazards": 0.6, "drone_rocks": 0.7, "budget_slack": 1.15, "over_mult": 4.0, "storm_strong": 0.15},
+	{"name": "NORMAL", "events_per_leg": 1.0, "events_cruise": 1.0, "events_site": 1.0, "burn_band": 1.0, "landing_forgive": 1.0, "surface_hazards": 1.0, "drone_rocks": 1.0, "budget_slack": 1.0, "over_mult": 3.0, "storm_strong": 0.35},
+	{"name": "HARD", "events_per_leg": 2.0, "events_cruise": 2.0, "events_site": 1.0, "burn_band": 0.7, "landing_forgive": 0.85, "surface_hazards": 1.4, "drone_rocks": 1.4, "budget_slack": 0.95, "over_mult": 2.0, "storm_strong": 0.6},
 ]
 
 ## How every resource is rated (Game.calc()["use"], shown in the builder and in the build report). Game rule.
@@ -62,8 +63,8 @@ const DEST: Dictionary = {
 		"name": "MOON", "diff": "EASY", "color": Color("c9c9d6"),
 		"kind": "land", "skin": "moon", "tier": 1, "air": "none", "returns": true,
 		"critical": ["fuel", "mass"], "hazards": [],
-		"goal": "Land, drill 3 samples, fly them home",
-		"needs": ["Engine landing: no air to slow you down", "Ascent stage: the rocks must fly home", "Lots of fuel: stop, land, come back"],
+		"goal": "Land, drill 3 samples, send the capsule home",
+		"needs": ["Engine landing: no air to slow you down", "Sample capsule: only the rocks fly home", "Lots of fuel: land, then launch the capsule"],
 		"sun_au": 1.0, "earth_au": 0.00257, "gravity": 1.62, "atmos": "none",
 		"light_delay": "1.3 seconds", "sun_wm2": 1361.0,
 		"budget": 395.0, "margin": 0.2, "time_limit_days": 680,
@@ -291,96 +292,120 @@ const DEST: Dictionary = {
 ## difficulty's budget_slack) and sample counts are game rules, tuned by tools/dev/balance.gd.
 const TASKS: Dictionary = {
 	"moon": [
-		{"id": "scout", "name": "SCOUT LANDER", "diff": 0, "level": "EASY", "samples": 2, "budget": 270.0,
-			"needs": ["Engine landing: no air to slow you down", "A drill and a radio: the data is the prize", "Fuel to stop and land (nothing flies home)"],
-			"text": "Land, drill 2 rocks and radio what you find to Earth. Nothing flies home.",
-			"goal": "Land, drill 2 samples, send data home",
+		{"id": "photo", "name": "PHOTO SURVEY", "job": "photo", "diff": 0, "level": "EASY", "samples": 4, "budget": 270.0,
+			"needs": ["Engine landing: no air to slow you down", "A camera and a rover: the photos are the prize", "Fuel to land: the lander stays on the Moon"],
+			"text": "Land, drive to 4 viewpoints and photograph them. The photos go home by radio.",
+			"goal": "Land, take 4 photos, send them home",
 			"returns": false, "objectives": ["launch", "arrive", "land", "samples", "downlink"]},
-		{"id": "return", "name": "SAMPLE RETURN", "diff": 1, "level": "NORMAL", "samples": 3,
-			"text": "Land, drill 3 rocks and fly them home to Earth, as Apollo and Chang'e 5 did.",
-			"goal": "Land, drill 3 samples, fly them home"},
-		{"id": "polar", "name": "POLAR ICE HUNT", "diff": 2, "level": "HARD", "samples": 5,
-			"text": "Drill 5 samples beside a dark polar crater and fly every one of them home.",
-			"goal": "Land, drill 5 samples, fly them home"},
+		{"id": "return", "name": "SAMPLE RETURN", "job": "drill", "diff": 1, "level": "NORMAL", "samples": 3,
+			"needs": ["Engine landing: no air to slow you down", "Sample capsule: only the rocks fly home", "Lots of fuel: land, then launch the capsule"],
+			"text": "Drill 3 rocks. A small capsule flies them to Earth, like Chang'e 5. The lander stays.",
+			"goal": "Land, drill 3 samples, send the capsule home",
+			"returns": true, "objectives": ["launch", "arrive", "land", "samples", "return"]},
+		{"id": "crew", "name": "CREW MOONWALK", "job": "crew", "diff": 2, "level": "HARD", "samples": 3, "budget": 640.0,
+			"needs": ["Crew cabin: 2 astronauts walk, no rover", "Crew capsule: only the crew flies home", "A heavy lander: a big rocket, lots of fuel"],
+			"text": "Land 2 astronauts. They set up 3 science stations, as Artemis III plans.",
+			"goal": "Land the crew, set up 3 stations, send them home",
+			"returns": true, "objectives": ["launch", "arrive", "land", "samples", "return"]},
 	],
 	"mercury": [
-		{"id": "first", "name": "FIRST TOUCHDOWN", "diff": 0, "level": "EASY", "samples": 2, "budget": 430.0,
-			"text": "Be the first to land on Mercury. Drill 2 rocks and send the data home.",
-			"goal": "Land, drill 2 samples, send data home"},
-		{"id": "survey", "name": "SURFACE SURVEY", "diff": 1, "level": "NORMAL", "samples": 4,
+		{"id": "photo", "name": "FIRST LOOK", "job": "photo", "diff": 0, "level": "EASY", "samples": 3, "budget": 430.0,
+			"needs": ["Sunshade: sunlight is 6.7 times Earth's", "A camera, a rover and a medium dish", "A huge fuel load: no air to brake in"],
+			"text": "Be the first to land on Mercury. Drive to 3 viewpoints and photograph the plain.",
+			"goal": "Land, take 3 photos, send them home"},
+		{"id": "survey", "name": "SURFACE SURVEY", "job": "drill", "diff": 1, "level": "NORMAL", "samples": 4,
 			"text": "Land, drill 4 rocks across the plain and send the data home.",
 			"goal": "Land, drill 4 samples, send data home"},
-		{"id": "traverse", "name": "CRATER TRAVERSE", "diff": 2, "level": "HARD", "samples": 6,
+		{"id": "traverse", "name": "CRATER TRAVERSE", "job": "drill", "diff": 2, "level": "HARD", "samples": 6,
 			"text": "Drive far across the hot, cratered plain: drill 6 rocks and send every bit home.",
 			"goal": "Land, drill 6 samples, send data home"},
 	],
 	"venus": [
-		{"id": "look", "name": "QUICK LOOK", "diff": 0, "level": "EASY", "samples": 2, "budget": 350.0,
-			"text": "Land and drill 2 rocks before the heat kills the lander. Send the data at once.",
-			"goal": "Land, drill 2 samples in 127 minutes"},
-		{"id": "soil", "name": "SOIL SURVEY", "diff": 1, "level": "NORMAL", "samples": 3,
+		{"id": "look", "name": "QUICK LOOK", "job": "photo", "diff": 0, "level": "EASY", "samples": 2, "budget": 350.0,
+			"needs": ["Pressure hull: the air crushes like 900 m of sea", "Heat shield: the thick air does all the braking", "A camera and a fast dish: you get 127 minutes"],
+			"text": "Land and take 2 colour photos before the heat wins. Venera 13 did it in 1982.",
+			"goal": "Land, take 2 photos in 127 minutes"},
+		{"id": "soil", "name": "SOIL SURVEY", "job": "drill", "diff": 1, "level": "NORMAL", "samples": 3,
 			"text": "Drill 3 rocks in the 127 minutes the lander lives. Venera 13 managed one.",
 			"goal": "Land, drill 3 samples in 127 minutes"},
-		{"id": "dash", "name": "FOUR-ROCK DASH", "diff": 2, "level": "HARD", "samples": 4,
+		{"id": "dash", "name": "FOUR-ROCK DASH", "job": "drill", "diff": 2, "level": "HARD", "samples": 4,
 			"text": "Drive out and drill 4 rocks in 127 minutes. Every minute counts.",
 			"goal": "Land, drill 4 samples in 127 minutes"},
 	],
 	"mars": [
-		{"id": "scout", "name": "LANDING SITE SCOUT", "diff": 0, "level": "EASY", "samples": 2, "budget": 315.0,
-			"text": "Land and drill 2 rocks close to the lander. Send the data home.",
-			"goal": "Land, drill 2 samples, send data home"},
-		{"id": "survey", "name": "ROCK SURVEY", "diff": 1, "level": "NORMAL", "samples": 4,
+		{"id": "photo", "name": "PHOTO SCOUT", "job": "photo", "diff": 0, "level": "EASY", "samples": 3, "budget": 315.0,
+			"needs": ["Heat shield and parachute: dive into the thin air", "A camera, a rover, batteries for the night", "A medium dish: photos are big"],
+			"text": "Land, drive to 3 viewpoints and photograph places where people could land one day.",
+			"goal": "Land, take 3 photos, send them home",
+			"returns": false},
+		{"id": "survey", "name": "ROCK SURVEY", "job": "drill", "diff": 1, "level": "NORMAL", "samples": 4,
 			"text": "Drive across the plain, drill 4 rocks and send the data home.",
-			"goal": "Land, drill 4 samples, send data home"},
-		{"id": "cache", "name": "SAMPLE CACHE", "diff": 2, "level": "HARD", "samples": 6,
-			"text": "Drill and seal 6 rock cores, as Perseverance has. Send all the data home.",
-			"goal": "Land, drill 6 samples, send data home"},
+			"goal": "Land, drill 4 samples, send data home",
+			"returns": false},
+		{"id": "crew", "name": "FIRST FOOTSTEPS", "job": "crew", "diff": 2, "level": "HARD", "samples": 3, "budget": 680.0,
+			"needs": ["Crew cabin: 2 astronauts walk, no rover", "Crew capsule: only the crew flies home", "Heat shield, parachute, legs, a big rocket"],
+			"text": "A future mission in NASA's Moon to Mars plan: 2 astronauts set up 3 stations.",
+			"goal": "Land the crew, set up 3 stations, send them home",
+			"returns": true, "objectives": ["launch", "arrive", "land", "samples", "return"]},
 	],
 	"jupiter": [
-		{"id": "pass", "name": "RING FLYTHROUGH", "diff": 0, "level": "EASY", "samples": 3, "budget": 440.0,
-			"text": "Fly the drone through the faint dust rings once and catch 3 grains.",
-			"goal": "Orbit, fly the drone for 3 ring samples"},
-		{"id": "survey", "name": "RING SURVEY", "diff": 1, "level": "NORMAL", "samples": 5,
+		{"id": "pass", "name": "RING FLYTHROUGH", "job": "photo", "diff": 0, "level": "EASY", "samples": 3, "budget": 440.0,
+			"text": "Fly the drone through the faint dust rings and photograph 3 ring features.",
+			"goal": "Orbit, fly the drone for 3 ring photos"},
+		{"id": "survey", "name": "RING SURVEY", "job": "drill", "diff": 1, "level": "NORMAL", "samples": 5,
 			"text": "Catch 5 ring grains with the drone, dock and send the data home.",
 			"goal": "Orbit, fly the drone for 5 ring samples"},
-		{"id": "dive", "name": "DEEP RING DIVE", "diff": 2, "level": "HARD", "samples": 7,
+		{"id": "dive", "name": "DEEP RING DIVE", "job": "drill", "diff": 2, "level": "HARD", "samples": 7,
 			"text": "Catch 7 grains deep in the rings, inside the radiation belts. Dock and send it all.",
 			"goal": "Orbit, fly the drone for 7 ring samples"},
 	],
 	"saturn": [
-		{"id": "skim", "name": "RING SKIM", "diff": 0, "level": "EASY", "samples": 3, "budget": 605.0,
-			"text": "Skim the edge of the rings with the drone and catch 3 ice grains.",
-			"goal": "Orbit, fly the drone for 3 ring samples"},
-		{"id": "survey", "name": "RING SURVEY", "diff": 1, "level": "NORMAL", "samples": 5,
+		{"id": "skim", "name": "RING SKIM", "job": "photo", "diff": 0, "level": "EASY", "samples": 3, "budget": 605.0,
+			"text": "Skim the edge of the rings with the drone and photograph 3 ring features.",
+			"goal": "Orbit, fly the drone for 3 ring photos"},
+		{"id": "survey", "name": "RING SURVEY", "job": "drill", "diff": 1, "level": "NORMAL", "samples": 5,
 			"text": "Catch 5 ice grains, dock with the orbiter and send the data home.",
 			"goal": "Orbit, fly the drone for 5 ring samples"},
-		{"id": "finale", "name": "GRAND FINALE DIVE", "diff": 2, "level": "HARD", "samples": 7,
+		{"id": "finale", "name": "GRAND FINALE DIVE", "job": "drill", "diff": 2, "level": "HARD", "samples": 7,
 			"text": "Dive between the rings like Cassini in 2017: catch 7 ice grains and get out.",
 			"goal": "Orbit, fly the drone for 7 ring samples"},
 	],
 	"uranus": [
-		{"id": "first", "name": "FIRST ORBITER", "diff": 0, "level": "EASY", "samples": 4, "budget": 720.0,
-			"text": "Be the first to orbit Uranus. Catch 4 ring grains with the drone.",
-			"goal": "Orbit, fly the drone for 4 ring samples"},
-		{"id": "survey", "name": "RING SURVEY", "diff": 1, "level": "NORMAL", "samples": 6,
+		{"id": "first", "name": "FIRST ORBITER", "job": "photo", "diff": 0, "level": "EASY", "samples": 4, "budget": 720.0,
+			"text": "Be the first to orbit Uranus. Photograph 4 of its dark, narrow rings with the drone.",
+			"goal": "Orbit, fly the drone for 4 ring photos"},
+		{"id": "survey", "name": "RING SURVEY", "job": "drill", "diff": 1, "level": "NORMAL", "samples": 6,
 			"text": "Catch 6 grains from the dark, narrow rings and send the data home.",
 			"goal": "Orbit, fly the drone for 6 ring samples"},
-		{"id": "traverse", "name": "LONG RING TRAVERSE", "diff": 2, "level": "HARD", "samples": 8,
+		{"id": "traverse", "name": "LONG RING TRAVERSE", "job": "drill", "diff": 2, "level": "HARD", "samples": 8,
 			"text": "Cross all the rings: catch 8 grains and send every bit over a very slow link.",
 			"goal": "Orbit, fly the drone for 8 ring samples"},
 	],
 	"neptune": [
-		{"id": "first", "name": "FIRST ORBITER", "diff": 0, "level": "EASY", "samples": 4, "budget": 770.0,
-			"text": "Be the first to orbit Neptune. Catch 4 ring grains with the drone.",
-			"goal": "Orbit, fly the drone for 4 ring samples"},
-		{"id": "survey", "name": "RING SURVEY", "diff": 1, "level": "NORMAL", "samples": 6,
+		{"id": "first", "name": "FIRST ORBITER", "job": "photo", "diff": 0, "level": "EASY", "samples": 4, "budget": 770.0,
+			"text": "Be the first to orbit Neptune. Photograph 4 spots in its thin rings with the drone.",
+			"goal": "Orbit, fly the drone for 4 ring photos"},
+		{"id": "survey", "name": "RING SURVEY", "job": "drill", "diff": 1, "level": "NORMAL", "samples": 6,
 			"text": "Catch 6 grains from the thin rings and send the data home.",
 			"goal": "Orbit, fly the drone for 6 ring samples"},
-		{"id": "arcs", "name": "RING ARC HUNT", "diff": 2, "level": "HARD", "samples": 8,
+		{"id": "arcs", "name": "RING ARC HUNT", "job": "drill", "diff": 2, "level": "HARD", "samples": 8,
 			"text": "Catch 8 grains from the bright arcs of the outer ring. The slowest link there is.",
 			"goal": "Orbit, fly the drone for 8 ring samples"},
 	],
 }
+
+## The three jobs a task can be (the task's "job"; Game.job() reads it). Words for screens and the report.
+##   word  the counter's label   noun  in sentences   obj  the "samples" objective   home  what flies to Earth ("" = data only)
+const JOBS: Dictionary = {
+	"drill": {"word": "SAMPLES", "noun": "samples", "obj": "Collect samples", "home": "sample capsule"},
+	"photo": {"word": "PHOTOS", "noun": "photos", "obj": "Take the photos", "home": ""},
+	"crew": {"word": "STATIONS", "noun": "stations", "obj": "Set up the stations", "home": "crew capsule"},
+}
+## Game rule: on a photo task the camera makes this many Gb per photo: a ground panorama stitched from many
+## frames, or one drone frame at the rings. Big enough that the radio (and on big tasks the storage) matters.
+const PHOTO_GB: Dictionary = {"land": 5.0, "ring": 0.5}
+## Game rule: science points a photo earns on a photo task (the camera is the main instrument there).
+const PHOTO_PTS: int = 2
 
 ## Letter grade of a successful mission, from the total of the four score parts. Game rule.
 const GRADE_A: int = 85
@@ -442,7 +467,7 @@ const PARTS: Dictionary = {
 		"desc": "Stores science until it can be sent home.",
 		"src": "game estimate"},
 	"camera": {"name": "Context camera (CTX)", "cat": "science", "mass": 3.0, "cost": 10.0, "draw": 7.0, "gb": 0.5, "pts": 1, "max": 1,
-		"desc": "B/W camera. Each sample: 0.5 Gb (game rule).",
+		"desc": "B/W camera. Each sample: 0.5 Gb. On a photo task each photo is 5 Gb on the ground, 0.5 Gb at the rings (game rules).",
 		"src": "MRO CTX: 3 kg, 7 W. NASA"},
 	"spectro": {"name": "Imaging spectrometer (CRISM)", "cat": "science", "mass": 33.0, "cost": 30.0, "draw": 46.0, "gb": 2.5, "pts": 3, "max": 1,
 		"desc": "Finds what rocks are made of. 2.5 Gb per look.",
@@ -480,9 +505,13 @@ const PARTS: Dictionary = {
 	"drone": {"name": "Sampling drone", "cat": "robot", "mass": 150.0, "cost": 60.0, "draw": 20.0, "max": 1, "kinds": ["ring"],
 		"desc": "Ringed planets: flies into the rings and brings samples back.",
 		"src": "game design, inspired by Cassini's Grand Finale dives (2017)"},
-	"ascent": {"name": "Ascent stage + return capsule", "cat": "return", "mass": 600.0, "cost": 40.0, "max": 1, "dests": ["moon"],
-		"desc": "Takes samples back to Earth. Game rule: needs 30% battery to start.",
-		"src": "Apollo used a separate ascent stage. Mass and the 30% rule = game rule"},
+	"ascent": {"name": "Return capsule", "cat": "return", "mass": 600.0, "cost": 40.0, "max": 1, "dests": ["moon", "mars"],
+		"desc": "The only part that leaves: it flies the samples, or the crew, to Earth. The lander stays. Game rule: needs 30% battery to launch.",
+		"src": "Apollo and Chang'e 5 left their landers behind: only a small stage lifted off. Mass and the 30% rule = game rule"},
+	"crew": {"name": "Crew cabin (2 astronauts)", "cat": "robot", "mass": 1500.0, "cost": 150.0, "draw": 200.0, "gb": 1.0, "pts": 2, "max": 1,
+		"kinds": ["land"], "jobs": ["crew"],
+		"desc": "Two astronauts walk out and set up the science stations by hand. Life support uses 200 W. Each station: 1 Gb.",
+		"src": "Game-scale simplification: Apollo's two-person cabin (lunar module ascent stage) weighed about 2,150 kg empty. Mass, power, price and data = game rule"},
 	"prop": {"name": "Propellant 100 kg", "cat": "fuel", "mass": 100.0, "cost": 0.5, "max": 80,
 		"desc": "Fuel for course corrections, braking into orbit and landing. Engine Isp 300 s.",
 		"src": "Rocket equation; Isp 300 s = NASA GMAT default"},
@@ -606,7 +635,7 @@ const TECH: Dictionary = {
 
 const OBJ_NAMES: Dictionary = {
 	"launch": "Launch", "arrive": "Arrive safely", "land": "Land safely", "deploy": "Deploy the drone",
-	"samples": "Collect samples", "return": "Return samples to Earth", "dock": "Drone docks with orbiter",
+	"samples": "Collect samples", "return": "Capsule reaches Earth", "dock": "Drone docks with orbiter",
 	"downlink": "Send the science to Earth",
 }
 

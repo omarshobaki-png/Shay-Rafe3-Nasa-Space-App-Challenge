@@ -403,7 +403,7 @@ static func _power(c: Dictionary) -> Dictionary:
 		if battery_only:
 			head = "On %s the lander lives on its battery alone." % place()
 		elif float(c["night_need"]) <= 0.0:
-			head = "The rover and the drill run on a battery: the ship has none."
+			head = "The lander runs on a battery at the site: the ship has none."
 		_flag(s, "bad", head,
 			"%s Add batteries%s." % [night if night != "" else "One battery is enough to start.", "" if battery_only else ", or an RTG that works in the dark"],
 			["battery", "battery_hi"] if battery_only else ["battery", "battery_hi", "rtg"], ["battery"])
@@ -552,29 +552,41 @@ static func _science(c: Dictionary) -> Dictionary:
 	var ring: bool = d["kind"] == "ring"
 	var goal: int = int(d["samples_goal"])
 	var pts: int = int(c["pts"])
+	var jb: String = Game.job()
 	var what: String = "ice grains" if ring else "rocks"
+	if jb != "drill":
+		what = String(Data.JOBS[jb]["noun"])
 	s["value"] = "%d %s x %d pt%s" % [goal, what, pts, "" if pts == 1 else "s"]
 	s["short"] = "%d x %d pt%s" % [goal, pts, "" if pts == 1 else "s"]
 	s["fact"] = SCIENCE_FACT[Game.dest_id]
-	_flag(s, "ok", "You must collect the full number of samples for this mission: %d %s." % [goal, what],
-		"Each sample makes %s Gb of data and earns %d science points." % [_f(c["gb_per_sample"]), pts])
+	_flag(s, "ok", "The task needs all of them: %d %s." % [goal, what],
+		"Each one makes %s Gb of data and earns %d science points." % [_f(c["gb_per_sample"]), pts])
 	if ring:
-		if float(c["gb_per_sample"]) <= 0.0:
+		if jb == "drill" and float(c["gb_per_sample"]) <= 0.0:
 			s["value"] = "no instrument"
 			s["short"] = "no instrument"
 			_flag(s, "bad", "Bring at least one science instrument or there is nothing to send home.",
 				"Add the DUST ANALYZER, or the lighter MAGNETOMETER.", ["dust", "mag", "camera", "spectro"], ["dust"])
+	elif jb == "crew":
+		if not Game.id_has("crew"):
+			s["value"] = "no crew"
+			s["short"] = "no crew"
+			_flag(s, "bad", "No crew cabin: nobody can set up the science stations.", "Add the CREW CABIN from the ROBOTS tab.", ["crew"], ["crew"])
 	else:
-		if not Game.id_has("drill"):
+		if jb == "drill" and not Game.id_has("drill"):
 			s["value"] = "no drill"
 			s["short"] = "no drill"
 			_flag(s, "bad", "No drill: you cannot pick up any rock.", "Add the SAMPLE DRILL AND ARM.", ["drill"], ["drill"])
 		if not Game.id_has("rover") and not Game.id_has("rover_big"):
-			if Game.id_has("drill"):
+			if Game.id_has("drill") or jb == "photo":
 				s["value"] = "no rover"
 				s["short"] = "no rover"
-			_flag(s, "bad", "Without a rover you can reach only one rock, and you get stuck on the surface.",
+			_flag(s, "bad", "Without a rover you can reach only what is next to the lander.",
 				"Add the SMALL ROVER from the ROBOTS tab.", ["rover", "rover_big"], ["rover"])
+	if jb == "photo" and not Game.id_has("camera"):
+		s["value"] = "no camera"
+		s["short"] = "no camera"
+		_flag(s, "bad", "No camera: you cannot take a single photo.", "Add the CONTEXT CAMERA from the SCIENCE tab.", ["camera"], ["camera"])
 	if pts <= 1:
 		_flag(s, "warn", "Add a science instrument.",
 			"Each sample earns only %d point now. One more instrument raises the science score and the credits." % pts,
@@ -597,7 +609,7 @@ static func _data(c: Dictionary) -> Dictionary:
 		s["value"] = "no science data"
 		s["short"] = "no data"
 		s["frac"] = 1.0
-		var inst: Array = ["dust", "mag"] if ring else ["drill", "camera", "spectro"]
+		var inst: Array = ["camera"] if Game.job() == "photo" else (["dust", "mag"] if ring else ["drill", "camera", "spectro"])
 		_flag(s, "bad", "Bring at least one science instrument or there is nothing to send home.",
 			"Samples only turn into data when an instrument looks at them. Add one from the SCIENCE tab.", inst)
 	elif store < float(c["data_exp"]):
@@ -645,24 +657,26 @@ static func _comms(c: Dictionary) -> Dictionary:
 
 static func _return(c: Dictionary) -> Dictionary:
 	var s: Dictionary = _new("return", "RETURN", "science", 5)
-	s["value"] = "ascent stage ready"
+	var crew: bool = Game.job() == "crew"
+	var cargo: String = "the crew" if crew else "the rocks"
+	s["value"] = "capsule ready"
 	s["short"] = "ready"
-	s["fact"] = "Apollo left its descent stage on the Moon; the ascent stage flew up to orbit."
-	_flag(s, "ok", "The ascent stage will carry the rocks home.", "Game rule: keep 30% battery or the engine won't start.")
+	s["fact"] = "Apollo and Chang'e 5 left their landers behind: only a small stage flew up and home."
+	_flag(s, "ok", "The return capsule will fly %s to Earth. The lander stays." % cargo, "Game rule: keep 30% battery or the capsule won't launch.")
 	if not Game.id_has("ascent"):
-		s["value"] = "no ascent stage"
-		s["short"] = "no stage"
-		_flag(s, "bad", "No ascent stage: your rocks can never leave %s." % place(),
-			"Add the ASCENT STAGE from the RETURN tab. It weighs %s kg, so it needs a lot more fuel." % _f(Data.PARTS["ascent"]["mass"]), ["ascent"], ["ascent"])
+		s["value"] = "no capsule"
+		s["short"] = "no capsule"
+		_flag(s, "bad", "No return capsule: %s can never leave %s." % [cargo, place()],
+			"Add the RETURN CAPSULE from the RETURN tab. It weighs %s kg, so it needs a lot more fuel." % _f(Data.PARTS["ascent"]["mass"]), ["ascent"], ["ascent"])
 	elif float(c["wh"]) <= 0.0:
 		s["value"] = "no battery"
 		s["short"] = "no battery"
-		_flag(s, "bad", "The ascent engine needs a charged battery to start.", "Add a BATTERY and keep it above 30%.", ["battery"], ["battery"])
+		_flag(s, "bad", "The capsule needs a charged battery to launch.", "Add a BATTERY and keep it above 30%.", ["battery"], ["battery"])
 	elif float(c["gen"]) < float(c["draw_ops"]):
-		_flag(s, "warn", "Game rule: keep 30% battery or the ascent engine won't start.",
+		_flag(s, "warn", "Game rule: keep 30% battery or the capsule won't launch.",
 			"The ship uses more power than it makes, so the battery will run down. Fix POWER, and carry a battery as reserve.", ["solar", "battery"])
-	elif not Game.id_has("drill"):
-		_flag(s, "warn", "The ascent stage needs at least one rock on board to count.", "Bring a drill and a rover.", ["drill"])
+	elif not crew and not Game.id_has("drill"):
+		_flag(s, "warn", "The capsule needs at least one rock on board to count.", "Bring a drill and a rover.", ["drill"])
 	return s
 
 static func _budget(c: Dictionary) -> Dictionary:
@@ -785,8 +799,11 @@ static func part_need(id: String) -> Dictionary:
 	var air: String = d["air"]
 	var here: String = place()
 	var p: Dictionary = Data.PARTS[id]
+	var jb: String = Game.job()
 	if p.has("kinds") and not (p["kinds"] as Array).has(d["kind"]):
 		return _pn("not_needed", "No ground at %s: nothing to land on" % here if not land else "%s has ground: no rings to fly through" % here.capitalize())
+	if p.has("jobs") and not (p["jobs"] as Array).has(jb):
+		return _pn("not_needed", "Only for a task with astronauts")
 	match id:
 		"bus":
 			return _pn("required", "The ship itself: frame, computer and engine")
@@ -813,7 +830,7 @@ static func part_need(id: String) -> Dictionary:
 				return _pn("required", "No sunlight on the ground: battery power only")
 			if float(d["night_hours"]) > 0.0:
 				return _pn("required", "%s nights last %s hours" % [here.capitalize(), _f(roundf(float(d["night_hours"])))])
-			return _pn("required", "The rover and the drill run on it")
+			return _pn("required", "The lander runs on it at the site")
 		"lga", "mga", "hga", "ka":
 			var best: String = _antenna(c)
 			var want: float = _data_ref(c) * float(Data.MARGIN["comms"])
@@ -827,15 +844,21 @@ static func part_need(id: String) -> Dictionary:
 				return _pn("required", "The science is bigger than the ship's own memory")
 			return _pn("recommended", "Spare memory: a way out when a computer fails")
 		"drill":
+			if jb == "photo":
+				return _pn("not_needed", "A photo task takes pictures, not rocks")
+			if jb == "crew":
+				return _pn("not_needed", "The astronauts set up stations by hand")
 			return _pn("required", "Nothing else can pick up a rock sample")
 		"camera":
+			if jb == "photo":
+				return _pn("required", "Takes the photos: %s Gb each (game rule)" % _f(Data.PHOTO_GB[d["kind"]]))
 			return _pn("recommended" if land else "optional", "Adds 1 science point to every sample")
 		"mag":
 			return _pn("optional", "Light and cheap: 1 science point per sample")
 		"spectro":
 			return _pn("optional", "Best science, but 2.5 Gb per sample to send home")
 		"dust":
-			return _pn("optional" if land else "required", "Reads what dust and ring grains are made of")
+			return _pn("required" if not land and jb == "drill" else "optional", "Reads what dust and ring grains are made of")
 		"legs":
 			if air == "thick":
 				return _pn("not_needed", "The pressure hull lands on its own crush ring")
@@ -859,14 +882,20 @@ static func part_need(id: String) -> Dictionary:
 				return _pn("required", "The air here crushes like 900 m of sea")
 			return _pn("not_needed", "No crushing air at %s" % here)
 		"rover":
-			return _pn("required", "Drives to the rocks: the lander cannot move")
+			if jb == "crew":
+				return _pn("not_needed", "The astronauts walk to the stations")
+			return _pn("required", "Drives to the %s: the lander cannot move" % ("viewpoints" if jb == "photo" else "rocks"))
 		"rover_big":
+			if jb == "crew":
+				return _pn("not_needed", "The astronauts walk to the stations")
 			return _pn("optional", "Faster than the small rover, but 300 kg")
+		"crew":
+			return _pn("required", "Two astronauts set up the stations by hand")
 		"drone":
 			return _pn("required", "No ground here: only the drone reaches the rings")
 		"ascent":
 			if bool(d["returns"]):
-				return _pn("required", "The rocks must fly home to Earth")
+				return _pn("required", "Flies the %s to Earth; the lander stays" % ("crew" if jb == "crew" else "rocks"))
 			return _pn("not_needed", "Only the data goes home from %s" % here)
 		"sunshade":
 			if Game.needs_shade():
@@ -913,7 +942,7 @@ static func checklist() -> Array:
 		pw_hint = "Add %s: the ship needs more power." % ("a NUCLEAR BATTERY (RTG)" if pw_next == "rtg" else "a SOLAR ARRAY")
 	elif land and (float(c["wh"]) <= 0.0 or float(c["wh"]) < float(c["night_need"])):
 		pw_next = "battery"
-		pw_hint = "Add a BATTERY: it runs the rover and the drill."
+		pw_hint = "Add a BATTERY: the lander runs on it."
 		if float(c["night_need"]) > 0.0:
 			pw_hint = "Add a BATTERY: %s Wh needed for the dark hours." % _f(c["night_need"])
 	var pw_step: Dictionary = _step("power", "POWER", pw, pw_next == "", pw_hint, "power")
@@ -929,8 +958,16 @@ static func checklist() -> Array:
 		rd.append("recorder")
 	out.append(_step("radio", "RADIO", rd, rd_done, rd_hint if not rd_done else "The radio link works."))
 	# 3 science
+	var jb: String = Game.job()
+	var mover: bool = Game.id_has("rover") or Game.id_has("rover_big")
 	var sc: Array = ["drill", "rover", "camera"] if land else ["drone", "dust"]
-	var sc_done: bool = int(c["pts"]) >= 2 and ((Game.id_has("drill") and (Game.id_has("rover") or Game.id_has("rover_big"))) if land else Game.id_has("drone"))
+	var sc_done: bool = int(c["pts"]) >= 2 and ((Game.id_has("drill") and mover) if land else Game.id_has("drone"))
+	if jb == "photo":
+		sc = ["camera", "rover"] if land else ["drone", "camera"]
+		sc_done = Game.id_has("camera") and (mover if land else Game.id_has("drone"))
+	elif jb == "crew":
+		sc = ["crew"]
+		sc_done = Game.id_has("crew")
 	var sc_step: Dictionary = _step("science", "SCIENCE", sc, sc_done, "")
 	if sc_step["next"] == "" and not sc_done:
 		sc_step["next"] = "mag"
@@ -952,15 +989,15 @@ static func checklist() -> Array:
 	if Game.has_hazard("radiation"):
 		gd.append("shield")
 	if not gd.is_empty():
-		var gd_step: Dictionary = _step("down", "GETTING DOWN" if land else "PROTECTION", gd, true, "")
-		if gd_step["next"] == "legs" and Game.id_has("airbags"):
-			gd_step["next"] = ""
+		# the first part still missing; airbags stand in for legs
+		var missing: String = ""
 		for pid: String in gd:
-			if pid != "legs" and not Game.id_has(pid):
-				gd_step["done"] = false
-		if gd_step["next"] != "":
-			gd_step["done"] = false
-		gd_step["hint"] = "Ready for %s." % place() if gd_step["done"] else "Add the %s." % _name(gd_step["next"]).to_upper()
+			if missing == "" and not Game.id_has(pid) and not (pid == "legs" and Game.id_has("airbags")):
+				missing = pid
+		var gd_step: Dictionary = _step("down", "GETTING DOWN" if land else "PROTECTION", gd, missing == "", "")
+		gd_step["next"] = missing
+		gd_step["tab"] = String(Data.PARTS[missing if missing != "" else String(gd[0])]["cat"])
+		gd_step["hint"] = "Ready for %s." % place() if missing == "" else "Add the %s." % _name(missing).to_upper()
 		out.append(gd_step)
 	# 5 fuel, 6 rocket
 	var tanks: int = ceili(maxf(0.0, float(c["prop_ok"]) - float(c["prop"])) / float(Data.PARTS["prop"]["mass"]))

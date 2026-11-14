@@ -32,13 +32,13 @@ const TIPS: Array = [
 	["CRUSHED", "ENGINEER: Venus air presses 92 times harder than Earth's. Add the pressure hull."],
 	["NO PARACHUTE", "SCIENTIST: a parachute slows you from 420 to 85 m/s for free."],
 	["CRASH", "PILOT: fire the engine earlier and touch down slowly. Legs or airbags raise the speed limit."],
-	["STRANDED", "ENGINEER: bring more solar power or batteries, and keep 30% battery for the trip home."],
+	["STRANDED", "ENGINEER: bring more solar power or batteries, and keep enough battery to finish the job."],
 	["BATTERY EMPTY", "ENGINEER: Mars nights last about 12 hours. Add batteries or a nuclear battery (RTG)."],
 	["RADIATION", "ENGINEER: add a radiation shield. Juno hides its computer in a titanium vault."],
 	["SOLAR STORM", "ENGINEER: radiation shielding protects electronics from solar storms."],
 	["Storage full", "COMMS: add a data recorder."],
 	["Sent", "COMMS: a bigger antenna sends data faster. Radio speed falls with distance squared."],
-	["No ascent stage", "SCIENTIST: add the ascent stage to bring samples home."],
+	["No ascent stage", "SCIENTIST: add the ascent stage so the sample capsule can reach Earth."],
 	["drone was lost", "PILOT: save fuel to fly the drone back up to the orbiter."],
 	["No drone", "SCIENTIST: giant planets have no ground. Add the sampling drone."],
 	["Samples collected", "SCIENTIST: a rover and a drill reach more rocks. Watch the battery."],
@@ -144,7 +144,7 @@ func _load(run: Dictionary) -> void:
 		var nm: String = String(o2.get("name", ""))
 		var ok: bool = bool(o2.get("done", false))
 		if String(o2.get("id", "")) == "samples":
-			nm += " (%d/%d)" % [int(r.get("samples", 0)), int(d.get("samples_goal", 0))]
+			nm += " (%d/%d%s)" % [int(r.get("samples", 0)), int(d.get("samples_goal", 0)), "" if nm.to_lower().contains(_count_word().to_lower()) else " " + _count_word().to_lower()]
 		goals.append([nm, ok])
 		if ok:
 			done += 1
@@ -262,8 +262,12 @@ func _phases() -> Array:
 func _decisions() -> Array:
 	return rep.get("decisions", r.get("decisions", [])) as Array
 
+## The word for what is counted at the site: samples, photos or stations (crew).
+func _count_word() -> String:
+	var job: String = String(r.get("job", Game.task().get("job", "drill")))
+	return {"photo": "PHOTOS", "crew": "STATIONS"}.get(job, "SAMPLES")
+
 func _phase_name(id: String) -> String:
-	var ring: bool = String(d.get("kind", "land")) == "ring"
 	match id:
 		"launch":
 			return "LAUNCH"
@@ -274,9 +278,9 @@ func _phase_name(id: String) -> String:
 		"landing":
 			return "LANDING"
 		"site":
-			return "RING DRONE" if ring else "ON THE SURFACE"
+			return "AT THE SITE"
 		"home":
-			return "TRIP HOME" if bool(d.get("returns", false)) else "DOWNLINK TO EARTH"
+			return "SENT TO EARTH"
 	return id.to_upper()
 
 ## One journey item per row: a phase head, a log line or a decision card, each with its wrapped text and height.
@@ -304,8 +308,9 @@ func _decision_item(dc: Dictionary, mode: int) -> Dictionary:
 	var text: String = String(dc.get("text", ""))
 	if cost != "nothing":
 		text = text.replace(" " + cost + ".", "")
-	var real: String = ""
-	if Game.has_method("event_by_id"):
+	# the decision log keeps the line the player saw (for a storm: the real DONKI storm of this run)
+	var real: String = String(dc.get("real", ""))
+	if real == "" and Game.has_method("event_by_id"):
 		real = String((Game.event_by_id(String(dc.get("id", ""))) as Dictionary).get("real", ""))
 	var l_choice: Array = []
 	var l_res: Array = []
@@ -1081,7 +1086,7 @@ func _fake_log() -> Array:
 		["landing", true, "TOUCHDOWN at 1.4 m/s (limit 4 m/s). 120 kg of fuel left."],
 		["site", true, "Samples collected: 3 of 3."],
 		["site", false, "DECISION, LANDER LEANS: NO SUN: WAIT FOR THE SUN. It went wrong. -40% battery."],
-		["home", true, "The ascent stage lifted off and brought 3 samples back to Earth."],
+		["home", true, "The data went to Earth by radio, and the sample capsule with 3 samples."],
 	]
 
 func debug_success() -> void:
@@ -1093,7 +1098,7 @@ func debug_partial() -> void:
 		["launch", true, "LAUNCH. The rocket lifted 3,950 kg of ship."],
 		["landing", true, "TOUCHDOWN at 2.1 m/s (limit 4 m/s)."],
 		["site", false, "Samples collected: 1 of 3. The battery ran out before the drill finished."],
-		["home", false, "STRANDED. Battery at 12%: the game rule says the ascent needs 30%. No way home."]], 60, 80, [60, 33, 55, 70], _fake_decs().slice(0, 2))
+		["home", false, "STRANDED. Battery at 12%: the game rule says the ascent needs 30%. The sample capsule could not launch."]], 60, 80, [60, 33, 55, 70], _fake_decs().slice(0, 2))
 	_skip()
 
 func debug_fail() -> void:
@@ -1114,7 +1119,7 @@ func debug_grade_b() -> void:
 	_grade_debug("B", "One step from A: keep the budget reserve and waste no mass.")
 
 func debug_grade_c() -> void:
-	_grade_debug("C", "To reach B, bring all the science home and make better calls.")
+	_grade_debug("C", "To reach B, send all the science to Earth and make better calls.")
 
 ## Many decisions (a HARD flight): the journey grows to several pages.
 func debug_many() -> void:

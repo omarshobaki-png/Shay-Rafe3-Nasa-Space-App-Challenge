@@ -35,7 +35,7 @@ const BIG: Array[String] = ["explosion", "launch", "ignition", "land", "stage_se
 const JINGLES: Array[String] = ["success", "coin", "confirm", "error", "all_go", "arrive", "sting_win", "sting_fail"]
 ## Seconds the music stays ducked under an event.
 const DUCK: Dictionary = {"launch": 4.6, "ignition": 1.0, "explosion": 1.8, "all_go": 1.3, "arrive": 1.4,
-	"success": 1.2, "sting_win": 3.0, "sting_fail": 2.6}
+	"success": 1.2, "sting_win": 3.0, "sting_fail": 2.6, "cheer": 3.5}
 const ALIAS: Dictionary = {"mission": "ascent"}
 const AMB_BY_DEST: Dictionary = {"moon": "amb_moon", "mars": "amb_mars_wind", "saturn": "amb_saturn"}
 

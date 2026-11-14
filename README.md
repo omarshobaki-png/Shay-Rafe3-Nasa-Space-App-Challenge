@@ -188,6 +188,9 @@ Debug: run with `-- screen=builder dest=mars` (also `launch`, `flight`, `landing
   mechanics (a landing-site choice, the Scientist's parachute and legs job, a drone throttle, the Comms
   downlink pick, who decides each event, the team sync weights). They are marked "game rule" in
   `data.gd` and are waiting for the team to approve or change them.
+- **Pitch:** Claude drafted the pitch deck layout and speaker notes from the team's own material, and
+  wrote the script that renders the deck's intro clip (a rocket failing at max-Q). The intro idea is
+  the team's; the clip is built only from the game's own sprites and synthesized sounds.
 - **No NASA logos are used.**
 
 <div align="center">

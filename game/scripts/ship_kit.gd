@@ -33,9 +33,9 @@ extends RefCounted
 ##   "pos":  Vector2  its top-left corner      "tex": Texture2D or null      "flip": bool
 ##
 ## HOW THE CRAFT GROWS
-##   deck (top):   ascent stage in the middle (the dish then stands on its docking port), high-gain dish,
+##   deck (top):   crew cabin in the middle (the ascent stage stands on its docking port), ascent stage (the dish then stands on its docking port), high-gain dish,
 ##                 medium-gain dish left, parachute can right, low-gain mast in front
-##   walls:        solar panels alternate right / left, 4 per wing, panels 9-16 form a second wing behind;
+##   walls:        solar panels alternate right / left, 3 per wing; each next 6 panels form a wing behind;
 ##                 RTGs alternate right / left on a boom chain; Ka dish boom right, magnetometer boom left
 ##   faces:        batteries and recorders fill the two racks, camera, spectrometer, dust analyzer, drill
 ##   below:        propellant: units 1-24 fill three stacked core tanks (3 px of barrel per unit), units
@@ -61,8 +61,8 @@ const SPR: Dictionary = {
 	"battery_hi_9": [-1, 14, 6, 12], "bus": [-42, -29, 84, 59], "camera": [-37, -14, 18, 15],
 	"chute": [19, -37, 16, 18], "core_1": [-29, 20, 58, 19], "core_2": [-29, 20, 58, 22], "core_3": [-29, 20, 58, 25],
 	"core_4": [-29, 20, 58, 28], "core_5": [-29, 20, 58, 31], "core_6": [-29, 20, 58, 34], "core_7": [-29, 20, 58, 37],
-	"core_8": [-29, 20, 58, 40], "drill": [18, 2, 23, 24], "drone": [-61, 27, 35, 28], "dust": [22, -14, 17, 17],
-	"engine": [-14, 21, 28, 22], "heatshield": [-63, 41, 126, 40], "hga": [-27, -71, 58, 51],
+	"core_8": [-29, 20, 58, 40], "crew": [-22, -50, 44, 32], "drill": [18, 2, 23, 24], "drone": [-61, 27, 35, 28],
+	"dust": [22, -14, 17, 17], "engine": [-14, 21, 28, 22], "heatshield": [-63, 41, 126, 40], "hga": [-27, -71, 58, 51],
 	"hull": [-51, -9, 102, 55], "hull_front": [-51, -9, 102, 39], "ka": [33, -63, 44, 50], "legs": [-68, -5, 136, 57],
 	"lga": [-14, -35, 8, 20], "mag": [-126, -50, 96, 37], "mga": [-38, -39, 20, 20], "recorder_0": [-36, 1, 11, 12],
 	"recorder_1": [-28, 3, 11, 12], "recorder_2": [-36, 12, 11, 11], "recorder_3": [-28, 13, 11, 12],
@@ -100,8 +100,8 @@ const YOKE: Vector2 = Vector2(9, 24)
 const RAIL: Vector2 = Vector2(30, 4)
 const WING_X: float = 47.0                  # inner edge of the first panel (the bus wall is at 38)
 const WING_Y: float = -15.0                 # top of the front wing
-const WING_BACK: Vector2 = Vector2(0, -11)  # the second wing sits behind the first, this much higher
-const WING_COLS: int = 4
+const WING_BACK: Vector2 = Vector2(0, -11)  # each further wing sits behind the one before, this much higher
+const WING_COLS: int = 3                    # v6: three panels per wing (four made the widest ship hit the parked rocket)
 const RTG_STEP: float = 34.0                # RTGs chain outward along one boom
 const CORE_UNITS: int = 8                   # units per core tank
 const CORE_TANKS: int = 3
@@ -109,6 +109,7 @@ const SIDE_UNITS: int = 28                  # units per radial tank
 const UNIT_PX: float = 3.0                  # barrel length per unit
 const CORE_PITCH: float = 9.0               # collar between two stacked core tanks
 const ASCENT_TOP: float = 35.0              # the dish mast stands this much higher on the ascent stage
+const CREW_TOP: float = 22.0                # the ascent stage and the dish stand this much higher on the crew cabin
 const RAIL_X: float = 26.0                  # the payload rail starts here (left side: mirrored)
 const RAIL_Y: float = 27.0
 const SIDE_CLEAR: float = 27.0              # payloads move this far out past a radial tank
@@ -247,22 +248,25 @@ static func layout(build: Dictionary) -> Array:
 
 	# ---- solar wings: panels alternate right / left; the second wing of a side sits behind the first
 	var n_solar: int = _cnt(build, "solar")
-	var wing_back: Array = []
-	var wing_front: Array = []
+	var wings: Array = []       # wings[row]: row 0 in front of the bus, higher rows further back
 	for k: int in n_solar + _cnt(build, "solar_lite"):
 		var lite: bool = k >= n_solar
 		var sid: String = "solar_lite" if lite else "solar"
 		var left: bool = k % 2 == 1
-		var back: bool = k / 2 >= WING_COLS
+		var row: int = (k / 2) / WING_COLS
 		var col: int = (k / 2) % WING_COLS
-		var pos: Vector2 = Vector2(WING_X + col * PANEL.x if not left else -WING_X - (col + 1) * PANEL.x, WING_Y)
-		if back:
-			pos += WING_BACK
-		var wing: Array = wing_back if back else wing_front
+		var pos: Vector2 = Vector2(WING_X + col * PANEL.x if not left else -WING_X - (col + 1) * PANEL.x, WING_Y) + WING_BACK * row
+		while wings.size() <= row:
+			wings.append([])
+		var wing: Array = wings[row]
 		if col == 0:
-			_put(wing, "yoke", (2 if back else 0) + (1 if left else 0), "yoke_l" if left else "yoke",
+			_put(wing, "yoke", row * 2 + (1 if left else 0), "yoke_l" if left else "yoke",
 				Vector2(-WING_X if left else WING_X - YOKE.x, pos.y), sid)
 		_put(wing, sid, k - n_solar if lite else k, sid, pos)
+	var wing_front: Array = wings[0] if not wings.is_empty() else []
+	var wing_back: Array = []
+	for row: int in range(wings.size() - 1, 0, -1):
+		wing_back.append_array(wings[row])
 
 	# ---- back to front
 	out.append_array(wing_back)
@@ -292,9 +296,15 @@ static func layout(build: Dictionary) -> Array:
 		_put(out, "rtg", g, "rtg_l" if gl else "rtg", Vector2((-1.0 if gl else 1.0) * RTG_STEP * (g / 2), 0))
 	out.append_array(wing_front)
 	var has_ascent: bool = _cnt(build, "ascent") > 0
-	for tid: String in ["ascent", "mga", "chute", "hga", "lga", "ka"]:
+	var lift: float = CREW_TOP if _cnt(build, "crew") > 0 else 0.0   # crew cabin first, then the ascent stage on it
+	for tid: String in ["crew", "ascent", "mga", "chute", "hga", "lga", "ka"]:
 		if _cnt(build, tid) > 0:
-			_put(out, tid, 0, tid, Vector2(0, -ASCENT_TOP) if (tid == "hga" and has_ascent) else Vector2.ZERO)
+			var up: float = 0.0
+			if tid == "ascent":
+				up = lift
+			elif tid == "hga":
+				up = lift + (ASCENT_TOP if has_ascent else 0.0)
+			_put(out, tid, 0, tid, Vector2(0, -up))
 	if has_heat:
 		_put(out, "heatshield_front", 0, "heatshield_front", heat_off, "heatshield")
 	return out
@@ -327,7 +337,7 @@ static func next_slot(build: Dictionary, id: String) -> Dictionary:
 				node = Vector2(c.x, box.end.y - (9.0 if want_n < CORE_TANKS else 12.0))
 			"solar", "solar_lite", "rtg":
 				node = Vector2(box.position.x if c.x > 0.0 else box.end.x - 1.0, c.y)
-			"ascent", "hga", "mga", "lga", "chute":
+			"crew", "ascent", "hga", "mga", "lga", "chute":
 				node = Vector2(c.x, box.end.y - 2.0)
 			"ka":
 				node = Vector2(box.position.x + 4.0, box.end.y - 4.0)

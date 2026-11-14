@@ -1,5 +1,5 @@
 extends Control
-## Cruise map and arrival (mode "out"), the trip home and data downlink (mode "home").
+## Cruise map and arrival (mode "out"). The old trip home / downlink stage (mode "home") is kept but v6 never enters it.
 ## The launch has its own screen (launch.gd), so the outbound flight starts at the cruise.
 ## Decision events open on the route (EventCard) and the ship reacts to the outcome; the arrival is flown:
 ## a braking burn the player holds (SPACE or the on-screen button), or an entry corridor behind a heat shield.
@@ -208,7 +208,7 @@ func _ready() -> void:
 	_set_stage("cruise" if String(Game.run.get("mode", "out")) == "out" else "home")
 
 func _set_stage(s: String) -> void:
-	stage = s
+	stage = s   # v6 no longer enters the "home" stage (the ship stays at the destination); its code is kept unreachable
 	st = 0.0
 	did = {}
 	parts.clear()
@@ -354,7 +354,7 @@ func _set_hint() -> void:
 			else:
 				hint = "Braking burn: %.2f km/s of speed change lets gravity catch the ship." % cap
 		"home":
-			hint = "Radio delay: %s. Antenna speed and storage decide what gets home." % d["light_delay"]
+			hint = "Radio delay: %s. Antenna speed and storage decide what reaches Earth." % d["light_delay"]
 
 ## The one direction shown now: [key, words]. It stays until the player has done it.
 func _direction() -> Array:
@@ -772,8 +772,9 @@ func _draw_cruise() -> void:
 	for ev: Dictionary in Game.run["events"]:
 		if String(ev["phase"]) == "cruise" and not bool(ev["done"]):
 			var ep: Vector2 = (_path(float(ev["at"])) + off).floor()
-			Fx.glow(self, ep, 8.0, Color(1.0, 0.6, 0.2, 0.35 + 0.2 * sin(t * 5.0)), true)
-			Pix.text_oc(self, ep.x, ep.y + 4.0, "!", 10, UI.ORANGE)
+			var earth: bool = String(ev.get("from", "ship")) == "earth"   # blue: message from Earth, amber: ship alert
+			Fx.glow(self, ep, 8.0, Color(0.35, 0.7, 1.0, 0.35 + 0.2 * sin(t * 5.0)) if earth else Color(1.0, 0.6, 0.2, 0.35 + 0.2 * sin(t * 5.0)), true)
+			Pix.text_oc(self, ep.x, ep.y + 4.0, "!", 10, UI.CYAN if earth else UI.ORANGE)
 	var ship: Vector2 = (_path(p) + off).floor()
 	var dir: Vector2 = _path(minf(1.0, p + 0.004)) - _path(maxf(0.0, p - 0.004))
 	_draw_storm(off, ship)
@@ -1566,7 +1567,7 @@ func _draw_console() -> void:
 	draw_texture(tex_console, Vector2(0, CON_Y))
 	var r: Dictionary = Game.run
 	var cur: int = {"cruise": 1, "arrive": 2, "home": 4}[stage]
-	var names: Array[String] = ["LIFT", "CRUISE", "ARRIVE", "RINGS" if _ring() else "LAND", "HOME"]
+	var names: Array[String] = ["LIFT", "CRUISE", "ARRIVE", "RINGS" if _ring() else "LAND", "EARTH"]
 	for i: int in 5:
 		var state: int = 0
 		if i < cur:

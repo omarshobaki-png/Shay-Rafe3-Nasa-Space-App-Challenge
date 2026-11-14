@@ -5,8 +5,17 @@ extends Control
 ##   thin  (Mars) the parachute is cut away, then a powered descent;
 ##   thick (Venus) the lander sinks at the terminal speed the core gives ("vterm"); the engine is hardly
 ##         needed and the job is to steer onto a flat slab before touchdown.
-## Art is looked up by skin (SKIN). The HUD teaches: a BRAKE light from the real stopping distance, the
-## burn start on the altitude tape, one fall-speed gauge with a green zone, and one direction at a time.
+## Art is looked up by skin (SKIN). The HUD teaches: a BRAKE light from the real stopping distance with
+## a countdown bar before it, three readouts (HEIGHT, SPEED with its green band, FUEL), one direction at a time.
+## v6, simpler and shorter (game rules, physics unchanged):
+##   - the descent starts LATER on the same real trajectory: the free fall (or the sink through thick air)
+##     before it is skipped, so each landing lasts about 20-25 s (START_S); gravity, speeds, fuel stay real;
+##   - one control, SPACE. Sideways drift is cancelled by the lander's computer except in thick air,
+##     where steering onto the flat slab is the job;
+##   - LANDING ASSIST on EASY and NORMAL (from Game.diff("landing_forgive")): while you hold SPACE after
+##     BRAKE NOW the computer trims the engine to a safe touchdown, as real landers fly the last part.
+##     On EASY it also brakes (and steers) by itself if you do nothing, and a hard touchdown only damages
+##     the lander. HARD stays fully manual.
 
 const UI = preload("res://scripts/ui.gd")
 const Pix = preload("res://scripts/pix.gd")
@@ -24,7 +33,10 @@ const X_DRAG: float = 0.35   # 1/s: thick air soaks up sideways speed (game rule
 const SLAB_X: float = -36.0  # m from the entry point to the flat slab, thick air (game rule)
 const SLAB_R: float = 8.0    # m: half-width of the slab at NORMAL (game rule)
 const OFF_SLAB_MIN: float = 20.0  # surface minutes lost levelling a lander that sits tilted on rough rock (game rule)
-const FACT_S: float = 9.0    # s each fact stays in the fact box
+const START_S: float = 23.0  # s: target length of a correct landing; the fall before it is skipped (game rule)
+const ENTRY_S: float = 3.5   # s the automatic entry stage is announced (heat shield, parachute)
+const ASSIST_DEC: float = 0.7  # the assist brakes with 70% of the engine's spare thrust, leaving a margin
+const DMG_SCORE: int = 10    # science points lost for a hard but survivable touchdown (game rule)
 const PEBBLE_W: Array[int] = [6, 9, 14, 20, 30, 44]
 const CRATER_W: Array[int] = [18, 26, 40, 64, 98]
 const C_SAFE: Color = Color("1f7a3a")
@@ -80,17 +92,25 @@ var pad_x: float = 0.0        # m: the flat slab (thick air); elsewhere the targ
 var slab_r: float = SLAB_R
 var forgive: float = 1.0
 var react: float = REACT
+var margin: float = REACT     # s of hesitation the BRAKE light allows for; the assist levels allow much more
 var need_hull: bool = false
 var hull_ok: bool = true
 var crushed: bool = false
 var on_slab: bool = true
-var facts: Array = []
+# landing assist (difficulty): trims the engine while SPACE is held; on EASY also flies by itself
+var assist: bool = false
+var auto_assist: bool = false
+var assist_on: bool = false   # latched once the assist has started braking
+var assist_self: bool = false # EASY: the assist braked or steered without the player
+var dmg_k: float = 1.0        # touchdowns up to touch * dmg_k damage the lander instead of destroying it
+var lead: float = 3.0         # s of countdown before BRAKE NOW
+var damaged: bool = false
+var clock: float = 1.0        # descent clock speed-up (HARD only, on long braking); physics unchanged
 # the braking cue
-var cue: String = "fall"      # fall | soon | brake | release | safe | empty
+var cue: String = "fall"      # fall | soon | brake | assist | release | safe | empty
 var brake: bool = false       # the BRAKE light is latched on until the speed is down
 var burn_alt: float = -1.0    # where the next burn has to start if you just keep falling
 var burn_in: float = 99.0     # seconds until then
-var drift_warn: bool = false
 var last_count: int = 9
 var burns: int = 0
 var vmax: float = 40.0
@@ -106,6 +126,7 @@ var auto_lag: float = 0.0
 var auto_want: bool = false
 var auto_since: float = -9.0
 var auto_up: bool = false
+var log_on: bool = false
 # drawing
 var tex: Texture2D = null
 var tex_earth: Texture2D = null
@@ -178,17 +199,21 @@ var send_t: float = 0.0
 func _ready() -> void:
 	jobs = Game.multi()
 	driver = Net.is_host()
-	chute_job = jobs and Game.job("science") and Game.dest()["air"] == "thin" and Game.id_has("chute") and Game.id_has("heatshield")
+	chute_job = jobs and Game.role_job("science") and Game.dest()["air"] == "thin" and Game.id_has("chute") and Game.id_has("heatshield")
 	var s: Dictionary = Game.landing_setup(chute_job)
 	var d: Dictionary = Game.dest()
 	skin = String(d["skin"])
 	sk = SKIN.get(skin, SKIN["moon"])
 	air = String(s["air"])
 	vterm = float(s["vterm"])
-	facts = d["facts"]
 	forgive = Game.diff("landing_forgive")
 	react = REACT * forgive * forgive        # EASY gives a slower pilot more warning, HARD less
-	slab_r = SLAB_R * forgive * forgive
+	slab_r = SLAB_R * forgive * forgive * (1.5 if forgive >= 1.0 else 1.0)
+	assist = forgive >= 1.0                  # EASY and NORMAL
+	auto_assist = forgive >= 1.2             # EASY
+	dmg_k = 1.0 + clampf((forgive - 0.85) * 2.2, 0.0, 1.0)   # EASY 2x the limit, NORMAL 1.33x, HARD 1x
+	margin = 2.2 * forgive if assist else react   # EASY 2.9 s, NORMAL 2.2 s of late press still lands; HARD 0.43 s
+	lead = 5.0 * forgive                     # countdown before BRAKE NOW: EASY 6.5 s, NORMAL 5 s, HARD 4.3 s
 	hx = 3.0 if air == "thick" else 0.5
 	pad_x = SLAB_X if air == "thick" else 0.0
 	need_hull = Game.has_hazard("pressure")
@@ -261,23 +286,55 @@ func _ready() -> void:
 	mass = float(s["mass"])
 	touch = float(s["touch"])
 	thrust_acc = maxf(3.0 * g, 7.0)  # game rule: engine sized to 3x local gravity
+	_start_later()
+	alt0 = alt
 	if air == "thick":
 		vmax = maxf(vterm, touch) * 1.6
 	else:
 		vmax = maxf(sqrt(vy * vy + 2.0 * g * alt0) * 0.75, touch * 4.0)
 	if jobs:
-		gear_job = Game.job("science") and (Game.id_has("legs") or Game.id_has("airbags"))
+		gear_job = Game.role_job("science") and (Game.id_has("legs") or Game.id_has("airbags"))
 		gear = 0.0 if gear_job else 1.0
-		site_job = Game.job("planner")
+		site_job = Game.role_job("planner")
 		if site_job:
 			state = "site"
 		auto = Game.cpu("engineer")
 		Net.received.connect(_on_net)
 	# touch buttons only where there is a touch screen
 	if DisplayServer.is_touchscreen_available():
-		_hold_button("<", Rect2(8, 280, 44, 30), func(on: bool) -> void: hold_l = on)
-		_hold_button(">", Rect2(58, 280, 44, 30), func(on: bool) -> void: hold_r = on)
-		_hold_button("ENGINE", Rect2(476, 280, 92, 30), func(on: bool) -> void: hold_up = on)
+		if air == "thick":
+			_hold_button("<", Rect2(8, 280, 44, 30), func(on: bool) -> void: hold_l = on)
+			_hold_button(">", Rect2(58, 280, 44, 30), func(on: bool) -> void: hold_r = on)
+		else:
+			_hold_button("BRAKE", Rect2(476, 270, 92, 40), func(on: bool) -> void: hold_up = on)
+
+## v6: skip the start of the real descent so that a correct landing takes about START_S seconds.
+## No air or thin air: fall freely (true gravity) until the BRAKE NOW light is `lead` + 2 s away, or
+## less if the braking itself is long. Thick air: start lower on the same steady sink.
+func _start_later() -> void:
+	if air == "thick":
+		alt = minf(alt, vterm * (START_S - 2.0))
+		return
+	var brake_s: float = impact_v() / ((thrust_acc - g) * ASSIST_DEC)   # rough length of the braking
+	var want: float = clampf(START_S - brake_s, lead + 2.0, 14.0)      # seconds of fall to keep before BRAKE NOW
+	var skip: float = _fall_to_brake(alt, vy) - want
+	while skip > 0.0:
+		vy += g * 0.05
+		alt -= vy * 0.05
+		skip -= 0.05
+	# HARD flies by hand in several short burns, which takes longer: where the braking is long (Mars)
+	# the descent clock runs up to 1.35x faster. Same physics, shown in real m/s and m.
+	if not assist:
+		clock = clampf(impact_v() / (thrust_acc - g) / 12.0, 1.0, 1.35)
+
+## Seconds of free fall from (a, v) until BRAKE NOW comes on.
+func _fall_to_brake(a: float, v: float) -> float:
+	var tt: float = 0.0
+	while tt < 90.0 and a > 0.0 and not _must_brake(a, v):
+		v += g * 0.05
+		a -= v * 0.05
+		tt += 0.05
+	return tt
 
 ## A texture by name, or null when the skin has none.
 func _opt(name: String) -> Texture2D:
@@ -343,12 +400,12 @@ func target_v() -> float:
 	return maxf(touch * 0.25, minf(touch * 0.5, touch * 0.95 - g * react))
 
 ## Altitude where a full-thrust burn must start at fall speed `v` to reach the target speed at the
-## ground: `react` seconds of free fall (a person reacting to the light), then the stopping distance
+## ground: `margin` seconds of free fall (a person reacting to the light), then the stopping distance
 ## (v1*v1 - vt*vt) / (2 * (thrust_acc - g)).
 func brake_alt(v: float) -> float:
-	var v1: float = v + g * react
+	var v1: float = v + g * margin
 	var vt: float = target_v()
-	return maxf(0.0, v1 * v1 - vt * vt) / (2.0 * (thrust_acc - g)) + maxf(0.0, v) * react + 0.5 * g * react * react
+	return maxf(0.0, v1 * v1 - vt * vt) / (2.0 * (thrust_acc - g)) + maxf(0.0, v) * margin + 0.5 * g * margin * margin
 
 ## Speed at the ground if the engine stays off from here. Thick air holds it at the terminal speed.
 func impact_v() -> float:
@@ -366,16 +423,14 @@ func _update_cue() -> void:
 		brake = false
 		cue = "chute"
 		return
-	# drift: warn before the limit, stop warning once it is well inside
-	if absf(vx) > side_limit() * 0.8:
-		drift_warn = true
-	elif absf(vx) < side_limit() * 0.3:
-		drift_warn = false
 	if prop <= 0.0:
 		brake = false
 		cue = "empty"
 		return
 	var coast_ok: bool = impact_v() <= touch * (1.0 if air == "thick" else 0.85)
+	if assist_on:
+		cue = "assist"
+		return
 	if brake:
 		if vy <= target_v():
 			brake = false
@@ -390,42 +445,35 @@ func _update_cue() -> void:
 	elif coast_ok:
 		cue = "safe"
 	else:
-		# look ahead along the free fall: when and where will the light come on?
-		var a: float = alt
-		var v: float = vy
-		var tt: float = 0.0
-		while tt < 20.0 and a > 0.0:
-			if _must_brake(a, v):
-				burn_alt = a
-				burn_in = tt
-				break
-			v += g * 0.05
-			a -= v * 0.05
-			tt += 0.05
-		cue = "release" if thrusting else ("soon" if burn_in < 3.0 else "fall")
+		burn_in = _fall_to_brake(alt, vy)
+		cue = "release" if thrusting else ("soon" if burn_in < lead else "fall")
 		var n: int = ceili(burn_in)
-		if cue == "soon" and n < last_count:
+		if cue == "soon" and n < last_count and n <= 3:
 			Audio.play("blip", -8.0, 1.0 + 0.15 * (3 - n))
 		last_count = n if cue == "soon" else 9
 
-## Which side jet the cue asks for: -1 left, 1 right, 0 none. Thick air: steer onto the slab and stop
-## there. Elsewhere: cancel the drift while the warning is up.
+## Engine acceleration the landing assist asks for: brake evenly to the BRAKE light's target speed at
+## the ground, then hold that speed. Real landers fly this last part by computer.
+func _assist_acc() -> float:
+	var vt: float = target_v()
+	if vy > vt:
+		return clampf(g + (vy * vy - vt * vt) / (2.0 * maxf(alt, 0.5)), 0.0, thrust_acc)
+	return clampf(g - (vt - vy) * 2.0, 0.0, thrust_acc)
+
+## Which side jet the cue asks for: -1 left, 1 right, 0 none. Only thick air needs steering: onto the
+## slab and stop there. Elsewhere the lander's computer cancels the drift by itself.
 func steer_dir() -> int:
-	if air == "thick":
-		var want: float = clampf((pad_x - x) * 0.25, -side_limit() * 0.7, side_limit() * 0.7)
-		if absf(want - vx) > 0.6:
-			return 1 if want > vx else -1
+	if air != "thick":
 		return 0
-	if drift_warn:
-		return -1 if vx > 0.0 else 1
+	var want: float = clampf((pad_x - x) * 0.25, -side_limit() * 0.7, side_limit() * 0.7)
+	if absf(want - vx) > 0.6:
+		return 1 if want > vx else -1
 	return 0
 
 # ---------------------------------------------------------------- directions (one at a time, design 8d.3)
 
 ## Latches the steps the player has done. A step is done by doing it, never by a timer.
 func _update_steps() -> void:
-	if absf(vx) < side_limit() * 0.3:
-		did_drift = true
 	if eng_time >= 0.3 and vy <= touch:
 		did_green = true
 	if absf(x - pad_x) <= slab_r * 0.8:
@@ -439,30 +487,30 @@ func _direction() -> PackedStringArray:
 		return PackedStringArray(["ENGINEER IS FLYING", "Your landing job is shown above"])
 	if chute_job and not chute_cut:
 		return PackedStringArray(["SCIENTIST: PRESS [C] TO OPEN THE PARACHUTE", "Lower the landing legs with [G] before touchdown"])
+	if t < ENTRY_S and air == "thin":
+		return PackedStringArray(["HEAT SHIELD AND PARACHUTE DONE THEIR JOB", "They took off most of your speed. Now the engine lands you."])
+	if t < ENTRY_S and air == "thick":
+		return PackedStringArray(["HEAT SHIELD OFF: THE THICK AIR SLOWS YOU", "No parachute or engine needed on Venus"])
 	if air == "thick":
-		var sd: int = steer_dir()
-		var key: String = "<" if (sd < 0 if sd != 0 else pad_x < x) else ">"
-		if not did_slab or absf(x - pad_x) > slab_r:
-			return PackedStringArray(["PRESS [%s] TO STEER OVER THE FLAT SLAB" % key, "Rough rock anywhere else tilts the lander"])
-		if sd != 0:
-			return PackedStringArray(["PRESS [%s] TO STAY OVER THE SLAB" % key, "Sideways speed at touchdown: under %s m/s" % _f1(side_limit())])
-		return PackedStringArray(["SINK ONTO THE SLAB: NO ENGINE NEEDED", "The thick air holds you at %s m/s" % _f1(vterm)])
+		var key: String = "<" if pad_x < x else ">"
+		if assist_self:
+			return PackedStringArray(["LANDING ASSIST IS STEERING YOU TO THE SLAB", "Press A or D to steer yourself"])
+		if not on_slab_now():
+			return PackedStringArray(["HOLD [%s] TO STEER OVER THE FLAT SLAB" % key, "Rough rock anywhere else tilts the lander"])
+		return PackedStringArray(["STAY OVER THE SLAB: THE AIR LANDS YOU", "It holds you at a gentle %s m/s" % _f1(vterm)])
 	if prop <= 0.0:
 		return PackedStringArray(["OUT OF FUEL: NOTHING LEFT TO BRAKE WITH", "Next time, carry more propellant"])
-	var dkey: String = "<" if vx > 0.0 else ">"
-	var drift_line: PackedStringArray = PackedStringArray(["PRESS [%s] TO CANCEL THE DRIFT" % dkey, "Sliding sideways would tip the lander over"])
+	if assist_on:
+		if assist_self:
+			return PackedStringArray(["LANDING ASSIST IS BRAKING FOR YOU", "Hold SPACE next time to do it yourself"])
+		return PackedStringArray(["KEEP HOLDING [SPACE] DOWN TO THE GROUND", "The computer sets the engine for a soft touchdown"])
 	if cue == "brake":
-		# the most urgent job wins; the drift direction comes back once the light is off
-		return PackedStringArray(["HOLD [SPACE] TO FIRE THE ENGINE", "Keep it on while the light says BRAKE NOW"])
-	if eng_time < 0.3:
-		if not did_drift:
-			return drift_line
-		return PackedStringArray(["HOLD [SPACE] TO FIRE THE ENGINE", "Start when the light says BRAKE NOW"])
-	if drift_warn or not did_drift:
-		return drift_line
-	if not did_green:
-		return PackedStringArray(["HOLD [SPACE] UNTIL THE NEEDLE IS GREEN", "Safe fall speed: under %s m/s" % _f1(touch)])
-	return PackedStringArray(["TOUCH DOWN WITH THE NEEDLE IN THE GREEN", "Hold SPACE again whenever it says BRAKE NOW"])
+		return PackedStringArray(["HOLD [SPACE] TO BRAKE", "Keep it on while it says BRAKE NOW"])
+	if eng_time < 0.3 or assist:
+		return PackedStringArray(["WAIT FOR BRAKE NOW, THEN HOLD [SPACE]", "You are falling: the engine will slow you down"])
+	if not did_green or cue == "release":
+		return PackedStringArray(["LET GO OF [SPACE] WHEN THE SPEED IS GREEN", "Safe touchdown speed: under %s m/s" % _f1(touch)])
+	return PackedStringArray(["TOUCH DOWN WITH THE SPEED IN THE GREEN", "Hold SPACE again whenever it says BRAKE NOW"])
 
 func _f1(v: float) -> String:
 	return ("%.0f" % v) if absf(v - roundf(v)) < 0.05 else ("%.1f" % v)
@@ -495,6 +543,7 @@ func _physics_process(delta: float) -> void:
 		Audio.loop("thrust", false)
 		Audio.loop("rcs", false)
 		return
+	delta *= clock
 	_update_cue()
 	if jobs:
 		_jobs_tick(delta)
@@ -503,7 +552,7 @@ func _physics_process(delta: float) -> void:
 	var lft: bool = bool(keys.get("left", false))
 	var rgt: bool = bool(keys.get("right", false))
 	if auto:
-		var want: bool = cue == "brake"
+		var want: bool = cue == "brake" or cue == "assist"
 		if want != auto_want:
 			auto_want = want
 			auto_since = t
@@ -513,18 +562,34 @@ func _physics_process(delta: float) -> void:
 		var sd: int = steer_dir()
 		lft = sd < 0
 		rgt = sd > 0
-	thrusting = up and prop > 0.0 and (not jobs or air != "thick")
+	var a_up: float = 0.0
+	if assist and prop > 0.0 and (cue == "brake" or assist_on) and (up or auto_assist):
+		# landing assist: the computer sets the thrust; on EASY it does so even with no key held
+		assist_self = not up
+		assist_on = true
+		a_up = _assist_acc()
+	elif assist:
+		assist_on = false
+	elif up and prop > 0.0:
+		a_up = thrust_acc
+	if jobs and air == "thick":
+		a_up = 0.0   # online Venus: no engine job, the Engineer only steers
+	thrusting = a_up > 0.0
 	if thrusting:
 		eng_time += delta
 	Audio.loop("thrust", thrusting, -5.0)
 	side = 0.0
 	if prop > 0.0:
-		if lft:
-			side -= SIDE_ACC
-		if rgt:
-			side += SIDE_ACC
-	Audio.loop("rcs", side != 0.0, -10.0)
-	var a_up: float = thrust_acc if thrusting else 0.0
+		if air != "thick":
+			# the computer cancels any sideways drift with the side jets (a few seconds at most)
+			side = -signf(vx) * minf(SIDE_ACC, absf(vx) / delta)
+		elif lft or rgt:
+			side = (SIDE_ACC if rgt else 0.0) - (SIDE_ACC if lft else 0.0)
+			assist_self = false
+		elif auto_assist and steer_dir() != 0:
+			side = SIDE_ACC * steer_dir()
+			assist_self = true
+	Audio.loop("rcs", absf(side) > 0.5, -10.0)
 	# thick air: drag grows with the square of the speed and balances gravity at the terminal speed
 	var drag: float = g * vy * absf(vy) / (vterm * vterm) if air == "thick" else 0.0
 	vy += (g - a_up - drag) * delta
@@ -538,10 +603,7 @@ func _physics_process(delta: float) -> void:
 	x += vx * delta
 	var ve: float = Data.ISP * Data.G0
 	var burn: float = 0.0
-	if thrusting:
-		burn += mass * thrust_acc / ve * delta
-	if side != 0.0:
-		burn += mass * SIDE_ACC / ve * delta
+	burn += mass * (a_up + absf(side)) / ve * delta
 	burn = minf(burn, prop)
 	prop -= burn
 	mass -= burn
@@ -555,6 +617,10 @@ func _touchdown() -> void:
 	alt = 0.0
 	var legs_up: bool = gear < 1.0
 	var ok: bool = vy <= touch and absf(vx) <= side_limit() and not legs_up
+	# EASY and NORMAL: a touchdown a little too hard bends the lander instead of wrecking it (game rule).
+	# Online, landing with the legs still up is always a crash.
+	damaged = not ok and not legs_up and prop > 0.0 and vy <= touch * dmg_k and absf(vx) <= side_limit() * dmg_k
+	ok = ok or damaged
 	on_slab = air != "thick" or absf(x - pad_x) <= slab_r
 	state = "landed" if ok else "crashed"
 	end_t = t + 3.5
@@ -564,13 +630,16 @@ func _touchdown() -> void:
 	crushed = ok and bool(Game.run["dead"])
 	if crushed:
 		state = "crashed"
+	elif damaged:
+		Game.run["score_bonus"] = int(Game.run.get("score_bonus", 0)) - DMG_SCORE
+		Game.note(false, "HARD LANDING at %.1f m/s (limit %s m/s): the lander is bent but works. -%d science (game rule)." % [vy, _f1(touch), DMG_SCORE])
 	elif ok and not on_slab:
 		# game rule: a tilted lander costs surface time (Venus: out of the minutes the heat allows)
 		Game.run["minutes_lost"] = float(Game.run.get("minutes_lost", 0.0)) + OFF_SLAB_MIN
 		Game.note(false, "Touched down on rough rock, tilted: %d minutes lost levelling the drill (game rule)." % int(OFF_SLAB_MIN))
-	if auto:
+	if auto or log_on:
 		print("AUTOPILOT %s on %s (%s): limit %s m/s, touched at %.2f m/s down and %.2f m/s sideways (limit %.1f), %s, fuel left %.0f of %.0f kg, %d burns, %.0f s, lag %.2f s" % [
-			"CRUSHED" if crushed else ("LANDED" if ok else "CRASHED"), Game.dest_id, Game.difficulty_name(), _f1(touch), vy, absf(vx),
+			"CRUSHED" if crushed else ("DAMAGED" if damaged else ("LANDED" if ok else "CRASHED")), Game.dest_id, Game.difficulty_name(), _f1(touch), vy, absf(vx),
 			side_limit(), "on the slab" if on_slab else "OFF THE SLAB", prop, prop0, burns, t, auto_lag])
 	if crushed:
 		msg = "CRUSHED"
@@ -582,8 +651,11 @@ func _touchdown() -> void:
 		_blow_dust(20, 0.8)
 		_break_up()
 	elif ok:
-		msg = "TOUCHDOWN"
+		msg = "HARD LANDING" if damaged else "TOUCHDOWN"
 		msg2 = "%.1f m/s, limit %s m/s" % [vy, _f1(touch)] if on_slab else "On rough rock: %d minutes lost" % int(OFF_SLAB_MIN)
+		if damaged:
+			msg2 = "%.1f m/s: lander bent, still working" % vy
+			msg_bad = true
 		land_t = t
 		shake = 0.25
 		_blow_dust(26, 1.0)
@@ -874,7 +946,7 @@ func _draw_front() -> void:
 		var fall_t: float = alt / maxf(1.0, vterm) if air == "thick" else (-vy + sqrt(maxf(0.0, vy * vy + 2.0 * g * alt))) / g
 		var drift_m: float = vx / X_DRAG * (1.0 - exp(-X_DRAG * fall_t)) if air == "thick" else vx * fall_t
 		var px: float = clampf(LX + drift_m * hx, 20.0, 620.0)
-		if state == "fly" and absf(px - LX) > 10.0:
+		if state == "fly" and air == "thick" and absf(px - LX) > 10.0:
 			front.draw_texture(tex_marker, Vector2(floorf(px - 4.0), lane - 9.0 - floorf(absf(sin(t * 5.0)) * 3.0)))
 	_draw_dust(lane, true)
 	if state == "crashed":
@@ -953,25 +1025,26 @@ func _well(r: Rect2) -> void:
 	front.draw_rect(r.grow(1.0), C_INK)
 	front.draw_rect(r, Color("0d1120"))
 
-func _tape_y(a: float) -> float:
-	return floorf(TAPE_TOP + TAPE_H * (1.0 - pow(clampf(a / maxf(1.0, alt0), 0.0, 1.0), ZOOM)))
-
+## Three readouts, big and in plain words: HEIGHT, SPEED (with the green safe band), FUEL.
 func _draw_hud() -> void:
 	if jobs:
 		_draw_crew()
 	if state == "site":
 		_draw_sites()
 	var safe: bool = vy <= touch
-	var h: float = 106.0 if need_hull else 92.0
-	_panel(Rect2(6, 6, 150, h))
-	# fall speed: one big gauge, green up to the safe limit (square-root scale, so the small zone stays readable)
-	_text(Vector2(12, 17), "FALL SPEED", UI.DIM)
-	var lim: String = "LIMIT %s m/s" % _f1(touch)
-	_text(Vector2(150.0 - Pix.text_w(lim, 10), 17), lim, UI.DIM)
+	_panel(Rect2(6, 6, 158, 124))
+	# height
+	_text(Vector2(14, 19), "HEIGHT", UI.DIM)
+	var at: String = ("%d m" % roundi(alt)) if alt >= 10.0 else ("%.1f m" % alt)
+	Pix.title(front, Vector2(14, 44), at, UI.TEXT, 2)
+	# speed: the number, then a bar with the green band up to the safe limit (square-root scale)
+	_text(Vector2(14, 60), "SPEED", UI.DIM)
+	var lim: String = "SAFE UNDER %s" % _f1(touch)
+	_text(Vector2(156.0 - Pix.text_w(lim, 10), 60), lim, UI.GREEN)
 	var num: String = "%.1f" % maxf(0.0, vy)
-	Pix.title(front, Vector2(12, 41), num, UI.TEXT if safe else UI.RED, 2)
-	_text(Vector2(16.0 + Pix.title_w(num, 2), 41), "m/s", UI.DIM)
-	var gr: Rect2 = Rect2(12, 45, 138, 12)
+	Pix.title(front, Vector2(14, 85), num, UI.GREEN if safe else UI.RED, 2)
+	_text(Vector2(18.0 + Pix.title_w(num, 2), 85), "m/s", UI.DIM)
+	var gr: Rect2 = Rect2(14, 89, 142, 12)
 	Pix.frame(front, gr, "gauge_frame")
 	var inner: Rect2 = gr.grow(-2)
 	var safe_w: float = floorf(inner.size.x * sqrt(clampf(touch / vmax, 0.0, 1.0)))
@@ -983,28 +1056,12 @@ func _draw_hud() -> void:
 	front.draw_rect(Rect2(nx, gr.position.y - 1.0, 2, gr.size.y + 2.0), Color.WHITE)
 	# fuel
 	var frac: float = clampf(prop / prop0, 0.0, 1.0)
-	Pix.icon(front, "fuel", Vector2(12, 61))
-	Pix.gauge(front, Rect2(28, 63, 72, 8), frac, UI.ORANGE if frac > 0.2 else UI.RED)
-	_text(Vector2(104, 70), "%s kg" % Game.fmt(prop), UI.TEXT if frac > 0.2 else UI.RED)
-	# drift: zero in the middle, green inside the limit
-	front.draw_texture(tex_drift, Vector2(12, 77))
-	var dl: float = side_limit()
-	var span: float = dl * 2.5
-	_well(Rect2(29, 78, 70, 6))
-	var half: float = floorf(35.0 * dl / span)
-	front.draw_rect(Rect2(64.0 - half, 78, half * 2.0, 6), C_SAFE)
-	var dn: float = 64.0 + floorf(clampf(vx / span, -1.0, 1.0) * 34.0)
-	front.draw_rect(Rect2(dn - 2.0, 76, 4, 10), C_INK)
-	front.draw_rect(Rect2(dn - 1.0, 77, 2, 8), Color.WHITE)
-	_text(Vector2(104, 85), "%.1f m/s" % absf(vx), UI.TEXT if absf(vx) <= dl else UI.RED)
-	if need_hull:
-		Pix.icon(front, "hull", Vector2(12, 90))
-		Pix.lamp(front, Vector2(29, 91), "ok" if hull_ok else "bad")
-		_text(Vector2(44, 100), "PRESSURE HULL" if hull_ok else "NO PRESSURE HULL", UI.TEXT if hull_ok else UI.RED)
-	_draw_tape(safe)
+	_text(Vector2(14, 120), "FUEL", UI.DIM)
+	Pix.gauge(front, Rect2(44, 112, 62, 8), frac, UI.ORANGE if frac > 0.2 else UI.RED)
+	var fk: String = "%s kg" % Game.fmt(prop)
+	_text(Vector2(156.0 - Pix.text_w(fk, 10), 120), fk, UI.TEXT if frac > 0.2 else UI.RED)
 	if state == "fly":
 		_draw_cue()
-	_draw_fact()
 	_draw_direction()
 	if help_on:
 		_draw_help()
@@ -1014,38 +1071,11 @@ func _draw_msg() -> void:
 	if msg == "":
 		return
 	var mw: float = maxf(Pix.title_w(msg, 2), Pix.text_w(msg2, 10)) + 28.0
-	var mh: float = 44.0 if msg2 != "" else 32.0
-	_panel(Rect2(floorf(320.0 - mw / 2.0), 140, mw, mh), UI.RED if msg_bad else UI.GREEN)
+	var mh: float = 48.0 if msg2 != "" else 36.0
+	_panel(Rect2(floorf(320.0 - mw / 2.0), 136, mw, mh), UI.RED if msg_bad else UI.GREEN)
 	Pix.title_c(front, 320, 165, msg, UI.RED if msg_bad else UI.TEXT, 2)
 	if msg2 != "":
 		Pix.text_c(front, 320, 177, msg2, 10, UI.DIM)
-
-## A real fact about this world, from Data, one at a time.
-func _draw_fact() -> void:
-	if facts.is_empty():
-		return
-	var f: String = String(facts[int(t / FACT_S) % facts.size()])
-	var lines: PackedStringArray = _wrap(f, 222.0)
-	_panel(Rect2(6, 322, 236, 32))
-	_text(Vector2(12, 334), "FACT", UI.DIM)
-	for i: int in mini(2, lines.size()):
-		_text(Vector2(42 if i == 0 else 12, 334 + i * 11), lines[i])
-
-## Greedy word wrap; the first line is shorter (the FACT label sits in front of it).
-func _wrap(s: String, w: float) -> PackedStringArray:
-	var out: PackedStringArray = PackedStringArray()
-	var line: String = ""
-	for word: String in s.split(" "):
-		var cand: String = word if line == "" else line + " " + word
-		var lw: float = w - (30.0 if out.is_empty() else 0.0)
-		if Pix.text_w(cand, 10) > lw and line != "":
-			out.append(line)
-			line = word
-		else:
-			line = cand
-	if line != "":
-		out.append(line)
-	return out
 
 ## The one direction: a line with key caps for [KEY], and a short reason under it.
 func _draw_direction() -> void:
@@ -1056,25 +1086,25 @@ func _draw_direction() -> void:
 	var w: float = 0.0
 	for i: int in parts.size():
 		w += (maxf(13.0, Pix.text_w(parts[i], 10) + 7.0) + 2.0) if i % 2 == 1 else Pix.text_w(parts[i], 10)
-	var r: Rect2 = Rect2(248, 322, 352, 32)
+	var r: Rect2 = Rect2(150, 318, 340, 36)
 	_panel(r, UI.YELLOW)
 	var px: float = floorf(r.position.x + (r.size.x - w) / 2.0)
 	for i: int in parts.size():
 		if i % 2 == 1:
-			px += Pix.keycap(front, Vector2(px + 1.0, 325), parts[i]) + 2.0
+			px += Pix.keycap(front, Vector2(px + 1.0, 322), parts[i]) + 2.0
 		else:
-			_text(Vector2(px, 335), parts[i])
+			_text(Vector2(px, 332), parts[i])
 			px += Pix.text_w(parts[i], 10)
-	Pix.text_c(front, r.position.x + r.size.x / 2.0, 349, dir[1], 10, UI.DIM)
+	Pix.text_c(front, r.position.x + r.size.x / 2.0, 348, dir[1], 10, UI.DIM)
 
 ## The controls list behind the "?" button (H or F1). The descent waits while it is open.
 func _draw_help() -> void:
-	var r: Rect2 = Rect2(180, 104, 280, 104)
+	var r: Rect2 = Rect2(180, 104, 280, 86)
 	_panel(r, UI.YELLOW)
 	Pix.title(front, Vector2(192, 122), "CONTROLS", UI.TEXT)
 	_text(Vector2(372, 121), "(paused)", UI.DIM)
-	var rows: Array = [[["SPACE", "W"], "ENGINE: slows your fall"], [["A", "D"], "SIDE JETS: stop the drift"],
-		[["H"], "show or hide this list"]]
+	var rows: Array = [[["A", "D"], "steer onto the flat slab"]] if air == "thick" else [[["SPACE"], "BRAKE: slows your fall"]]
+	rows.append([["H"], "show or hide this list"])
 	var y: float = 132.0
 	for row: Array in rows:
 		var kx: float = 192.0
@@ -1084,61 +1114,28 @@ func _draw_help() -> void:
 		y += 18.0
 	_text(Vector2(192, y + 10.0), "Arrow keys work too.", UI.DIM)
 
-## Altitude tape: ticks, the lander as the marker, and where the next burn has to start.
-func _draw_tape(safe: bool) -> void:
-	_panel(Rect2(576, 6, 58, 304))
-	_text(Vector2(582, 18), "ALTITUDE", UI.DIM)
-	var at: String = ("%d m" % roundi(alt)) if alt >= 10.0 else ("%.1f m" % alt)
-	_text(Vector2(628.0 - Pix.text_w(at, 10), 30), at)
-	var tx: float = 616.0
-	_well(Rect2(tx, TAPE_TOP, 10, TAPE_H))
-	var step: float = 100.0 if alt0 <= 800.0 else (250.0 if alt0 <= 2000.0 else 500.0)
-	var a: float = 0.0
-	while a <= alt0 + 1.0:
-		var ty: float = _tape_y(a)
-		front.draw_rect(Rect2(tx, ty, 10, 1), pan_hi)
-		var lab: String = "0" if a < 1.0 else Game.fmt(a)
-		_text(Vector2(tx - 5.0 - Pix.text_w(lab, 10), ty + 4.0), lab, UI.DIM)
-		a += step
-	front.draw_rect(Rect2(tx, TAPE_TOP + TAPE_H - 2.0, 10, 2), UI.DIM)   # the ground
-	if burn_alt > 0.0 and state == "fly":
-		# from here down the engine has to be on: red hatch, with the start line on top
-		var by: float = _tape_y(burn_alt)
-		var yy: float = by
-		while yy < TAPE_TOP + TAPE_H - 2.0:
-			front.draw_rect(Rect2(tx + (2.0 if int(yy) % 4 < 2 else 0.0), yy, 8, 1), Color(UI.RED, 0.55))
-			yy += 1.0
-		var flash: bool = cue == "brake" and fposmod(t, 0.3) < 0.15
-		front.draw_rect(Rect2(tx - 3.0, by - 1.0, 16, 2), Color.WHITE if flash else UI.RED)
-		if cue != "brake" and by > TAPE_TOP + 12.0:
-			var lw: float = Pix.text_w("BRAKE", 10) + 5.0
-			front.draw_rect(Rect2(tx - lw - 5.0, by - 6.0, lw, 11), C_RISK)
-			_text(Vector2(tx - lw - 2.0, by + 3.0), "BRAKE", UI.RED)
-	# the lander marker
-	var my: float = _tape_y(alt)
-	var mcol: Color = UI.GREEN if safe else UI.YELLOW
-	for i: int in 5:
-		front.draw_rect(Rect2(tx - 2.0 + i, my - 4.0 + i, 1, 9 - i * 2), C_INK)
-	for i: int in 4:
-		front.draw_rect(Rect2(tx - 2.0 + i, my - 3.0 + i, 1, 7 - i * 2), mcol)
-	front.draw_rect(Rect2(tx + 2.0, my, 8, 1), mcol)
-
-## The light that says how things stand now. It rides next to the lander, where the eyes are.
+## The big light that says what to do now, beside the lander where the eyes are. Before BRAKE NOW a
+## bar counts down, so nobody is surprised.
 func _draw_cue() -> void:
 	var feet: float = _feet()
-	var p: Vector2 = Vector2(372, clampf(feet - 64.0, 44.0, 250.0))
+	var p: Vector2 = Vector2(374, clampf(feet - 70.0, 8.0, 230.0))
 	var head: String = ""
 	var sub: String = ""
 	var lamp: Color = UI.DIM
 	var hot: bool = false
 	var blink: bool = true
+	var bar: float = -1.0
 	match cue:
 		"brake":
 			head = "BRAKE NOW"
-			sub = "keep the engine on"
+			sub = "hold SPACE"
 			lamp = UI.RED
 			hot = true
 			blink = fposmod(t, 0.3) < 0.18
+		"assist":
+			head = "LANDING ASSIST"
+			sub = "braking for you" if assist_self else "keep holding SPACE"
+			lamp = UI.GREEN
 		"release":
 			head = "LET GO"
 			sub = "slow enough: save fuel"
@@ -1149,48 +1146,47 @@ func _draw_cue() -> void:
 			lamp = UI.GREEN
 		"soon":
 			head = "BRAKE IN %d" % maxi(1, ceili(burn_in))
-			sub = "get ready"
+			sub = "get ready to hold SPACE"
 			lamp = UI.YELLOW
 			blink = fposmod(burn_in, 1.0) > 0.5
+			bar = clampf(burn_in / lead, 0.0, 1.0)
 		"empty":
 			head = "NO FUEL"
 			sub = "nothing left to brake with"
 			lamp = UI.RED
 			hot = true
 		_:
-			head = "FALLING" if vy > touch else "SAFE SPEED"
-			sub = "brake in %d s" % ceili(burn_in) if burn_in < 60.0 else "wait for the light"
-			lamp = UI.DIM if vy > touch else UI.GREEN
-	if air == "thick" and cue == "safe":
+			head = "FALLING"
+			sub = "BRAKE NOW comes in %d s" % ceili(burn_in) if burn_in < 60.0 else "wait for BRAKE NOW"
+	if air == "thick":
 		var over: bool = on_slab_now()
 		head = "OVER THE SLAB" if over else "OVER ROUGH ROCK"
 		sub = "sinking at %s m/s" % ("%.1f" % vy)
 		lamp = UI.GREEN if over else UI.YELLOW
+		hot = false
+		blink = true
 	if not hull_ok:
 		head = "NO HULL"
 		sub = "the air will crush it"
 		lamp = UI.RED
 		hot = true
 		blink = fposmod(t, 0.5) < 0.3
-	var w: float = maxf(Pix.title_w(head, 1), Pix.text_w(sub, 10)) + 34.0
-	_panel(Rect2(p, Vector2(w, 34)), UI.RED if hot else Color(0, 0, 0, 0))
-	front.draw_rect(Rect2(p + Vector2(7, 9), Vector2(14, 14)), C_INK)
-	front.draw_rect(Rect2(p + Vector2(8, 10), Vector2(12, 12)), lamp if blink else lamp.darkened(0.7))
+	var sc: int = 2 if Pix.title_w(head, 2) <= 214.0 else 1   # big, unless it would reach over the lander
+	var w: float = maxf(Pix.title_w(head, sc), Pix.text_w(sub, 10)) + 40.0
+	var h: float = 48.0 if bar < 0.0 else 58.0
+	p.x = minf(p.x, 634.0 - w)
+	_panel(Rect2(p, Vector2(w, h)), UI.RED if hot else (UI.GREEN if cue == "assist" else Color(0, 0, 0, 0)))
+	front.draw_rect(Rect2(p + Vector2(8, 10), Vector2(18, 18)), C_INK)
+	front.draw_rect(Rect2(p + Vector2(9, 11), Vector2(16, 16)), lamp if blink else lamp.darkened(0.7))
 	if blink:
-		front.draw_rect(Rect2(p + Vector2(9, 11), Vector2(4, 3)), lamp.lightened(0.6))
-	Pix.title(front, p + Vector2(27, 17), head, UI.RED if hot else UI.TEXT)
-	_text(p + Vector2(27, 28), sub, UI.DIM)
-	# drift: an arrow that shows which way you slide
-	if absf(vx) > side_limit() * 0.3:
-		var dir: float = signf(vx)
-		var ap: Vector2 = Vector2(LX + 2.0 + dir * 50.0 - 4.0 + dir * floorf(fposmod(t * 2.0, 1.0) * 4.0), feet - 40.0)
-		var acol: Color = Color.WHITE if absf(vx) <= side_limit() * 0.8 else (UI.RED if fposmod(t, 0.4) < 0.2 else Color.WHITE)
-		if dir > 0.0:
-			front.draw_texture(tex_arrow, ap, acol)
-		else:
-			front.draw_set_transform(ap + Vector2(8, 0), 0.0, Vector2(-1, 1))
-			front.draw_texture(tex_arrow, Vector2.ZERO, acol)
-			front.draw_set_transform(Vector2.ZERO)
+		front.draw_rect(Rect2(p + Vector2(10, 12), Vector2(5, 4)), lamp.lightened(0.6))
+	Pix.title(front, p + Vector2(32, 26 if sc == 2 else 23), head, UI.RED if hot else UI.TEXT, sc)
+	_text(p + Vector2(32, 41), sub, UI.DIM)
+	if bar >= 0.0:
+		# the countdown: the bar empties as BRAKE NOW comes closer
+		var br: Rect2 = Rect2(p + Vector2(8, 46), Vector2(w - 16.0, 6))
+		_well(br)
+		front.draw_rect(Rect2(br.position, Vector2(floorf(br.size.x * bar), br.size.y)), UI.YELLOW)
 
 # ---------------------------------------------------------------- debug hooks (screenshots and the landing proof)
 
@@ -1202,6 +1198,20 @@ func debug_autopilot() -> void:
 func debug_human() -> void:
 	auto = true
 	auto_lag = 0.4
+
+## A first-timer who holds SPACE from the very start and never lets go.
+func debug_hold() -> void:
+	hold_up = true
+	log_on = true
+
+## A first-timer who presses nothing at all.
+func debug_idle() -> void:
+	log_on = true
+
+## A slow first-timer: presses SPACE 1.5 s after every light.
+func debug_late() -> void:
+	auto = true
+	auto_lag = 1.5
 
 func debug_fast() -> void:
 	Engine.time_scale = 4.0
@@ -1236,6 +1246,11 @@ func debug_near() -> void:
 
 func debug_drift() -> void:
 	vx = side_limit() * 1.6
+
+## A touchdown a little too hard: damaged on EASY and NORMAL, a crash on HARD.
+func debug_hard() -> void:
+	debug_touchdown()
+	vy = touch * 1.25
 
 func debug_crash() -> void:
 	t = 6.0

@@ -472,3 +472,33 @@ shows why, then `Game.finish()` and `Game.goto("report")`). `flight.gd` therefor
 the way out and never calls `phase_launch()`.
 Debug hook additions: `diff=0|1|2` sets the difficulty; `screen=launch` starts on the pad;
 `screen=flight` starts at the cruise with the launch already done.
+
+## 11. v6 core as built
+Checked by `tools/dev/balance.gd` (BALANCE OK: 24 tasks, 20 events, every choice resolved, 2,880 flights).
+- **Jobs.** Every `Data.TASKS` entry has `"job"`: `"drill"` | `"photo"` | `"crew"`; Moon and Mars tasks also carry an explicit `"returns"`.
+  `Game.dest()["job"]`, `Game.run["job"]` (set by `start_run`), `Game.run["report"]["job"]`.
+  `Game.job() -> String`: `run["job"]` during a run, else the task's (`set_task` / `new_mission` clear a stale one).
+  `Game.part_science(id) -> [gb, pts]` per sample/photo/station (any part with `gb` counts, not only cat science).
+  `Data.JOBS[job] = {"word", "noun", "obj", "home"}` (SAMPLES / PHOTOS / STATIONS; "sample capsule" / "" / "crew capsule").
+  `Data.PHOTO_GB = {"land": 5.0, "ring": 0.5}`, `Data.PHOTO_PTS = 2` (game rules: the camera on a photo task).
+- Task table (EASY / NORMAL / HARD): moon PHOTO SURVEY (photo, 4) / SAMPLE RETURN (drill, 3, sample capsule) / CREW MOONWALK
+  (crew, 3 stations, crew capsule); mars PHOTO SCOUT (photo, 3) / ROCK SURVEY (drill, 4) / FIRST FOOTSTEPS (crew, 3);
+  mercury FIRST LOOK (photo) / SURFACE SURVEY / CRATER TRAVERSE; venus QUICK LOOK (photo, 2) / SOIL SURVEY / FOUR-ROCK DASH;
+  jupiter RING FLYTHROUGH (photo) / RING SURVEY / DEEP RING DIVE; saturn RING SKIM (photo) / RING SURVEY / GRAND FINALE DIVE;
+  uranus, neptune FIRST ORBITER (photo) / RING SURVEY / LONG RING TRAVERSE, RING ARC HUNT. Crew budgets 640 / 680 $M.
+- **Parts.** New `crew` "Crew cabin (2 astronauts)": robot, 1,500 kg, $150M, 200 W, 1 Gb and 2 pts per station, `kinds ["land"]`,
+  `jobs ["crew"]` (new filter in `Game.part_available` and `Events.eligible`). `ascent` is now "Return capsule", `dests ["moon", "mars"]`.
+  No new launcher: Falcon Heavy lifts both crew ships (Moon crew example flies Heavy, $442M).
+- **Needs.** `Preflight.part_need`: photo = camera REQUIRED, drill NOT NEEDED; crew = crew + ascent REQUIRED, rover/drill NOT NEEDED;
+  ring drill keeps the dust analyzer REQUIRED. `checklist()` science step per job; the "down" step names the first missing part
+  (airbags stand in for legs; the `_name("")` crash is gone). `Game.example_build()` adapts to the job and grows power for the crew.
+- **Nothing flies home but the capsule.** `phase_home()` sends the data, then launches the sample or crew capsule where `returns`
+  (30% battery rule kept; a crew capsule needs no samples). The lander stays. Notes use the job's words.
+  `OBJ_NAMES["return"]` = "Capsule reaches Earth"; the report names objectives per job ("Take the photos", "Crew capsule reaches Earth").
+- **Events.** 20 events, all with `"from": "ship"` (14) or `"earth"` (6), two choices, text <= 90, choice text <= 60, every number in a
+  choice text is one of its effects (balance.gd checks it), no `fail`. Impacts about half of v5; storm odds 40% / 10%.
+  Events never break the drill or, on a photo task, the camera (`Game._can_lose`). `event_by_id` of an unknown id gives the storm.
+  Counts: `Data.DIFFICULTY` keys `events_cruise` (1 / 1 / 2) and `events_site` (1 / 1 / 1); `events_per_leg` kept (1 / 1 / 2). No home events.
+- **EventCard.** Same API. Ship: amber frame, crawling hazard stripes top and bottom, `event_alert` sign, blinking ALERT, alarm.
+  Earth: blue header "MESSAGE FROM EARTH" with `event_radio`, "SENT <light_delay> AGO", `event_operator` portrait, radio blip.
+  Titles at 2x, text at size 20, two side-by-side buttons. Art: `art/ui/event_{stripes,alert,radio,operator}.png` from `tools/art/gen_event_ui.py`.

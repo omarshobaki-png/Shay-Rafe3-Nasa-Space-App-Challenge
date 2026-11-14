@@ -2,6 +2,21 @@
 
 _Last updated: 14 Nov 2026, when the partner's v5 source (AstroPixel) was merged into this repo._
 
+## v6 is merged (14 Nov, morning)
+
+The partner's v6 (built on their v5) is merged with our multiplayer: branch `v6-partner`, then a merge
+into `main`. New in v6: the `cheer` cutscene between the site and the report (`screens/cheer.gd`); no
+flight home any more (`main.gd` runs `phase_home()` and `finish()` before the cutscene); photo and crew
+task jobs (`Game.job()`); landing assist; soft-crash damage on EASY/NORMAL; a reworked event pool.
+Merge fixes:
+- our multiplayer `Game.job(role)` is now `Game.role_job(role)`;
+- online, only the host scores the run before the cutscene, then sends it to the others;
+- `set_task()` no longer wipes `run["job"]` on screen changes;
+- the report no longer re-rolls the run's storm.
+
+Checked headless: BALANCE OK, and the 66-screen smoke test passes. **`docs/play/` still holds the v5
+web build**: re-export it from `main`.
+
 ## v5 is merged (14 Nov). Read this first
 
 **The game is now v5, named "AstroPixel".** The full design and core API are in

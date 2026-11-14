@@ -142,7 +142,7 @@ func _process(delta: float) -> void:
 		"surface":
 			if me == "host" and _once("surf"):
 				cur.call("debug_auto")
-				cur.call("_open_event", Game.event_by_id("sharp_rocks"))
+				cur.call("_open_event", Game.event_by_id("odd_rock"))   # v6: a Scientist site event for land worlds
 			if me == "join" and on_screen > 1.0 and _once("watch"):
 				_say("surface watching: driver=%s rx=%.0f" % [str(cur.get("driver")), cur.get("rx")])
 		"report":
@@ -250,7 +250,16 @@ func _report_step() -> void:
 	if me == "join" and not host_report.is_empty():
 		if not _check(remote_choices > 0, "no remote event choice exercised"):
 			return
-		if not _check(JSON.stringify(_canonical(Game.run)) == JSON.stringify(_canonical(host_report)), "host/client Game.run differs"):
+		var mine: Dictionary = _canonical(Game.run)
+		var theirs: Dictionary = _canonical(host_report)
+		if JSON.stringify(mine) != JSON.stringify(theirs):
+			var keys: Array = []
+			for k: Variant in mine.keys() + theirs.keys():
+				if not keys.has(k) and JSON.stringify(mine.get(k)) != JSON.stringify(theirs.get(k)):
+					keys.append(k)
+			for k: Variant in keys:
+				_say("run[%s] join=%s host=%s" % [k, JSON.stringify(mine.get(k)).left(160), JSON.stringify(theirs.get(k)).left(160)])
+		if not _check(JSON.stringify(mine) == JSON.stringify(theirs), "host/client Game.run differs"):
 			return
 		Net.send("mptest_ack", {"ok": true})
 		_complete()
