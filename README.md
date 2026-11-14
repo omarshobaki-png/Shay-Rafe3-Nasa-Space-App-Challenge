@@ -87,7 +87,7 @@ happened to.
 | Where | How |
 |---|---|
 | 🌐 **Browser** | **[Play here](https://omarshobaki-png.github.io/Shay-Rafe3-Nasa-Space-App-Challenge/play/)**: no download, no login. Works in Chrome, Edge and Firefox. The [project website](https://omarshobaki-png.github.io/Shay-Rafe3-Nasa-Space-App-Challenge/) explains the challenge, our solution and the NASA data. |
-| 🪟 **Windows** | A downloadable build is coming soon on the [Releases](https://github.com/omarshobaki-png/Shay-Rafe3-Nasa-Space-App-Challenge/releases) page. |
+| 🪟 **Windows** | **[Download AstroPixel-windows.zip](https://github.com/omarshobaki-png/Shay-Rafe3-Nasa-Space-App-Challenge/releases/latest)** (43 MB), unzip it and run `AstroPixel.exe`. |
 | 🧑‍💻 **From source** | Install [Godot 4.7.2](https://godotengine.org/download), open `game/project.godot` and press **F5**. On Windows, double-click `Play Game.bat`. |
 | 💻 **Web build locally** | Serve the `docs/` folder, for example `python -m http.server 8000 --directory docs`, then open http://localhost:8000/play/. Opening `index.html` by double-click fails ("Failed to fetch"). |
 
