@@ -70,7 +70,7 @@ happened to.
 </tr>
 <tr>
 <td><b>5 · Land.</b> Real gravity and fuel burned by real mass flow. On Venus the thick air brakes for you, but only a pressure hull survives.</td>
-<td><b>6 · Explore.</b> Drive the rover and drill samples before the night, the heat or the battery ends the day. Venus gives you 127 minutes, like Venera 13.</td>
+<td><b>6 · Explore.</b> Drive the rover to drill rocks or photograph viewpoints (or walk out as a crew on the hardest Moon task) before the night, the heat or the battery ends the day. Venus gives you 127 minutes, like Venera 13.</td>
 </tr>
 <tr>
 <td><img src="screenshots/probe_jupiter.png" alt="Ring drone"></td>
@@ -78,7 +78,7 @@ happened to.
 </tr>
 <tr>
 <td><b>5b · Or dive into the rings.</b> At the giant planets a drone leaves the orbiter, grabs ice and dust, dodges rocks and docks back. Inspired by Cassini's Grand Finale.</td>
-<td><b>7 · Read the report.</b> Four scores (mission success, science, resource efficiency, decisions), a build report that rates every resource as under-used, well used or over-used, and a letter grade.</td>
+<td><b>7 · Celebrate, then read the report.</b> Mission control cheers your haul. Then four scores (mission success, science, resource efficiency, decisions), a build report that rates every resource as under-used, well used or over-used, and a letter grade.</td>
 </tr>
 </table>
 

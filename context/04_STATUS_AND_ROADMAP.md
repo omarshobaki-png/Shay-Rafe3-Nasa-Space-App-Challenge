@@ -14,8 +14,8 @@ Merge fixes:
 - `set_task()` no longer wipes `run["job"]` on screen changes;
 - the report no longer re-rolls the run's storm.
 
-Checked headless: BALANCE OK, and the 66-screen smoke test passes. **`docs/play/` still holds the v5
-web build**: re-export it from `main`.
+Checked headless: BALANCE OK, the 66-screen smoke test and both two-player missions (Mars, Saturn) pass.
+`docs/play/` holds the v6 web build with multiplayer (menu and builder checked in Chrome); README screenshots are from v6; a Windows build is in `builds/AstroPixel-windows.zip`.
 
 ## v5 is merged (14 Nov). Read this first
 
