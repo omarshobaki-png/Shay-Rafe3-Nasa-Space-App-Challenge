@@ -1005,6 +1005,265 @@ const FORKLIFT_RUN: Vector2 = %s    # it may drive its left edge between these t
     with open(META, "w", newline="\n") as fh:
         fh.write(txt)
 
+# ------------------------------------------------------------------ bin category tabs: one 26 x 26 icon each
+# Flat 3-tone pieces, each with its own 1 px ink outline; one accent colour per category (TAB_ACCENT in builder.gd).
+TAB_ORDER = ["launcher", "power", "comms", "science", "landing", "robot", "return", "fuel", "protect"]
+TS = 26
+
+def _c(h):
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4)) + (255,)
+
+INK = _c("0c0a14")
+W1, W2, W3 = _c("f4f6fb"), _c("c8d0e2"), _c("8292b8")
+D1, D2, D3 = _c("4f628c"), _c("2a3552"), _c("1a2138")
+RAMP = {k: [_c(x) for x in v] for k, v in {
+    "red": ["ff9a8a", "f0503c", "a8282a"], "orange": ["ffd08a", "ff9f43", "c0601c"],
+    "yellow": ["fff2a8", "ffd75e", "c8901c"], "cyan": ["c8f6ff", "4fd6ff", "1f8cc0"],
+    "green": ["c8ffd2", "6dff8a", "24a850"], "cell": ["6aa8ff", "2b6fd6", "173c8c"],
+    "violet": ["e2d0ff", "b48cff", "6c48c0"], "pink": ["ffc8ee", "ff7ad9", "b83c98"],
+    "shield": ["a8c8ff", "5a8cff", "2c4cb0"], "flame": ["fff2a8", "ffb347", "f0602a"]}.items()}
+
+class TabIcon:
+    def __init__(self):
+        self.a = np.zeros((TS, TS, 4), np.uint8)
+
+    def piece(self, paint):
+        """paint(d) draws one solid piece on a fresh layer; it gets an ink outline and goes on top."""
+        lay = Image.new("RGBA", (TS, TS), (0, 0, 0, 0))
+        paint(ImageDraw.Draw(lay))
+        a = np.array(lay)
+        m = a[..., 3] > 0
+        ring = np.zeros_like(m)
+        ring[1:] |= m[:-1]
+        ring[:-1] |= m[1:]
+        ring[:, 1:] |= m[:, :-1]
+        ring[:, :-1] |= m[:, 1:]
+        self.a[ring & ~m] = INK
+        self.a[m] = a[m]
+
+    def flat(self, paint):
+        """Thin details (lines, ropes) drawn on top without an outline."""
+        lay = Image.new("RGBA", (TS, TS), (0, 0, 0, 0))
+        paint(ImageDraw.Draw(lay))
+        a = np.array(lay)
+        m = a[..., 3] > 0
+        self.a[m] = a[m]
+
+def _tab_launcher(ic):
+    r = RAMP["red"]
+    def fins(d):
+        d.polygon([(9, 12), (5, 17), (5, 21), (9, 19)], fill=r[1])
+        d.polygon([(16, 12), (20, 17), (20, 21), (16, 19)], fill=r[2])
+    def body(d):
+        d.rectangle((9, 7, 16, 19), fill=W2)
+        d.rectangle((9, 7, 10, 19), fill=W1)
+        d.rectangle((15, 7, 16, 19), fill=W3)
+        d.polygon([(9, 7), (12, 1), (13, 1), (16, 7)], fill=r[1])
+        d.polygon([(13, 1), (16, 7), (13, 7)], fill=r[2])
+        d.line((11, 3, 10, 6), fill=r[0])
+        d.rectangle((9, 16, 16, 17), fill=r[1])
+        d.rectangle((15, 16, 16, 17), fill=r[2])
+        d.ellipse((10, 9, 15, 14), fill=D2)
+        d.ellipse((11, 10, 14, 13), fill=RAMP["cyan"][2])
+        d.point((12, 11), fill=W1)
+    def flame(d):
+        f = RAMP["flame"]
+        d.rectangle((10, 20, 15, 20), fill=D1)
+        d.polygon([(10, 21), (15, 21), (13, 24), (12, 24)], fill=f[2])
+        d.polygon([(11, 21), (14, 21), (13, 23), (12, 23)], fill=f[1])
+        d.line((12, 21, 13, 21), fill=f[0])
+    ic.piece(fins)
+    ic.piece(flame)
+    ic.piece(body)
+
+def _tab_power(ic):
+    b, y = RAMP["cell"], RAMP["yellow"]
+    def mast(d):
+        d.rectangle((8, 19, 10, 22), fill=D1)
+        d.rectangle((4, 22, 14, 23), fill=D2)
+        d.line((4, 22, 14, 22), fill=D1)
+    def panel(d):
+        d.rectangle((1, 3, 17, 19), fill=W3)
+        d.rectangle((2, 4, 16, 18), fill=b[1])
+        for yy in range(4, 19):     # a diagonal sheen across the cells
+            for x in range(2, 17):
+                if (x + yy) % 7 == 0:
+                    d.point((x, yy), fill=b[0])
+        d.rectangle((1, 3, 17, 3), fill=W1)
+        d.rectangle((1, 3, 1, 19), fill=W1)
+        d.rectangle((17, 3, 17, 19), fill=W3)
+        d.rectangle((1, 19, 17, 19), fill=W3)
+        for x in (6, 11):
+            d.line((x, 4, x, 18), fill=b[2])
+        for yy in (8, 13):
+            d.line((2, yy, 16, yy), fill=b[2])
+    def bolt(d):
+        d.polygon([(19, 2), (12, 14), (16, 14), (13, 24), (23, 10), (18, 10), (22, 2)], fill=y[1])
+        d.polygon([(18, 10), (23, 10), (14, 22), (16, 14)], fill=y[2])
+        d.line((19, 3, 14, 12), fill=y[0])
+        d.line((20, 2, 21, 2), fill=y[0])
+    ic.piece(mast)
+    ic.piece(panel)
+    ic.piece(bolt)
+
+def _tab_comms(ic):
+    cy = RAMP["cyan"]
+    c = np.array([10.0, 14.0])
+    u = np.array([0.7071, 0.7071])     # along the rim (upper left to lower right)
+    n = np.array([0.7071, -0.7071])    # the way the dish looks (up and right)
+    def ell(a, b, t0, t1, k=32):
+        return [tuple(int(v) for v in np.round(c + a * math.cos(t) * u + b * math.sin(t) * n)) for t in np.linspace(t0, t1, k)]
+    def stand(d):
+        d.polygon([(9, 17), (11, 17), (12, 22), (8, 22)], fill=D1)
+        d.rectangle((4, 22, 15, 23), fill=D2)
+        d.line((4, 22, 15, 22), fill=D1)
+    def dish(d):
+        d.polygon(ell(9, 6, math.pi, 2 * math.pi), fill=W3)          # the back of the bowl
+        d.polygon(ell(9, 3.2, 0, 2 * math.pi), fill=W2)              # the face
+        d.polygon(ell(6.5, 2, 0, 2 * math.pi), fill=W1)
+        d.line([(10, 14), (15, 9)], fill=D2)
+    def feed(d):
+        d.rectangle((15, 7, 17, 9), fill=W3)
+        d.point((15, 7), fill=W1)
+    def waves(d):
+        d.arc((12, 2, 22, 12), 280, 350, fill=cy[1], width=2)
+        d.arc((10, -2, 26, 14), 278, 352, fill=cy[1], width=2)
+    ic.piece(stand)
+    ic.piece(dish)
+    ic.piece(feed)
+    ic.piece(waves)
+
+def _tab_science(ic):
+    g = RAMP["green"]
+    def body(d):
+        d.rectangle((5, 5, 10, 8), fill=D1)
+        d.rectangle((17, 6, 20, 8), fill=W3)
+        d.rounded_rectangle((1, 8, 24, 21), radius=2, fill=D1)
+        d.rectangle((2, 9, 23, 10), fill=_c("6478a2"))
+        d.rectangle((2, 19, 23, 20), fill=D2)
+        d.rectangle((19, 11, 22, 13), fill=g[0])
+    def lens(d):
+        d.ellipse((6, 8, 19, 21), fill=W2)
+        d.arc((6, 8, 19, 21), 135, 315, fill=W1)
+        d.ellipse((8, 10, 17, 19), fill=D3)
+        d.ellipse((9, 11, 16, 18), fill=g[2])
+        d.ellipse((10, 12, 15, 17), fill=g[1])
+        d.rectangle((10, 12, 11, 13), fill=g[0])
+        d.point((11, 12), fill=W1)
+    ic.piece(body)
+    ic.piece(lens)
+
+def _tab_landing(ic):
+    o = RAMP["orange"]
+    def canopy(d):
+        box = (1, 2, 24, 22)
+        for i in range(6):
+            d.pieslice(box, 180 + 30 * i, 210 + 30 * i, fill=o[1] if i % 2 == 0 else W2)
+        d.line((2, 12, 23, 12), fill=o[2])
+        d.arc((3, 4, 22, 20), 200, 250, fill=W1)
+    def ropes(d):
+        for a, b in (((3, 13), (10, 18)), ((8, 13), (11, 17)), ((17, 13), (14, 17)), ((22, 13), (15, 18))):
+            d.line((a, b), fill=W3)
+    def capsule(d):
+        d.polygon([(10, 17), (15, 17), (17, 22), (8, 22)], fill=W2)
+        d.polygon([(13, 17), (15, 17), (17, 22), (14, 22)], fill=W3)
+        d.line((10, 17, 9, 21), fill=W1)
+        d.rectangle((8, 22, 17, 23), fill=D2)
+        d.point((11, 19), fill=RAMP["cyan"][1])
+    ic.piece(canopy)
+    ic.flat(ropes)
+    ic.piece(capsule)
+
+def _tab_robot(ic):
+    v = RAMP["violet"]
+    def mast(d):
+        d.rectangle((17, 3, 18, 9), fill=W3)
+        d.rectangle((15, 1, 21, 4), fill=W2)
+        d.rectangle((15, 1, 21, 1), fill=W1)
+        d.rectangle((19, 2, 20, 3), fill=RAMP["cyan"][1])
+    def body(d):
+        d.rectangle((1, 8, 23, 9), fill=RAMP["cell"][1])
+        d.line((1, 8, 23, 8), fill=RAMP["cell"][0])
+        d.rectangle((4, 10, 21, 15), fill=v[1])
+        d.rectangle((4, 10, 21, 10), fill=v[0])
+        d.rectangle((4, 15, 21, 15), fill=v[2])
+        d.rectangle((7, 12, 10, 13), fill=v[2])
+    def legs(d):
+        d.line((5, 19, 8, 15), fill=D1)
+        d.line((13, 19, 12, 15), fill=D1)
+        d.line((21, 19, 17, 15), fill=D1)
+        d.line((5, 16, 21, 16), fill=D1)
+    def wheels(d):
+        for x in (2, 10, 18):
+            d.ellipse((x, 17, x + 6, 23), fill=D3)
+            d.ellipse((x + 2, 19, x + 4, 21), fill=W3)
+            d.point((x + 2, 18), fill=D1)
+    ic.piece(mast)
+    ic.piece(body)
+    ic.flat(legs)
+    ic.piece(wheels)
+
+def _tab_return(ic):
+    def earth(d):
+        d.ellipse((13, 1, 24, 12), fill=RAMP["cell"][1])
+        d.polygon([(15, 4), (18, 3), (19, 6), (16, 8)], fill=RAMP["green"][2])
+        d.polygon([(20, 7), (23, 6), (22, 10), (20, 10)], fill=RAMP["green"][2])
+        d.arc((13, 1, 24, 12), 160, 260, fill=RAMP["cell"][0])
+        d.point((16, 4), fill=W1)
+    def arrow(d):
+        d.arc((5, 6, 21, 26), 190, 262, fill=W1, width=2)
+        d.polygon([(11, 4), (15, 6), (11, 9)], fill=W1)
+    def capsule(d):
+        d.polygon([(4, 14), (8, 14), (12, 22), (0, 22)], fill=W2)
+        d.polygon([(6, 14), (8, 14), (12, 22), (7, 22)], fill=W3)
+        d.line((4, 14, 1, 21), fill=W1)
+        d.rectangle((0, 22, 12, 23), fill=RAMP["orange"][2])
+        d.point((5, 17), fill=RAMP["cyan"][1])
+    ic.piece(earth)
+    ic.piece(arrow)
+    ic.piece(capsule)
+
+def _tab_fuel(ic):
+    p = RAMP["pink"]
+    def tank(d):
+        d.rectangle((10, 0, 15, 2), fill=D1)
+        d.ellipse((5, 2, 20, 9), fill=W2)
+        d.ellipse((5, 17, 20, 24), fill=W3)
+        d.rectangle((5, 5, 20, 20), fill=W2)
+        d.rectangle((5, 5, 7, 20), fill=W1)
+        d.rectangle((17, 5, 20, 21), fill=W3)
+        d.line((5, 19, 20, 19), fill=D1)
+    def drop(d):
+        d.polygon([(12, 7), (13, 7), (17, 14), (8, 14)], fill=p[1])
+        d.ellipse((8, 11, 17, 20), fill=p[1])
+        d.pieslice((8, 11, 17, 20), 300, 90, fill=p[2])
+        d.rectangle((10, 13, 11, 15), fill=p[0])
+    ic.piece(tank)
+    ic.piece(drop)
+
+def _tab_protect(ic):
+    s = RAMP["shield"]
+    pts = [(3, 2), (12, 4), (13, 4), (22, 2), (22, 13), (19, 18), (13, 23), (12, 23), (6, 18), (3, 13)]
+    def shield(d):
+        d.polygon(pts, fill=s[1])
+        d.polygon([(13, 4), (22, 2), (22, 13), (19, 18), (13, 23)], fill=s[2])
+        d.line([(5, 4), (11, 6)], fill=s[0])
+        d.line([(5, 4), (5, 12), (7, 16)], fill=s[0])
+        star = [(12.5 + (5.5 if k % 2 == 0 else 2.3) * math.sin(k * math.pi / 5),
+                 12.5 - (5.5 if k % 2 == 0 else 2.3) * math.cos(k * math.pi / 5)) for k in range(10)]
+        d.polygon(star, fill=W1)
+        d.polygon([(12.5, 12.5), star[4], star[5], star[6]], fill=W2)
+    ic.piece(shield)
+
+def build_tabs():
+    """art/vab/tabs.png: the nine bin tab icons, 26 x 26 each, left to right in TAB_ORDER."""
+    strip = np.zeros((TS, TS * len(TAB_ORDER), 4), np.uint8)
+    for i, cat in enumerate(TAB_ORDER):
+        ic = TabIcon()
+        globals()["_tab_" + cat](ic)
+        strip[:, i * TS:(i + 1) * TS] = ic.a
+    return strip
+
 FORKLIFT_POS = (204, 270)   # on the empty floor between the access tower and the lane, behind the stand
 FORKLIFT_RUN = (204, 336)   # stops before the service frame, which stands in front of this line
 
@@ -1018,6 +1277,7 @@ def main():
     Image.fromarray(fg).save(os.path.join(OUT, "fg.png"))
     Image.fromarray(build_beacon()).save(os.path.join(OUT, "beacon.png"))
     Image.fromarray(build_forklift()).save(os.path.join(OUT, "forklift.png"))
+    Image.fromarray(build_tabs()).save(os.path.join(OUT, "tabs.png"))
     STAND_LIGHTS.sort()
     for p in BEACONS + LAMPS + SPARKS + STAND_LIGHTS + [st, launcher]:
         assert 150 <= p[0] < 470 and 24 <= p[1] < H, p
@@ -1035,4 +1295,7 @@ def main():
     print("BEACONS", BEACONS, "\nLAMPS", LAMPS, "\nSPARKS", SPARKS)
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["tabs"]:   # only the bin tab icons, without repainting the hall
+        Image.fromarray(build_tabs()).save(os.path.join(OUT, "tabs.png"))
+    else:
+        main()

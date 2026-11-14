@@ -129,6 +129,10 @@ var armed: bool = false       # SPACE must be let go once after the coast, so fa
 var pressed_once: bool = false
 var released_once: bool = false
 var cut_note: String = ""
+var rescued: bool = false   # a missed burn the level forgave (fail < 2): captured anyway, at a cost
+var pop_s: String = ""       # a pop-up line over the arrival scene, in its consequence colour
+var pop_c: Color = Color.WHITE
+var pop_age: float = 99.0
 var orb_th: float = PI / 2.0
 var fly_p: Vector2 = Vector2.ZERO   # flying past: position and velocity once off the drawn curve
 var fly_v: Vector2 = Vector2.ZERO
@@ -352,14 +356,22 @@ func _direction() -> Array:
 				return ["SPACE", "HOLD TO FAST-FORWARD"]
 			return ["", "DECISIONS WAIT AT THE ! MARKS"]
 		"arrive":
+			var assist: float = Game.diff("assist")
+			if assist <= 0.0:
+				return ["", ""]   # HARD: readouts and the band only
+			var easy: bool = assist >= 2.0 and not entry_mode
 			match arr:
 				"approach", "burn":
 					if entry_mode:
 						return ["SPACE", "HOLD TO LIFT THE NOSE"]
 					if not pressed_once:
-						return ["SPACE", "HOLD TO BRAKE INTO ORBIT"]
+						return ["SPACE", "HOLD TO BRAKE: AUTO CUT-OFF AT PLAN" if easy else "HOLD TO BRAKE INTO ORBIT"]
+					if easy:
+						return ["SPACE", "KEEP HOLDING: CUT-OFF IN %.1f s" % maxf(0.0, (cap - dv_done) / cap * BURN_FULL_S)]
 					return ["SPACE", "LET GO INSIDE THE GREEN BAND"]
 				"grace":
+					if easy:
+						return ["SPACE", "TOO FAST: HOLD AGAIN IN %.1f s" % maxf(0.0, GRACE_S - arr_t)]
 					return ["SPACE", "STILL TOO FAST: HOLD AGAIN"]
 				"entry":
 					if not pressed_once:
@@ -765,7 +777,7 @@ func _draw_cruise() -> void:
 	_draw_marker(ship, dir)
 	if lost:
 		if int(t * 4.0) % 2 == 0:
-			Pix.text_oc(self, ship.x, ship.y - 12.0, "SIGNAL LOST", 10, UI.RED)
+			Pix.text_oc(self, ship.x, ship.y - 12.0, "SIGNAL LOST", 10, UI.BAD)
 	elif flyby_age < 1.6:
 		Fx.sparkle(self, ship, minf(1.0, flyby_age), UI.YELLOW, 1)
 		Pix.text_oc(self, 362.0, 42.0, flyby_name, 10, UI.YELLOW)
@@ -795,8 +807,8 @@ func _draw_cruise() -> void:
 	if storm_age >= 0.0 and storm_hit < 0.0:
 		var sev: Dictionary = Game.run.get("storm", {})
 		var sy: float = floorf(lerpf(-34.0, 70.0, clampf(storm_age / 0.25, 0.0, 1.0)))
-		Pix.panel(self, Rect2(246, sy, 236, 32), UI.ORANGE if int(t * 5.0) % 2 == 0 else UI.RED)
-		_text(Vector2(254, sy + 13.0), "SOLAR STORM WARNING   Kp %s" % str(sev.get("kp", "?")), 10, UI.YELLOW)
+		Pix.panel(self, Rect2(246, sy, 236, 32), UI.ORANGE if int(t * 5.0) % 2 == 0 else UI.BAD)
+		_text(Vector2(254, sy + 13.0), "SOLAR STORM WARNING   Kp %s" % str(sev.get("kp", "?")), 10, UI.RISK)
 		_text(Vector2(254, sy + 26.0), "Real event %s (NASA DONKI)" % sev.get("time", ""), 10, UI.TEXT)
 
 ## Centre-x and baseline for a label next to a body: below, above, right or left, whichever is free.
@@ -833,7 +845,7 @@ func _draw_react(ship: Vector2, small: bool) -> void:
 		"spark":
 			for j: int in 7:
 				var a: float = j * 0.9 + t * 7.0
-				Fx.sparkle(self, ship + Vector2(cos(a), sin(a * 1.3)) * (4.0 + 9.0 * k) * s, fposmod(k * 3.0 + j * 0.2, 1.0), UI.RED if j % 2 == 0 else UI.ORANGE, 0 if small else 1)
+				Fx.sparkle(self, ship + Vector2(cos(a), sin(a * 1.3)) * (4.0 + 9.0 * k) * s, fposmod(k * 3.0 + j * 0.2, 1.0), UI.BAD if j % 2 == 0 else UI.ORANGE, 0 if small else 1)
 		"burn":
 			if k < 0.7:
 				Fx.flame(self, ship + Vector2(-3, 0) * s, Vector2.LEFT, 8.0 * s, 3.0 * s, t)
@@ -844,10 +856,10 @@ func _draw_react(ship: Vector2, small: bool) -> void:
 			Fx.glow(self, ship, 9.0 * s, Color(0.3, 0.85, 1.0, 0.7 * (1.0 - k)), true)
 			Fx.shockwave(self, ship, k, 0, UI.CYAN)
 		"ok":
-			Fx.sparkle(self, ship, k, UI.GREEN, 0 if small else 1)
+			Fx.sparkle(self, ship, k, UI.GOOD, 0 if small else 1)
 	if react_text != "" and small:
 		var y: float = ship.y - 12.0 - floorf(6.0 * k)
-		Pix.text_oc(self, ship.x, y, react_text.to_upper(), 10, UI.RED if react_bad or react_kind == "spark" else (UI.YELLOW if react_kind != "ok" and react_kind != "shield" else UI.GREEN))
+		Pix.text_oc(self, ship.x, y, react_text.to_upper(), 10, UI.BAD if react_bad or react_kind == "spark" else (UI.RISK if react_kind != "ok" and react_kind != "shield" else UI.GOOD))
 
 ## Moon map only: the planets, far beyond the Moon, framed apart with how much farther they are (NASA fact
 ## sheets: closest distance from Earth divided by the Moon's 384,400 km).
@@ -910,7 +922,7 @@ func _draw_cam(p: float) -> void:
 		draw_rect(win, Color("0b0e1a"))
 		for i: int in 160:  # snow
 			draw_rect(Rect2(win.position + Vector2(randi() % 146, randi() % 91), Vector2(2, 1)), Color(1, 1, 1, randf_range(0.15, 0.5)))
-		Pix.text_oc(self, win.get_center().x, win.get_center().y + 4.0, "NO SIGNAL", 10, UI.RED if int(t * 4.0) % 2 == 0 else Color("ff9f9f"))
+		Pix.text_oc(self, win.get_center().x, win.get_center().y + 4.0, "NO SIGNAL", 10, UI.BAD if int(t * 4.0) % 2 == 0 else Color("ff9f9f"))
 		return
 	draw_texture_rect_region(tex_space, win, Rect2(fposmod(t * 7.0, 480.0), 120, win.size.x, win.size.y))
 	var pt: Texture2D = tex_cam[mini(tex_cam.size() - 1, int(p * tex_cam.size()))]
@@ -927,9 +939,9 @@ func _draw_cam(p: float) -> void:
 	_blit(tex_orbiter, sp - tex_orbiter.get_size() / 2.0, win, Color(0.5, 0.5, 0.6) if dim else Color.WHITE)
 	if react_t >= 0.0 and react_kind != "burn":
 		_draw_react(sp, false)
-	_text(win.position + Vector2(4, 11), "SAFE MODE" if dim else "SHIP CAM", 10, UI.YELLOW if dim else UI.DIM)
+	_text(win.position + Vector2(4, 11), "SAFE MODE" if dim else "SHIP CAM", 10, UI.RISK if dim else UI.DIM)
 	if int(t * 1.5) % 2 == 0:
-		draw_rect(Rect2(win.end.x - 9.0, win.position.y + 4.0, 5, 5), UI.RED)
+		draw_rect(Rect2(win.end.x - 9.0, win.position.y + 4.0, 5, 5), UI.BAD)
 
 # ------------------------------------------------------------- arrival
 
@@ -946,6 +958,8 @@ func _setup_arrive() -> void:
 	holding = false
 	armed = false
 	cut_note = ""
+	rescued = false
+	pop_age = 99.0
 	ang = 0.0
 	strain = 0.0
 	entry_t = 0.0
@@ -1005,6 +1019,7 @@ func _conic_ok(th: float, e: float) -> bool:
 
 func _step_arrive(dt: float) -> void:
 	arr_t += dt
+	pop_age += dt
 	var held: bool = _space_held()
 	if not armed:
 		armed = not held
@@ -1074,6 +1089,8 @@ func _step_burn(dt: float, held: bool) -> void:
 		if dv_done >= _cutoff():
 			cut_note = "SAFETY CUT-OFF"
 			_burn_done()
+		elif Game.diff("assist") >= 2.0 and dv_done >= cap:
+			_burn_done()   # EASY: the computer cuts the engine at the plan
 		return
 	Audio.loop("thrust", false)
 	var was: bool = holding
@@ -1091,14 +1108,21 @@ func _step_burn(dt: float, held: bool) -> void:
 	elif arr == "grace":
 		orb_th -= dt * 0.12
 		if arr_t > GRACE_S:
-			_flew_past()
+			if Game.diff("fail") >= 2.0:
+				_flew_past()
+			else:
+				# EASY / NORMAL: the computer fires again into the band (NORMAL late, wasting fuel); days are lost below
+				rescued = true
+				dv_done = minf(dv_max, _lo() + (cap * 0.15 * Game.diff("bite") if Game.diff("fail") >= 1.0 else 0.0))
+				_burn_done()
 
 ## The burn is over: the core books the planned capture (and radiation, objectives), then the fuel is set
 ## to what this burn really used, by the same rocket equation, and its log line says the real numbers.
 func _burn_done() -> void:
 	Audio.loop("thrust", false)
 	holding = false
-	if dv_max < cap:
+	var short: bool = dv_max < cap
+	if short and Game.diff("fail") >= 2.0:
 		Game.phase_arrive()   # not enough fuel for the plan: the core fails the arrival and says why
 		if _dead():
 			arr = "flyby"
@@ -1107,6 +1131,8 @@ func _burn_done() -> void:
 			_set_hint()
 			return
 	else:
+		if short:
+			Game.run["prop"] = m0   # shortcut: lets the core book the capture below HARD; the real fuel use is redone next
 		Game.phase_arrive()
 	# undo the planned burn the core booked and make the one flown, with the core's own rocket equation
 	Game.run["mass"] = m0
@@ -1124,6 +1150,14 @@ func _burn_done() -> void:
 		var waste: float = m0 * exp(-_hi() / ve) - mf
 		Game.note(false, "BURNED TOO LONG%s: %s km/s past the green band wasted %s kg of fuel." % [
 			" (" + cut_note + ")" if cut_note != "" else "", str(snappedf(dv_done - _hi(), 0.01)), Game.fmt(waste)])
+	if rescued or short:
+		var days: int = roundi((20.0 if Game.diff("fail") < 1.0 else 45.0) * Game.diff("bite"))
+		Game.run["days_extra"] = float(Game.run["days_extra"]) + days
+		var extra: float = used - m0 * (1.0 - exp(-cap / ve))
+		Game.note(false, "%s Captured anyway into a long, loose orbit: +%d days%s." % [
+			"TANK DRY %s km/s short of the plan." % str(snappedf(cap - dv_done, 0.01)) if short and not rescued else "MISSED THE GREEN BAND: the computer fired the engine again.",
+			days, ", %s kg more fuel than the plan" % Game.fmt(extra) if extra > 0.5 else ""])
+		_pop("CAPTURED ANYWAY: +%d DAYS" % days, UI.BAD)
 	elif dv_done < cap:
 		Game.note(true, "Stopped %s km/s short of the plan: captured into a longer orbit." % str(snappedf(cap - dv_done, 0.01)))
 	arr = "orbit"
@@ -1134,7 +1168,7 @@ func _burn_done() -> void:
 
 func _flew_past() -> void:
 	var used: float = Game.burn(dv_done)
-	Game.fail("FLEW PAST %s. The braking burn stopped at %s km/s, short of the green band (%s km/s): gravity could not catch the ship. It used %s kg of fuel." % [
+	Game.fail("FLEW PAST %s. The braking burn stopped at %s km/s, short of the green band (%s km/s): gravity could not catch the ship. It used %s kg of fuel. Fix: hold until the bar is inside the green band, and carry fuel to spare." % [
 		Game.place(), str(snappedf(dv_done, 0.01)), str(snappedf(_lo(), 0.01)), Game.fmt(absf(used))])
 	arr = "flyby"
 	arr_t = 0.0
@@ -1163,15 +1197,18 @@ func _step_entry(dt: float, held: bool) -> void:
 	if randf() < dt * (20.0 + 30.0 * maxf(0.0, ang)):
 		var sh: Vector2 = _entry_ship()
 		_spark(sh + Vector2(randf_range(-4, 4), randf_range(-3, 3)), Vector2(-randf_range(60, 140), -randf_range(10, 50)), 0.5, Color("ff9f43"), 0.0)
+	if (strain >= 1.0 or absf(ang) >= 1.0) and Game.diff("fail") < 2.0:
+		_entry_saved(ang > 0.0)
+		return
 	if strain >= 1.0 or absf(ang) >= 1.0:
 		Audio.loop("thrust", false)
 		if ang > 0.0:
-			Game.fail("BURNED UP. The entry was too steep: the air heated the shield past what it could take and the lander broke apart.")
+			Game.fail("BURNED UP. The entry was too steep: the air heated the shield past what it could take and the lander broke apart. Fix: hold SPACE sooner to lift the nose back into the green.")
 			arr = "burnup"
 			Audio.play("explosion", -2.0)
 			flash_age = 0.0
 		else:
-			Game.fail("SKIPPED OFF. The entry was too shallow: the lander bounced off the top of the air and flew back out into space.")
+			Game.fail("SKIPPED OFF. The entry was too shallow: the lander bounced off the top of the air and flew back out into space. Fix: let go of SPACE sooner so the nose drops back into the green.")
 			arr = "skip"
 			Audio.play("alarm", -5.0)
 		arr_t = 0.0
@@ -1184,6 +1221,29 @@ func _step_entry(dt: float, held: bool) -> void:
 		arr_t = 0.0
 		Audio.play("arrive", -3.0)
 		_set_hint()
+
+## EASY / NORMAL: a bad entry is pulled back into the corridor at a cost (NORMAL also burns landing fuel).
+func _entry_saved(steep: bool) -> void:
+	var mins: int = roundi(10.0 * Game.diff("bite"))
+	Game.run["minutes_lost"] = float(Game.run.get("minutes_lost", 0.0)) + mins
+	var kg: float = 0.0
+	if Game.diff("fail") >= 1.0:
+		kg = float(Game.run["prop"]) * 0.15 * Game.diff("bite")
+		Game.run["prop"] = float(Game.run["prop"]) - kg
+		Game.run["mass"] = float(Game.run["mass"]) - kg
+	Game.note(false, "%s The lander pulled back into the corridor: %d minutes of surface time lost%s." % [
+		"TOO STEEP: the shield overheated." if steep else "TOO SHALLOW: it nearly skipped off.", mins,
+		", %s kg of landing fuel burned" % Game.fmt(kg) if kg > 0.5 else ""])
+	_pop("SAVED: -%d MIN%s" % [mins, "  -%s KG FUEL" % Game.fmt(kg) if kg > 0.5 else ""], UI.BAD)
+	strain = 0.0
+	ang = 0.0
+	shake = 1.5
+	Audio.play("alarm", -6.0)
+
+func _pop(s: String, c: Color) -> void:
+	pop_s = s
+	pop_c = c
+	pop_age = 0.0
 
 ## Entry: the lander slides down a corridor from the upper left toward the glowing edge of the air.
 func _entry_ship() -> Vector2:
@@ -1202,7 +1262,7 @@ func _orbit_half(front: bool, e: float, solid: bool) -> void:
 	var n: int = 420
 	var c: Color = UI.CYAN
 	if arr in ["burn", "grace", "approach"]:
-		c = UI.GREEN if dv_done >= _lo() and dv_done <= _hi() else (UI.ORANGE if dv_done < _lo() else UI.RED)
+		c = UI.GOOD if dv_done >= _lo() and dv_done <= _hi() else (UI.ORANGE if dv_done < _lo() else UI.BAD)
 	var open_curve: bool = dv_done < _lo()
 	for j: int in n:
 		var th: float = TAU * j / n
@@ -1251,7 +1311,7 @@ func _draw_arrive() -> void:
 		_draw_orbiter(ship + off, true)
 	_draw_parts(Vector2.ZERO)
 	if arr == "orbit" and flyby_age < 1.0:
-		Fx.sparkle(self, ship, flyby_age, UI.GREEN, 2)
+		Fx.sparkle(self, ship, flyby_age, UI.GOOD, 2)
 	# the speed-change gauge: green band from Game.diff, the plan, and where the fuel runs out
 	Pix.panel(self, Rect2(6, 6, 300, 64))
 	_text(Vector2(13, 28), Game.place(), 20, UI.TEXT)
@@ -1263,40 +1323,67 @@ func _draw_arrive() -> void:
 			sc = UI.DIM
 		"grace":
 			status = "STILL TOO FAST"
-			sc = UI.RED if int(t * 4.0) % 2 == 0 else UI.ORANGE
+			sc = UI.BAD if int(t * 4.0) % 2 == 0 else UI.RISK
 		"orbit":
-			status = "IN ORBIT" if dv_done <= _hi() else "FUEL WASTED"
-			sc = UI.GREEN if dv_done <= _hi() else UI.YELLOW
+			status = "CAPTURED LATE" if rescued else ("IN ORBIT" if dv_done <= _hi() else "FUEL WASTED")
+			sc = UI.GOOD if dv_done <= _hi() and not rescued else UI.BAD
 		"flyby":
 			status = "FLEW PAST"
-			sc = UI.RED
+			sc = UI.BAD
 	_text(Vector2(118, 28), status, 10, sc)
 	var dv_s: String = "%.2f of %.2f km/s" % [dv_done, cap]
 	_text(Vector2(13, 42), "SPEED CHANGE", 10, UI.DIM)
-	_text(Vector2(13 + Pix.text_w("SPEED CHANGE ", 10), 42), dv_s, 10, UI.YELLOW)
+	_text(Vector2(13 + Pix.text_w("SPEED CHANGE ", 10), 42), dv_s, 10, UI.TEXT)
 	var g: Rect2 = Rect2(13, 46, 286, 10)
 	var gmax: float = _cutoff()
 	draw_rect(g.grow(1.0), UI.BORDER, false, 1.0)
 	draw_rect(g, Color("05070d"))
 	var bx0: float = g.position.x + floorf(g.size.x * _lo() / gmax)
 	var bx1: float = g.position.x + floorf(g.size.x * _hi() / gmax)
-	draw_rect(Rect2(bx0, g.position.y, bx1 - bx0, g.size.y), Color(UI.GREEN, 0.35))
+	draw_rect(Rect2(bx0, g.position.y, bx1 - bx0, g.size.y), Color(UI.GOOD, 0.35))
 	draw_rect(Rect2(g.position.x + 1.0, g.position.y + 2.0, floorf((g.size.x - 2.0) * clampf(dv_done / gmax, 0.0, 1.0)), g.size.y - 4.0),
-		UI.GREEN if dv_done >= _lo() and dv_done <= _hi() else (UI.ORANGE if dv_done < _lo() else UI.RED))
+		UI.GOOD if dv_done >= _lo() and dv_done <= _hi() else (UI.ORANGE if dv_done < _lo() else UI.BAD))
 	var px: float = g.position.x + floorf(g.size.x * cap / gmax)
 	draw_rect(Rect2(px, g.position.y - 2.0, 1, g.size.y + 4.0), Color.WHITE)
 	_text(Vector2(px - 9.0, 66), "PLAN", 10, UI.DIM)
 	if dv_max < gmax:
 		var fx_: float = g.position.x + floorf(g.size.x * dv_max / gmax)
-		draw_rect(Rect2(fx_, g.position.y - 2.0, 1, g.size.y + 4.0), UI.RED)
+		draw_rect(Rect2(fx_, g.position.y - 2.0, 1, g.size.y + 4.0), UI.BAD)
 		var fw: float = Pix.text_w("FUEL OUT", 10)
-		_text(Vector2(299.0 - fw, 42), "FUEL OUT", 10, UI.RED)
+		_text(Vector2(299.0 - fw, 42), "FUEL OUT", 10, UI.BAD)
 	_text(Vector2(13, 66), "OPEN", 10, UI.DIM)
 	if arr == "grace":
 		var gw: float = floorf(120.0 * (1.0 - arr_t / GRACE_S))
-		draw_rect(Rect2(320.0 - gw / 2.0, 92, gw, 3), UI.RED)
+		draw_rect(Rect2(320.0 - gw / 2.0, 92, gw, 3), UI.BAD)
+	_draw_fuel_line()
+	_draw_pop()
 	if _burn_btn_on():
 		_draw_burn_btn("HOLD: BURN")
+
+## Fuel the plan needs against what is on board, coloured by margin (V7: resources must be felt).
+func _draw_fuel_line() -> void:
+	var need: float = m0 * (1.0 - exp(-cap / Game.ve()))
+	var r: Rect2 = Rect2(6, 72, 300, 20)
+	Pix.panel(self, r)
+	var x: float = r.position.x + 7.0
+	var y: float = r.position.y + 13.0
+	if arr in ["approach", "burn", "grace"]:
+		var margin: float = p0 / maxf(1.0, need) - 1.0
+		var c: Color = UI.BAD if margin < 0.0 else (UI.RISK if margin < 0.25 else UI.GOOD)
+		var s: String = "BURN NEEDS %s kg  ON BOARD %s kg" % [Game.fmt(need), Game.fmt(p0)]
+		_text(Vector2(x, y), s, 10, UI.TEXT)
+		var tag: String = "SHORT" if margin < 0.0 else ("TIGHT" if margin < 0.25 else "+%d%%" % roundi(margin * 100.0))
+		_text(Vector2(r.end.x - 7.0 - Pix.text_w(tag, 10), y), tag, 10, c)
+	else:
+		var left: float = float(Game.run["prop"])
+		_text(Vector2(x, y), "FUEL LEFT %s kg" % Game.fmt(left), 10, UI.TEXT)
+		var waste: bool = dv_done > _hi() or rescued or arr == "flyby"
+		var tag2: String = "WASTED" if waste else ("EMPTY" if left < 1.0 else "KEPT")
+		_text(Vector2(r.end.x - 7.0 - Pix.text_w(tag2, 10), y), tag2, 10, UI.BAD if waste or left < 1.0 else UI.GOOD)
+
+func _draw_pop() -> void:
+	if pop_age < 3.0:
+		Pix.text_oc(self, 320.0, 116.0 - floorf(4.0 * minf(pop_age, 1.0)), pop_s, 10, pop_c)
 
 func _draw_burn_btn(label: String) -> void:
 	var down: bool = _space_held()
@@ -1319,14 +1406,15 @@ func _draw_entry() -> void:
 	for i: int in 160:
 		var q: float = i / 159.0
 		var c: Vector2 = a0p.lerp(b0p, q)
-		draw_rect(Rect2((c - nrm * hw * 34.0).floor(), Vector2(1, 1)), Color(UI.GREEN, 0.85 if q > u else 0.25))
-		draw_rect(Rect2((c + nrm * hw * 34.0).floor(), Vector2(1, 1)), Color(UI.GREEN, 0.85 if q > u else 0.25))
+		draw_rect(Rect2((c - nrm * hw * 34.0).floor(), Vector2(1, 1)), Color(UI.GOOD, 0.85 if q > u else 0.25))
+		draw_rect(Rect2((c + nrm * hw * 34.0).floor(), Vector2(1, 1)), Color(UI.GOOD, 0.85 if q > u else 0.25))
 		if i % 2 == 0:
-			draw_rect(Rect2((c - nrm * 34.0).floor(), Vector2(1, 1)), Color(UI.RED, 0.5))
+			draw_rect(Rect2((c - nrm * 34.0).floor(), Vector2(1, 1)), Color(UI.BAD, 0.5))
 			draw_rect(Rect2((c + nrm * 34.0).floor(), Vector2(1, 1)), Color(UI.ORANGE, 0.5))
 	var mid_c: Vector2 = a0p.lerp(b0p, 0.42)
-	Pix.text_oc(self, mid_c.x + nrm.x * 46.0, mid_c.y + nrm.y * 46.0, "TOO SHALLOW: SKIPS OFF", 10, Color(UI.ORANGE, 0.95))
-	Pix.text_oc(self, mid_c.x - nrm.x * 44.0, mid_c.y - nrm.y * 44.0 + 8.0, "TOO STEEP: BURNS UP", 10, Color(UI.RED, 0.95))
+	if Game.diff("assist") > 0.0:   # HARD: no cue text, only the corridor
+		Pix.text_oc(self, mid_c.x + nrm.x * 46.0, mid_c.y + nrm.y * 46.0, "TOO SHALLOW: SKIPS OFF", 10, UI.RISK)
+		Pix.text_oc(self, mid_c.x - nrm.x * 44.0, mid_c.y - nrm.y * 44.0 + 8.0, "TOO STEEP: BURNS UP", 10, UI.BAD)
 	var ship: Vector2 = _entry_ship().floor()
 	var heat: float = clampf(0.25 + 0.6 * u + 0.6 * maxf(0.0, ang), 0.0, 1.0) if arr == "entry" and pressed_once else 0.15
 	if arr == "burnup":
@@ -1347,29 +1435,30 @@ func _draw_entry() -> void:
 			sc = UI.DIM
 		"entered":
 			status = "THROUGH THE HOT PART"
-			sc = UI.GREEN
+			sc = UI.GOOD
 		"burnup":
 			status = "BURNED UP"
-			sc = UI.RED
+			sc = UI.BAD
 		"skip":
 			status = "SKIPPED OFF THE AIR"
-			sc = UI.RED
+			sc = UI.BAD
 	_text(Vector2(118, 28), status, 10, sc)
 	var g: Rect2 = Rect2(13, 46, 286, 10)
 	draw_rect(g.grow(1.0), UI.BORDER, false, 1.0)
 	draw_rect(g, Color("05070d"))
 	var mid: float = g.position.x + floorf(g.size.x / 2.0)
 	var bw: float = floorf(g.size.x / 2.0 * hw)
-	draw_rect(Rect2(mid - bw, g.position.y, bw * 2.0 + 1.0, g.size.y), Color(UI.GREEN, 0.4))
+	draw_rect(Rect2(mid - bw, g.position.y, bw * 2.0 + 1.0, g.size.y), Color(UI.GOOD, 0.4))
 	var mx: float = mid + floorf(g.size.x / 2.0 * clampf(ang, -1.0, 1.0))
-	draw_rect(Rect2(mx - 1.0, g.position.y - 2.0, 3, g.size.y + 4.0), UI.GREEN if absf(ang) <= hw else UI.RED)
+	draw_rect(Rect2(mx - 1.0, g.position.y - 2.0, 3, g.size.y + 4.0), UI.GOOD if absf(ang) <= hw else UI.BAD)
 	_text(Vector2(13, 42), "SHALLOW", 10, UI.DIM)
 	_text(Vector2(299.0 - Pix.text_w("STEEP", 10), 42), "STEEP", 10, UI.DIM)
 	_text(Vector2(13, 66), "AIR BRAKING", 10, UI.DIM)
 	Pix.gauge(self, Rect2(84, 59, 100, 8), u, UI.CYAN)
 	if strain > 0.05:
-		_text(Vector2(192, 66), "DANGER", 10, UI.RED)
-		Pix.gauge(self, Rect2(234, 59, 64, 8), strain, UI.RED)
+		_text(Vector2(192, 66), "DANGER", 10, UI.BAD)
+		Pix.gauge(self, Rect2(234, 59, 64, 8), strain, UI.BAD)
+	_draw_pop()
 	if _burn_btn_on():
 		_draw_burn_btn("HOLD: LIFT")
 
@@ -1431,7 +1520,7 @@ func _draw_home() -> void:
 	_draw_orbiter(ship, false, Color(0.5, 0.5, 0.6) if dim else Color.WHITE)
 	_draw_react(ship, false)
 	if react_t >= 0.0 and react_text != "":
-		Pix.text_oc(self, ship.x, ship.y - 30.0 - floorf(6.0 * react_t / REACT_S), react_text.to_upper(), 10, UI.RED if react_bad or react_kind == "spark" else UI.YELLOW)
+		Pix.text_oc(self, ship.x, ship.y - 30.0 - floorf(6.0 * react_t / REACT_S), react_text.to_upper(), 10, UI.BAD if react_bad or react_kind == "spark" else UI.RISK)
 	_draw_parts(Vector2.ZERO)
 	var title: String = "SENDING SCIENCE HOME" if did.has("p") else "AFTER THE SITE"
 	var sub: String = "" if did.has("p") else "Getting ready to send it all home"
@@ -1450,14 +1539,14 @@ func _draw_home() -> void:
 					Fx.glow(self, pos + Vector2(8, 0), 12.0, Color(1.0, 0.6, 0.25, 0.7), true)
 				Pix.sprite(self, tex_capsule, pos)
 			elif p >= 1.0:
-				Fx.sparkle(self, e_pos + Vector2(-30, 6), fposmod(t, 1.0), UI.GREEN, 2)
+				Fx.sparkle(self, e_pos + Vector2(-30, 6), fposmod(t, 1.0), UI.GOOD, 2)
 			title = "SAMPLES COMING HOME"
 			sub = "%d samples on board" % int(Game.run["samples"])
-			sub_c = UI.GREEN
+			sub_c = UI.GOOD
 		else:
 			title = "NO RIDE HOME"
 			sub = "The samples stay on %s" % Game.place().capitalize()
-			sub_c = UI.RED
+			sub_c = UI.BAD
 	Pix.panel(self, Rect2(6, 6, 262, 62))
 	_text(Vector2(13, 28), title, 20, UI.TEXT)
 	if sub != "":
@@ -1476,7 +1565,7 @@ func _draw_home() -> void:
 	if sent > 0.0:
 		_text(Vector2(168, 55), "%s of %s Gb" % [Game.fmt(shown_gb), Game.fmt(made)], 10, UI.TEXT)
 	else:
-		_text(Vector2(168, 55), "NOTHING SENT", 10, UI.RED)
+		_text(Vector2(168, 55), "NOTHING SENT", 10, UI.BAD)
 	if bool(Game.dest()["returns"]) and obj.get("return", false):
 		for i: int in mini(8, int(Game.run["samples"])):
 			draw_texture(tex_sample, Vector2(180 + i * 11, 30))
@@ -1542,7 +1631,7 @@ func _lamp(center: Vector2, state: int) -> void:
 
 func _gauge(y: float, label: String, frac: float, value: String) -> void:
 	_text(Vector2(8, y + 8.0), label, 10, UI.DIM)
-	var col: Color = UI.GREEN if frac > 0.35 else (UI.YELLOW if frac > 0.15 else UI.RED)
+	var col: Color = UI.GOOD if frac > 0.35 else (UI.RISK if frac > 0.15 else UI.BAD)
 	Pix.gauge(self, Rect2(34, y, 80, 8), frac, col)
 	_text(Vector2(118, y + 8.0), value, 10, UI.TEXT)
 
@@ -1582,8 +1671,8 @@ func _draw_console() -> void:
 			typed -= String(ln["s"]).length()
 		var ok: bool = ln["ok"]
 		if i == 0 or int(lines[i - 1]["e"]) != int(ln["e"]):
-			draw_rect(Rect2(192, y - 6.0, 4, 4), (UI.GREEN if ok else UI.RED) if newest else UI.BORDER)
-		_text(Vector2(200, y), s, 10, (UI.TEXT if ok else UI.RED) if newest else UI.DIM)
+			draw_rect(Rect2(192, y - 6.0, 4, 4), (UI.GOOD if ok else UI.BAD) if newest else UI.BORDER)
+		_text(Vector2(200, y), s, 10, (UI.TEXT if ok else UI.BAD) if newest else UI.DIM)
 
 # ------------------------------------------------------------- debug hooks (tools/dev/shot.sh call=...)
 
@@ -1725,7 +1814,8 @@ func debug_burn_early() -> void:
 	sim_hold = true
 	_warp(func() -> bool: return entry_mode or dv_done >= cap * 0.5)
 	sim_hold = false
-	_warp(func() -> bool: return arr == "flyby" and arr_t > 0.8 or entry_mode)
+	_warp(func() -> bool: return arr in ["flyby", "orbit"] and arr_t > 0.8 or entry_mode)
+	frozen = true
 
 ## In orbit after a burn in the band; after one too long.
 func debug_orbit() -> void:
@@ -1773,7 +1863,8 @@ func debug_entry_steep() -> void:
 	_to_arrive()
 	_warp(func() -> bool: return arr == "entry" or not entry_mode)
 	pressed_once = true
-	_warp(func() -> bool: return arr == "burnup" and arr_t > 0.4 or not entry_mode)
+	_warp(func() -> bool: return arr == "burnup" and arr_t > 0.4 or pop_age < 0.4 or not entry_mode)
+	frozen = pop_age < 1.0   # EASY / NORMAL: hold on the rescue line
 
 func debug_entry_skip() -> void:
 	_to_arrive()

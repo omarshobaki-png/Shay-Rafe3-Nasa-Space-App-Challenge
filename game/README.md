@@ -1,4 +1,4 @@
-# AstroPixel v6: Mission Designer
+# AstroPixel v7: Mission Designer
 
 Team Shay Rafe3, NASA Space Apps Challenge 2026, challenge "Space Mission Design Game".
 Pick a world, choose a task, build a spacecraft under real limits, fly it, land it, do the job and send the result to Earth.
@@ -13,8 +13,8 @@ Pick a world, choose a task, build a spacecraft under real limits, fly it, land 
 
 ## How a mission goes
 
-1. **Menu.** Click a world, then one of its 3 tasks. Each task shows its job (SAMPLES, PHOTOS or CREW) and its difficulty. The briefing says what is critical, what ends the mission, and what goes to Earth. 1 to 4 players share the roles: planner, engineer, scientist, comms.
-2. **Builder.** Drag parts onto the ship in the hangar, like Kerbal Space Program. Mission Control has a lamp per limit (mass, power, fuel, landing, science, data, comms, budget, time). A red lamp says what is wrong and which part fixes it; SHOW ME points at the part. AUTO-BUILD makes a ship that works.
+1. **Menu.** Click a world, then one of its 3 tasks. Each task shows its job (SAMPLES, PHOTOS or CREW) and its level, with a line on what the level means. The briefing says what is critical, what ends the mission, and what goes to Earth. 1 to 4 players share the roles: planner, engineer, scientist, comms.
+2. **Builder.** Drag parts onto the ship in the hangar, like Kerbal Space Program. Mission Control has a lamp per limit (mass, power, fuel, landing, science, data, comms, budget, time). A red lamp says what is wrong and which part fixes it; SHOW ME points at the part. AUTO-BUILD makes a ship that works (EASY only).
 3. **Launch.** A GO / NO-GO poll, then the rocket lifts off.
 4. **Flight.** A cruise map and the arrival burn. Sunlight, fuel and radio delay follow real physics. At most one or two events happen on the way: an amber "!" is something that happened to the ship, a blue "!" is a message from Earth.
 5. **Landing** (land worlds). Fire the engine and steer down gently.
@@ -26,6 +26,17 @@ Pick a world, choose a task, build a spacecraft under real limits, fly it, land 
 8. **Report.** A grade (A, B or C), then three pages: overview, journey, build report. Credits go to the Tech Lab.
 
 The ship never flies home. Only what the task needs goes to Earth: the data by radio, a small sample capsule, or the crew capsule.
+
+## Levels: the task sets how hard the whole game is
+
+| | EASY | NORMAL | HARD |
+|---|---|---|---|
+| builder | guide, ghost cursor, SHOW ME, AUTO-BUILD | the guide says in one line what is missing | no hints: only the lamps and numbers |
+| minigames | the computer helps and counts down | cues shown, you do every action | no cues, narrow windows |
+| mistakes | cost less; you cannot lose the mission | cost real science; partial result | a crash, empty tank or dead battery ends the mission |
+| resources | roomy budget, slow drain | exact | tight budget, fast drain, more events |
+
+A failed mission shows MISSION FAILED with the cause and the fix. Small texts are coloured by consequence: green gain, yellow risk, red loss.
 
 ## 8 destinations, 3 tasks each
 

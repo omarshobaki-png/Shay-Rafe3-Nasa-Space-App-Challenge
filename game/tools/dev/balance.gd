@@ -231,19 +231,7 @@ func _events() -> void:
 					paid = true
 			if not paid:
 				open = true
-			# every number in the choice text is one of its effects (or its odds)
-			var ok_nums: Array = []
-			var risk: Dictionary = ch.get("risk", {})
-			for e: Dictionary in [ch.get("cost", {}), risk.get("bad", {}), ch.get("gain", {})]:
-				_check(not e.has("fail"), "%s: an effect ends the mission (v6: no fail)" % id)
-				for k: String in e:
-					if e[k] is float or e[k] is int:
-						var v: float = absf(float(e[k]))
-						ok_nums.append_array([v, roundf((1.0 - v) * 100.0)])
-			if risk.has("chance"):
-				ok_nums.append_array([roundf(float(risk["chance"]) * 100.0), roundf((1.0 - float(risk["chance"])) * 100.0)])
-			for m: RegExMatch in num.search_all(String(ch["text"]).replace("{pct}", "")):
-				_check(ok_nums.has(float(m.get_string())), "%s: '%s' says %s, which is not one of its effects" % [id, ch["text"], m.get_string()])
+			_nums_ok(id, ch)
 			for s: String in [String(ev["title"]), String(ev["text"]), String(ev["real"]), String(ch["label"]), String(ch["text"])]:
 				for i: int in s.length():
 					_check(s.unicode_at(i) < 127, "%s: not ASCII: %s" % [id, s])
@@ -268,6 +256,8 @@ func _events() -> void:
 			game.call("start_run", 7)
 			var ids: Dictionary = {}
 			for ev: Dictionary in game.get("run")["events"]:
+				for ch: Dictionary in ev["choices"]:
+					_nums_ok(ev["id"] + " (HARD)", ch)
 				_check(not ids.has(ev["id"]), "%s: event %s twice in one flight" % [did, ev["id"]])
 				ids[ev["id"]] = true
 				_check(String(ev["real"]).length() <= 140, "%s: real is %d characters after dressing" % [ev["id"], String(ev["real"]).length()])
@@ -277,7 +267,7 @@ func _events() -> void:
 	game.call("set_task", 0)
 	game.call("example_build")
 	game.call("start_run", 3)
-	_check(not bool(game.call("dest")["returns"]) and not bool(game.call("id_has", "ascent")) and (game.get("run")["events"] as Array).size() == 2, "moon photo task: returns, capsule or events are wrong")
+	_check(not bool(game.call("dest")["returns"]) and not bool(game.call("id_has", "ascent")) and (game.get("run")["events"] as Array).size() == 1, "moon photo task (EASY): returns, capsule or events are wrong (v7: 1 event, none at the site)")
 	game.set("difficulty", 1)
 	for id: String in seen:
 		_check(seen[id] is String, "event %s can never happen on any example ship" % id)
@@ -313,6 +303,22 @@ func _events() -> void:
 					resolved += 1
 	game.set("difficulty", 1)
 	print("events: %d, every choice resolved (%d runs)" % [list.size(), resolved])
+
+## Every number in a choice text is one of its effects (or its odds); no effect ends the mission.
+func _nums_ok(id: String, ch: Dictionary) -> void:
+	var num: RegEx = RegEx.create_from_string("[0-9]+([.][0-9]+)?")
+	var ok_nums: Array = []
+	var risk: Dictionary = ch.get("risk", {})
+	for e: Dictionary in [ch.get("cost", {}), risk.get("bad", {}), ch.get("gain", {})]:
+		_check(not e.has("fail"), "%s: an effect ends the mission (v6: no fail)" % id)
+		for k: String in e:
+			if e[k] is float or e[k] is int:
+				var v: float = absf(float(e[k]))
+				ok_nums.append_array([v, roundf((1.0 - v) * 100.0)])
+	if risk.has("chance"):
+		ok_nums.append_array([roundf(float(risk["chance"]) * 100.0), roundf((1.0 - float(risk["chance"])) * 100.0)])
+	for m: RegExMatch in num.search_all(String(ch["text"]).replace("{pct}", "")):
+		_check(ok_nums.has(float(m.get_string())), "%s: '%s' says %s, which is not one of its effects" % [id, ch["text"], m.get_string()])
 
 func _all_tasks() -> Array:
 	var out: Array = []
@@ -416,6 +422,7 @@ func _flights() -> void:
 						var v: int = r["scores"][k]["value"]
 						_check(v >= 0 and v <= 100 and String(r["scores"][k]["tip"]) != "", "%s: score %s = %d" % [id, k, v])
 			print("flights %-6s %-8s %3d flown with decisions: %3d all goals, %2d lost, average total %d" % [game.call("difficulty_name"), id, n, full, dead, roundi(total / n)])
+			_check(diff == 2 or dead == 0, "%s %s: the example ship was lost %d times (v7: only HARD may end a mission)" % [id, game.call("difficulty_name"), dead])
 	game.set("difficulty", 1)
 	# every task: shape and text budgets, and Game.dest() follows the chosen one
 	for id: String in data.get("DEST"):
@@ -446,6 +453,7 @@ func _flights() -> void:
 			if String(e["text"]).begins_with(t[2]):
 				hit = true
 		_check(hit and int(r["score"]) < 100, "%s without %s: expected %s" % [t[0], t[1], t[2]])
+	_under()
 	# a ship with no fuel reserve cannot afford a correction burn
 	game.call("new_mission", "saturn")
 	game.call("example_build")
@@ -454,6 +462,58 @@ func _flights() -> void:
 	var ev: Dictionary = (events.call("by_id", "wheel") as Dictionary).duplicate(true)
 	ev["done"] = false
 	_check(not bool(game.call("event_choice", ev, 0)["can"]) or String(game.call("event_choice", ev, 0)["warn"]) != "", "a ship short of fuel can take the thruster burn without a warning")
+
+## v7: a resource rated UNDER at launch shows in the log at every level, costs more on harder ones, and only
+## HARD may end the mission. And one part more or less moves its number clearly.
+func _under() -> void:
+	var cases: Array = [["moon", 1, "fuel", "LOW FUEL"], ["mars", 1, "battery", "SMALL BATTERY"], ["mars", 1, "comms", "WEAK RADIO"]]
+	for cs: Array in cases:
+		var pts: Array = []
+		for lv: int in 3:
+			game.call("new_mission", cs[0])
+			game.call("set_task", cs[1])
+			game.call("example_build")
+			game.set("difficulty", lv)
+			var b: Dictionary = game.get("build")
+			if cs[2] == "fuel":
+				var c0: Dictionary = game.call("calc")
+				b["prop"] = ceili(float(c0["prop_need"]) / 100.0)
+			elif cs[2] == "battery":
+				b["battery"] = 1
+			elif cs[2] == "comms":
+				b.erase("mga")
+				b["lga"] = 1
+			var c: Dictionary = game.call("calc")
+			if c["use"][cs[2]]["state"] != "risk":
+				print("under %s %s: could not make it UNDER (%s)" % [cs[0], cs[2], c["status"][cs[2]]])
+				break
+			var r: Dictionary = _fly(4, -1)
+			var seen: bool = false
+			for e: Dictionary in r["log"]:
+				if String(e["text"]).begins_with(cs[3]) and String(e["text"]).contains("Fix: "):
+					seen = true
+			_check(seen, "%s %s UNDER at level %d: no log line naming it" % [cs[0], cs[2], lv])
+			_check(lv == 2 or not bool(r["dead"]), "%s %s UNDER ended the mission at level %d" % [cs[0], cs[2], lv])
+			pts.append(int(r["short_pts"]))
+			print("under %-5s %-8s %-6s efficiency %3d, dead %s" % [cs[0], cs[2], game.call("difficulty_name"), int(r["scores"]["efficiency"]["value"]), str(r["dead"])])
+		if pts.size() == 3:
+			_check(pts[0] < pts[1] and pts[1] < pts[2], "%s %s UNDER: penalties %s do not grow with the level" % [cs[0], cs[2], str(pts)])
+	game.set("difficulty", 1)
+	# one part more: the numbers it drives move clearly (printed for the team; checked where it is the rule)
+	for did: String in ["moon", "mars", "saturn"]:
+		game.call("new_mission", did)
+		game.call("set_task", 1)
+		game.call("example_build")
+		var c: Dictionary = game.call("calc")
+		var line: String = "one part more %-7s" % did
+		for pk: Array in [["solar", "gen"], ["rtg", "gen"], ["battery", "wh"], ["prop", "prop"], ["spectro", "pts"], ["recorder", "store"]]:
+			if not bool(game.call("part_available", pk[0])):
+				continue
+			var e: Dictionary = pre.call("effect", pk[0], 1)
+			var base: float = maxf(0.001, float(c[pk[1]]))
+			var d: float = float(e.get(pk[1], 0.0))
+			line += "  %s %+d%%" % [pk[0], roundi(100.0 * d / base)]
+		print(line)
 
 # ---------------------------------------------------------------- the board, the part labels, the checklist
 
@@ -473,6 +533,8 @@ func _preflight_one(id: String, ti: int) -> void:
 		_check(steps.size() >= 5 and steps.size() <= 7 and steps[0]["id"] == "power" and not bool(steps[0]["done"]), "%s: checklist of an empty ship" % id)
 		for s: Dictionary in steps:
 			_check(String(s["title"]).length() <= 16 and String(s["hint"]).length() <= 60 and String(s["hint"]) != "", "%s: checklist step %s: '%s' (%d)" % [id, s["id"], s["hint"], String(s["hint"]).length()])
+		var ml: String = pre.call("missing_line")
+		_check(ml.begins_with("Missing: ") and ml.length() <= 50 and String(pre.call("hint_line", 0)) == "" and String(pre.call("hint_line", 2)) == String(steps[0]["hint"]), "%s: hint lines by level: '%s'" % [id, ml])
 		# following the checklist's next part builds a ship that is GO
 		for guard: int in 60:
 			var todo: Dictionary = {}
@@ -490,6 +552,7 @@ func _preflight_one(id: String, ti: int) -> void:
 			if not bool(s["done"]):
 				left += " " + String(s["id"])
 		_check(left == "", "%s: following the checklist leaves steps open:%s. Ship: %s" % [id, left, str(game.get("build"))])
+		_check(String(pre.call("missing_line")) == "" or left != "", "%s: a GO ship still says '%s'" % [id, pre.call("missing_line")])
 		var bad: String = ""
 		for s: Dictionary in pre.call("stations"):
 			if s["status"] == "bad":

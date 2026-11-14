@@ -12,10 +12,13 @@ extends Control
 ##     before it is skipped, so each landing lasts about 20-25 s (START_S); gravity, speeds, fuel stay real;
 ##   - one control, SPACE. Sideways drift is cancelled by the lander's computer except in thick air,
 ##     where steering onto the flat slab is the job;
-##   - LANDING ASSIST on EASY and NORMAL (from Game.diff("landing_forgive")): while you hold SPACE after
-##     BRAKE NOW the computer trims the engine to a safe touchdown, as real landers fly the last part.
-##     On EASY it also brakes (and steers) by itself if you do nothing, and a hard touchdown only damages
-##     the lander. HARD stays fully manual.
+## v7, the level matters (Game.diff "assist", "fail", "bite", "drain"):
+##   - EASY (assist 2, fail 0): the LANDING ASSIST brakes (and steers) by itself; nothing ends the mission,
+##     a hard touchdown only damages the lander;
+##   - NORMAL (assist 1, fail 1): BRAKE cue and countdown shown, the player flies the engine by hand; a hard
+##     touchdown damages the lander (science, minutes, past 1.5x the limit an instrument), the mission goes on;
+##   - HARD (assist 0, fail 2): no cue, no countdown, only the readouts; a crash ends the mission.
+##   - FUEL is the ship's real propellant; the MARGIN row is what stays after braking from here.
 
 const UI = preload("res://scripts/ui.gd")
 const Pix = preload("res://scripts/pix.gd")
@@ -36,7 +39,9 @@ const OFF_SLAB_MIN: float = 20.0  # surface minutes lost levelling a lander that
 const START_S: float = 23.0  # s: target length of a correct landing; the fall before it is skipped (game rule)
 const ENTRY_S: float = 3.5   # s the automatic entry stage is announced (heat shield, parachute)
 const ASSIST_DEC: float = 0.7  # the assist brakes with 70% of the engine's spare thrust, leaving a margin
-const DMG_SCORE: int = 10    # science points lost for a hard but survivable touchdown (game rule)
+const DMG_SCORE: int = 10    # science points lost for a hard but survivable touchdown, x bite (game rule)
+const DMG_MIN: float = 20.0  # surface minutes lost repairing a hard-landed lander, x bite (game rule)
+const BAD_K: float = 1.5     # NORMAL: past 1.5x the limit the lander is badly damaged (game rule)
 const PEBBLE_W: Array[int] = [6, 9, 14, 20, 30, 44]
 const CRATER_W: Array[int] = [18, 26, 40, 64, 98]
 const C_SAFE: Color = Color("1f7a3a")
@@ -102,7 +107,12 @@ var assist: bool = false
 var auto_assist: bool = false
 var assist_on: bool = false   # latched once the assist has started braking
 var assist_self: bool = false # EASY: the assist braked or steered without the player
-var dmg_k: float = 1.0        # touchdowns up to touch * dmg_k damage the lander instead of destroying it
+var fail_lv: float = 1.0      # Game.diff("fail"): 0 nothing ends the mission, 1 damage, 2 a crash ends it
+var bite: float = 1.0         # Game.diff("bite"): every loss is multiplied by this
+var burn_k: float = 1.0       # HARD burns propellant faster (Game.diff("drain"), game rule): waste is punished
+var cues: bool = true         # BRAKE cue, countdown and directions (assist >= 1)
+var badly: bool = false
+var dmg_text: String = ""
 var lead: float = 3.0         # s of countdown before BRAKE NOW
 var damaged: bool = false
 var clock: float = 1.0        # descent clock speed-up (HARD only, on long braking); physics unchanged
@@ -186,10 +196,13 @@ func _ready() -> void:
 	forgive = Game.diff("landing_forgive")
 	react = REACT * forgive * forgive        # EASY gives a slower pilot more warning, HARD less
 	slab_r = SLAB_R * forgive * forgive * (1.5 if forgive >= 1.0 else 1.0)
-	assist = forgive >= 1.0                  # EASY and NORMAL
-	auto_assist = forgive >= 1.2             # EASY
-	dmg_k = 1.0 + clampf((forgive - 0.85) * 2.2, 0.0, 1.0)   # EASY 2x the limit, NORMAL 1.33x, HARD 1x
-	margin = 2.2 * forgive if assist else react   # EASY 2.9 s, NORMAL 2.2 s of late press still lands; HARD 0.43 s
+	assist = Game.diff("assist") >= 2.0      # EASY: the computer brakes
+	auto_assist = assist
+	cues = Game.diff("assist") >= 1.0        # HARD: readouts only
+	fail_lv = Game.diff("fail")
+	bite = Game.diff("bite")
+	burn_k = maxf(1.0, Game.diff("drain"))
+	margin = 2.2 * forgive if assist else react   # EASY 2.9 s of late press still lands; NORMAL 0.6 s, HARD 0.43 s
 	lead = 5.0 * forgive                     # countdown before BRAKE NOW: EASY 6.5 s, NORMAL 5 s, HARD 4.3 s
 	hx = 3.0 if air == "thick" else 0.5
 	pad_x = SLAB_X if air == "thick" else 0.0
@@ -402,7 +415,8 @@ func _update_cue() -> void:
 	elif not coast_ok and _must_brake(alt, vy):
 		brake = true
 		burns += 1
-		Audio.play("warn_alt", -6.0)
+		if cues:
+			Audio.play("warn_alt", -6.0)
 	if brake:
 		cue = "brake"
 		burn_alt = alt
@@ -413,7 +427,7 @@ func _update_cue() -> void:
 		burn_in = _fall_to_brake(alt, vy)
 		cue = "release" if thrusting else ("soon" if burn_in < lead else "fall")
 		var n: int = ceili(burn_in)
-		if cue == "soon" and n < last_count and n <= 3:
+		if cues and cue == "soon" and n < last_count and n <= 3:
 			Audio.play("blip", -8.0, 1.0 + 0.15 * (3 - n))
 		last_count = n if cue == "soon" else 9
 
@@ -452,6 +466,8 @@ func _direction() -> PackedStringArray:
 		return PackedStringArray(["HEAT SHIELD AND PARACHUTE DONE THEIR JOB", "They took off most of your speed. Now the engine lands you."])
 	if t < ENTRY_S and air == "thick":
 		return PackedStringArray(["HEAT SHIELD OFF: THE THICK AIR SLOWS YOU", "No parachute or engine needed on Venus"])
+	if not cues:
+		return PackedStringArray()
 	if air == "thick":
 		var key: String = "<" if pad_x < x else ">"
 		if assist_self:
@@ -546,7 +562,7 @@ func _physics_process(delta: float) -> void:
 	x += vx * delta
 	var ve: float = Data.ISP * Data.G0
 	var burn: float = 0.0
-	burn += mass * (a_up + absf(side)) / ve * delta
+	burn += mass * (a_up + absf(side)) / ve * delta * burn_k
 	burn = minf(burn, prop)
 	prop -= burn
 	mass -= burn
@@ -559,8 +575,10 @@ func _physics_process(delta: float) -> void:
 func _touchdown() -> void:
 	alt = 0.0
 	var ok: bool = vy <= touch and absf(vx) <= side_limit()
-	# EASY and NORMAL: a touchdown a little too hard bends the lander instead of wrecking it (game rule)
-	damaged = not ok and prop > 0.0 and vy <= touch * dmg_k and absf(vx) <= side_limit() * dmg_k
+	# EASY and NORMAL: a touchdown too hard damages the lander instead of ending the mission (game rule)
+	var sev: float = maxf(vy / maxf(0.1, touch), absf(vx) / side_limit())
+	damaged = not ok and fail_lv < 2.0
+	badly = damaged and fail_lv >= 1.0 and sev > BAD_K
 	ok = ok or damaged
 	on_slab = air != "thick" or absf(x - pad_x) <= slab_r
 	state = "landed" if ok else "crashed"
@@ -572,12 +590,13 @@ func _touchdown() -> void:
 	if crushed:
 		state = "crashed"
 	elif damaged:
-		Game.run["score_bonus"] = int(Game.run.get("score_bonus", 0)) - DMG_SCORE
-		Game.note(false, "HARD LANDING at %.1f m/s (limit %s m/s): the lander is bent but works. -%d science (game rule)." % [vy, _f1(touch), DMG_SCORE])
-	elif ok and not on_slab:
+		_damage()
+	if ok and not crushed and not on_slab:
 		# game rule: a tilted lander costs surface time (Venus: out of the minutes the heat allows)
-		Game.run["minutes_lost"] = float(Game.run.get("minutes_lost", 0.0)) + OFF_SLAB_MIN
-		Game.note(false, "Touched down on rough rock, tilted: %d minutes lost levelling the drill (game rule)." % int(OFF_SLAB_MIN))
+		Game.run["minutes_lost"] = float(Game.run.get("minutes_lost", 0.0)) + OFF_SLAB_MIN * bite
+		Game.note(false, "Touched down on rough rock, tilted: %d minutes lost levelling the drill (game rule)." % roundi(OFF_SLAB_MIN * bite))
+	if not ok and not crushed:
+		Game.note(false, "FIX: " + _fix())
 	if auto or log_on:
 		print("AUTOPILOT %s on %s (%s): limit %s m/s, touched at %.2f m/s down and %.2f m/s sideways (limit %.1f), %s, fuel left %.0f of %.0f kg, %d burns, %.0f s, lag %.2f s" % [
 			"CRUSHED" if crushed else ("DAMAGED" if damaged else ("LANDED" if ok else "CRASHED")), Game.dest_id, Game.difficulty_name(), _f1(touch), vy, absf(vx),
@@ -592,10 +611,11 @@ func _touchdown() -> void:
 		_blow_dust(20, 0.8)
 		_break_up()
 	elif ok:
-		msg = "HARD LANDING" if damaged else "TOUCHDOWN"
-		msg2 = "%.1f m/s, limit %s m/s" % [vy, _f1(touch)] if on_slab else "On rough rock: %d minutes lost" % int(OFF_SLAB_MIN)
+		msg = ("BADLY DAMAGED" if badly else "HARD LANDING") if damaged else "TOUCHDOWN"
+		msg2 = "%.1f m/s, limit %s m/s" % [vy, _f1(touch)] if on_slab else "On rough rock: %d minutes lost" % roundi(OFF_SLAB_MIN * bite)
+		msg_bad = not on_slab
 		if damaged:
-			msg2 = "%.1f m/s: lander bent, still working" % vy
+			msg2 = dmg_text
 			msg_bad = true
 		land_t = t
 		shake = 0.25
@@ -603,10 +623,40 @@ func _touchdown() -> void:
 		Audio.play("land")
 		Audio.play("success", -4.0)
 	else:
-		msg = "CRASH"
-		msg2 = "%.1f m/s down, %.1f m/s sideways" % [vy, absf(vx)]
+		msg = "CRASH: MISSION OVER"
+		msg2 = "%.1f m/s, limit %s. %s" % [vy, _f1(touch), _fix()]
 		msg_bad = true
 		_boom()
+
+## A survivable hard touchdown: EASY a few science points; NORMAL science and repair minutes, and past
+## BAD_K times the limit a broken instrument as well. All scaled by bite.
+func _damage() -> void:
+	var pts: int = roundi(DMG_SCORE * bite * (1.0 if fail_lv < 1.0 else (3.0 if badly else 1.5)))
+	var mins: float = 0.0 if fail_lv < 1.0 else DMG_MIN * bite * (2.0 if badly else 1.0)
+	var lost: String = Game._break("science") if badly else ""
+	Game.run["score_bonus"] = int(Game.run.get("score_bonus", 0)) - pts
+	Game.run["minutes_lost"] = float(Game.run.get("minutes_lost", 0.0)) + mins
+	dmg_text = "-%d science" % pts
+	if mins > 0.0:
+		dmg_text += ", -%d min repairs" % roundi(mins)
+	if lost != "":
+		dmg_text += ", %s broken" % lost
+	Game.note(false, "%s at %.1f m/s (limit %s m/s): %s (game rule). Fix: %s" % ["BADLY DAMAGED" if badly else "HARD LANDING", vy, _f1(touch), dmg_text, _fix()])
+
+## What to do better next time, from what went wrong.
+func _fix() -> String:
+	if prop <= 0.5 and air != "thick":
+		return "Tank ran dry: carry more fuel, brake in fewer, longer burns."
+	if absf(vx) > side_limit():
+		return "Steer to stop the drift before touchdown."
+	return "Brake earlier and touch down with SPEED green."
+
+## Propellant (kg) a full-thrust brake from here to the safe speed would use, gravity losses included.
+func fuel_need() -> float:
+	if air == "thick":
+		return 0.0
+	var dv: float = maxf(0.0, impact_v() - target_v()) * thrust_acc / maxf(0.1, thrust_acc - g) * burn_k
+	return mass * (1.0 - exp(-dv / (Data.ISP * Data.G0)))
 
 ## Venus: far lightning in the clouds and a hull that groans under the pressure.
 func _thick_air() -> void:
@@ -850,17 +900,17 @@ func _draw_target(lane: float) -> void:
 			# the ground is still below the screen: a pointer shows where the slab lies
 			var px: float = clampf(cx, 24.0, 560.0)
 			var bob: float = floorf(absf(sin(t * 4.0)) * 3.0)
-			front.draw_texture(tex_marker, Vector2(px - 4.0, 296.0 + bob), UI.GREEN if lit else UI.YELLOW)
+			front.draw_texture(tex_marker, Vector2(px - 4.0, 296.0 + bob), UI.GOOD if lit else UI.RISK)
 			Pix.text_oc(front, px, 292.0 + bob, "SLAB %s m" % Game.fmt(absf(pad_x - x)) if not lit else "SLAB", 10, UI.TEXT)
 		for i: int in 64:
 			if i % 2 == 0:
 				var a: float = i * TAU / 64.0
-				front.draw_rect(Rect2(Vector2(cx + cos(a) * hw, lane + sin(a) * 6.0).floor(), Vector2(2, 1)), Color(UI.GREEN if lit else UI.YELLOW, 0.85))
+				front.draw_rect(Rect2(Vector2(cx + cos(a) * hw, lane + sin(a) * 6.0).floor(), Vector2(2, 1)), Color(UI.GOOD if lit else UI.RISK, 0.85))
 		return
 	for i: int in 56:
 		if i % 2 == 0:
 			var a: float = i * TAU / 56.0
-			front.draw_rect(Rect2(Vector2(LX + 2.0 + cos(a) * 56.0, lane + sin(a) * 6.0).floor(), Vector2(2, 1)), Color(UI.YELLOW, 0.6))
+			front.draw_rect(Rect2(Vector2(LX + 2.0 + cos(a) * 56.0, lane + sin(a) * 6.0).floor(), Vector2(2, 1)), Color(UI.RISK, 0.6))
 
 func on_slab_now() -> bool:
 	return absf(x - pad_x) <= slab_r
@@ -965,7 +1015,7 @@ func _well(r: Rect2) -> void:
 ## Three readouts, big and in plain words: HEIGHT, SPEED (with the green safe band), FUEL.
 func _draw_hud() -> void:
 	var safe: bool = vy <= touch
-	_panel(Rect2(6, 6, 158, 124))
+	_panel(Rect2(6, 6, 158, 138))
 	# height
 	_text(Vector2(14, 19), "HEIGHT", UI.DIM)
 	var at: String = ("%d m" % roundi(alt)) if alt >= 10.0 else ("%.1f m" % alt)
@@ -973,27 +1023,38 @@ func _draw_hud() -> void:
 	# speed: the number, then a bar with the green band up to the safe limit (square-root scale)
 	_text(Vector2(14, 60), "SPEED", UI.DIM)
 	var lim: String = "SAFE UNDER %s" % _f1(touch)
-	_text(Vector2(156.0 - Pix.text_w(lim, 10), 60), lim, UI.GREEN)
+	_text(Vector2(156.0 - Pix.text_w(lim, 10), 60), lim, UI.GOOD)
 	var num: String = "%.1f" % maxf(0.0, vy)
-	Pix.title(front, Vector2(14, 85), num, UI.GREEN if safe else UI.RED, 2)
+	Pix.title(front, Vector2(14, 85), num, UI.GOOD if safe else UI.BAD, 2)
 	_text(Vector2(18.0 + Pix.title_w(num, 2), 85), "m/s", UI.DIM)
 	var gr: Rect2 = Rect2(14, 89, 142, 12)
 	Pix.frame(front, gr, "gauge_frame")
 	var inner: Rect2 = gr.grow(-2)
 	var safe_w: float = floorf(inner.size.x * sqrt(clampf(touch / vmax, 0.0, 1.0)))
 	front.draw_rect(Rect2(inner.position, Vector2(safe_w, inner.size.y)), C_SAFE)
-	front.draw_rect(Rect2(inner.position, Vector2(safe_w, 2)), UI.GREEN)
+	front.draw_rect(Rect2(inner.position, Vector2(safe_w, 2)), UI.GOOD)
 	front.draw_rect(Rect2(inner.position + Vector2(safe_w, 0), Vector2(inner.size.x - safe_w, inner.size.y)), C_RISK)
 	var nx: float = inner.position.x + floorf((inner.size.x - 2.0) * sqrt(clampf(vy / vmax, 0.0, 1.0)))
 	front.draw_rect(Rect2(nx - 1.0, gr.position.y - 2.0, 4, gr.size.y + 4.0), C_INK)
 	front.draw_rect(Rect2(nx, gr.position.y - 1.0, 2, gr.size.y + 2.0), Color.WHITE)
 	# fuel
 	var frac: float = clampf(prop / prop0, 0.0, 1.0)
+	var need: float = fuel_need() if state == "fly" else 0.0
+	var spare: float = prop - need
+	var mc: Color = UI.GOOD if spare > need * 0.5 else (UI.RISK if spare >= 0.0 else UI.BAD)
 	_text(Vector2(14, 120), "FUEL", UI.DIM)
-	Pix.gauge(front, Rect2(44, 112, 62, 8), frac, UI.ORANGE if frac > 0.2 else UI.RED)
+	Pix.gauge(front, Rect2(44, 112, 62, 8), frac, UI.ORANGE if spare > need * 0.5 else mc)
+	if need > 0.0:
+		# what the brake will take: the bar must reach past this mark
+		var nx2: float = 44.0 + floorf(61.0 * clampf(need / prop0, 0.0, 1.0))
+		front.draw_rect(Rect2(nx2 - 1.0, 110, 3, 12), C_INK)
+		front.draw_rect(Rect2(nx2, 111, 1, 10), Color.WHITE)
 	var fk: String = "%s kg" % Game.fmt(prop)
-	_text(Vector2(156.0 - Pix.text_w(fk, 10), 120), fk, UI.TEXT if frac > 0.2 else UI.RED)
-	if state == "fly":
+	_text(Vector2(156.0 - Pix.text_w(fk, 10), 120), fk, UI.TEXT if spare > need * 0.5 else mc)
+	_text(Vector2(14, 135), "MARGIN", UI.DIM)
+	var mk: String = ("+%s kg" if spare >= 0.0 else "-%s kg SHORT") % Game.fmt(absf(spare))
+	_text(Vector2(156.0 - Pix.text_w(mk, 10), 135), mk, mc)
+	if state == "fly" and cues:
 		_draw_cue()
 	_draw_direction()
 	if help_on:
@@ -1005,10 +1066,10 @@ func _draw_msg() -> void:
 		return
 	var mw: float = maxf(Pix.title_w(msg, 2), Pix.text_w(msg2, 10)) + 28.0
 	var mh: float = 48.0 if msg2 != "" else 36.0
-	_panel(Rect2(floorf(320.0 - mw / 2.0), 136, mw, mh), UI.RED if msg_bad else UI.GREEN)
-	Pix.title_c(front, 320, 165, msg, UI.RED if msg_bad else UI.TEXT, 2)
+	_panel(Rect2(floorf(320.0 - mw / 2.0), 136, mw, mh), UI.BAD if msg_bad else UI.GOOD)
+	Pix.title_c(front, 320, 165, msg, UI.BAD if msg_bad else UI.TEXT, 2)
 	if msg2 != "":
-		Pix.text_c(front, 320, 177, msg2, 10, UI.DIM)
+		Pix.text_c(front, 320, 177, msg2, 10, UI.BAD if msg_bad else UI.GOOD)
 
 ## The one direction: a line with key caps for [KEY], and a short reason under it.
 func _draw_direction() -> void:
@@ -1020,7 +1081,7 @@ func _draw_direction() -> void:
 	for i: int in parts.size():
 		w += (maxf(13.0, Pix.text_w(parts[i], 10) + 7.0) + 2.0) if i % 2 == 1 else Pix.text_w(parts[i], 10)
 	var r: Rect2 = Rect2(150, 318, 340, 36)
-	_panel(r, UI.YELLOW)
+	_panel(r, UI.RISK)
 	var px: float = floorf(r.position.x + (r.size.x - w) / 2.0)
 	for i: int in parts.size():
 		if i % 2 == 1:
@@ -1033,7 +1094,7 @@ func _draw_direction() -> void:
 ## The controls list behind the "?" button (H or F1). The descent waits while it is open.
 func _draw_help() -> void:
 	var r: Rect2 = Rect2(180, 104, 280, 86)
-	_panel(r, UI.YELLOW)
+	_panel(r, UI.RISK)
 	Pix.title(front, Vector2(192, 122), "CONTROLS", UI.TEXT)
 	_text(Vector2(372, 121), "(paused)", UI.DIM)
 	var rows: Array = [[["A", "D"], "steer onto the flat slab"]] if air == "thick" else [[["SPACE"], "BRAKE: slows your fall"]]
@@ -1062,31 +1123,31 @@ func _draw_cue() -> void:
 		"brake":
 			head = "BRAKE NOW"
 			sub = "hold SPACE"
-			lamp = UI.RED
+			lamp = UI.BAD
 			hot = true
 			blink = fposmod(t, 0.3) < 0.18
 		"assist":
 			head = "LANDING ASSIST"
 			sub = "braking for you" if assist_self else "keep holding SPACE"
-			lamp = UI.GREEN
+			lamp = UI.GOOD
 		"release":
 			head = "LET GO"
 			sub = "slow enough: save fuel"
-			lamp = UI.YELLOW
+			lamp = UI.RISK
 		"safe":
 			head = "SAFE SPEED"
 			sub = "under the limit"
-			lamp = UI.GREEN
+			lamp = UI.GOOD
 		"soon":
 			head = "BRAKE IN %d" % maxi(1, ceili(burn_in))
 			sub = "get ready to hold SPACE"
-			lamp = UI.YELLOW
+			lamp = UI.RISK
 			blink = fposmod(burn_in, 1.0) > 0.5
 			bar = clampf(burn_in / lead, 0.0, 1.0)
 		"empty":
 			head = "NO FUEL"
 			sub = "nothing left to brake with"
-			lamp = UI.RED
+			lamp = UI.BAD
 			hot = true
 		_:
 			head = "FALLING"
@@ -1095,31 +1156,31 @@ func _draw_cue() -> void:
 		var over: bool = on_slab_now()
 		head = "OVER THE SLAB" if over else "OVER ROUGH ROCK"
 		sub = "sinking at %s m/s" % ("%.1f" % vy)
-		lamp = UI.GREEN if over else UI.YELLOW
+		lamp = UI.GOOD if over else UI.RISK
 		hot = false
 		blink = true
 	if not hull_ok:
 		head = "NO HULL"
 		sub = "the air will crush it"
-		lamp = UI.RED
+		lamp = UI.BAD
 		hot = true
 		blink = fposmod(t, 0.5) < 0.3
 	var sc: int = 2 if Pix.title_w(head, 2) <= 214.0 else 1   # big, unless it would reach over the lander
 	var w: float = maxf(Pix.title_w(head, sc), Pix.text_w(sub, 10)) + 40.0
 	var h: float = 48.0 if bar < 0.0 else 58.0
 	p.x = minf(p.x, 634.0 - w)
-	_panel(Rect2(p, Vector2(w, h)), UI.RED if hot else (UI.GREEN if cue == "assist" else Color(0, 0, 0, 0)))
+	_panel(Rect2(p, Vector2(w, h)), UI.BAD if hot else (UI.GOOD if cue == "assist" else Color(0, 0, 0, 0)))
 	front.draw_rect(Rect2(p + Vector2(8, 10), Vector2(18, 18)), C_INK)
 	front.draw_rect(Rect2(p + Vector2(9, 11), Vector2(16, 16)), lamp if blink else lamp.darkened(0.7))
 	if blink:
 		front.draw_rect(Rect2(p + Vector2(10, 12), Vector2(5, 4)), lamp.lightened(0.6))
-	Pix.title(front, p + Vector2(32, 26 if sc == 2 else 23), head, UI.RED if hot else UI.TEXT, sc)
+	Pix.title(front, p + Vector2(32, 26 if sc == 2 else 23), head, UI.BAD if hot else UI.TEXT, sc)
 	_text(p + Vector2(32, 41), sub, UI.DIM)
 	if bar >= 0.0:
 		# the countdown: the bar empties as BRAKE NOW comes closer
 		var br: Rect2 = Rect2(p + Vector2(8, 46), Vector2(w - 16.0, 6))
 		_well(br)
-		front.draw_rect(Rect2(br.position, Vector2(floorf(br.size.x * bar), br.size.y)), UI.YELLOW)
+		front.draw_rect(Rect2(br.position, Vector2(floorf(br.size.x * bar), br.size.y)), UI.RISK)
 
 # ---------------------------------------------------------------- debug hooks (screenshots and the landing proof)
 
@@ -1179,6 +1240,11 @@ func debug_near() -> void:
 
 func debug_drift() -> void:
 	vx = side_limit() * 1.6
+
+## 2x the limit: badly damaged on NORMAL, a crash on HARD.
+func debug_wreck() -> void:
+	debug_touchdown()
+	vy = touch * 2.0
 
 ## A touchdown a little too hard: damaged on EASY and NORMAL, a crash on HARD.
 func debug_hard() -> void:

@@ -46,6 +46,9 @@ const SUIT_SECONDS: float = 90.0 # game rule: those 8 hours pass in 90 s on NORM
 const O2_LOW: float = 0.25       # game rule: under a quarter left, head back to the lander
 const WALK_SPEED: float = 70.0   # px per second on foot (game rule, faster than a real astronaut)
 const HOP_M: float = 0.2         # m: height of a low-gravity lope (Apollo crews hopped like this)
+## Game rule: the energy one target takes from the battery (drill motor and sample oven; camera and the
+## radio that sends the picture; the station's start-up power from the lander), times Game.diff("drain").
+const WORK_WH: Dictionary = {"drill": 0.42, "photo": 0.45, "crew": 0.55}   # share of the sized battery that all targets cost together (game rule)
 
 ## How each landing world looks (research/v5/skins.md). Art settings, not facts.
 ## shadow: px from the lander to the rim of a permanently shadowed crater that holds the samples.
@@ -102,7 +105,15 @@ var gen_now: float = 0.0
 var draw_now: float = 0.0
 var hour: float = 8.0
 var h_rate: float = DAY_RATE
-var drain_k: float = 1.0
+var drain: float = 1.0           # Game.diff("drain"): battery and oxygen use by the level
+var fail: int = 0                # Game.diff("fail"): 0 nothing is lost, 1 the last targets, 2 all of them
+var assist: int = 2              # Game.diff("assist"): 2 every direction, 1 only the target marker, 0 none
+var bite: float = 1.0
+var cost: float = 0.0            # Wh each target takes (WORK_WH x drain)
+var bat_shown: float = 0.0       # the battery the gauge shows: it slides down to the real value
+var store_cap: float = 1e9       # Gb the recorders hold (Game.live_store)
+var deny_t: float = -9.0
+var banner_col: Color = UI.YELLOW
 var gb_sample: float = 0.0
 var shadow_x: float = -1.0       # world x where the crater's permanent shadow begins (-1 = none)
 var life_min: float = 0.0        # minutes the lander lives here (0 = no heat clock)
@@ -185,8 +196,18 @@ func _ready() -> void:
 	job = _job()
 	crew = job == "crew"
 	var hz: float = Game.diff("surface_hazards")
-	drain_k = minf(hz, 1.2)   # EASY: the battery drains 40% slower (game rule)
-	o2_secs = SUIT_SECONDS / hz
+	drain = Game.diff("drain")
+	fail = int(Game.diff("fail"))
+	assist = int(Game.diff("assist"))
+	bite = Game.diff("bite")
+	o2_secs = SUIT_SECONDS / drain
+	# Game rule: all the targets together cost a share of the battery this mission is sized for (the green
+	# line of the BATTERY lamp, at least one 2,000 Wh pack), so a well-built ship finishes on every world, a
+	# short one runs dry and a bigger battery lasts longer. WORK_WH is that share per job, x drain per level.
+	var bat_row: Dictionary = (Game.run.get("use", {}) as Dictionary).get("battery", {})
+	var ref_wh: float = maxf(2000.0, float(bat_row.get("lo", 0.0)))
+	cost = minf(float(WORK_WH.get(job, 0.6)) * drain * ref_wh / maxf(1.0, float(Game.dest()["samples_goal"])), 0.5 * float(Game.run.get("wh", 2000.0)))
+	store_cap = Game.live_store()
 	tex_lander = Pix.img("lander")
 	tex_rover = Pix.img("rover")
 	tex_astro = Pix.img("surface_v6/astronaut")
@@ -249,6 +270,7 @@ func _ready() -> void:
 	rtg = float(c["rtg"])
 	wh = maxf(1.0, float(Game.run["wh"]))
 	battery = float(Game.run["battery"])
+	bat_shown = battery
 	_reload()
 	# the heat clock: where the lander lives only minutes, the whole site runs on its clock
 	if d.has("surface_minutes"):
@@ -298,6 +320,7 @@ func _lay_out(hz: float) -> void:
 	var gap: float = 230.0 + 110.0 * hz   # game rule: EASY 296 px apart, NORMAL 340, HARD 384
 	var first: float = LANDER_X + 260.0 + 80.0 * hz
 	if sk.has("shadow") and job == "drill":
+		cost *= 0.5   # game rule: in the sunless crater the rover already lives on its battery, so each drill takes half
 		shadow_x = LANDER_X + float(sk["shadow"])
 		first = shadow_x + 100.0
 	var prev: float = LANDER_X + 200.0
@@ -476,28 +499,58 @@ func _use() -> void:
 		return
 	if job != "drill":
 		if _at_target() < 0 and not _go_home():
-			_pop(rx, ry - 64.0, "FIRST GO TO THE FLAG")
-			Audio.play("ui_deny", -6.0)
+			_deny("FIRST GO TO THE FLAG")
 		return
 	var i: int = _at_target()
 	if i < 0:
 		if not _go_home():
-			_pop(rx, ry - 70.0, "NOTHING TO DRILL HERE")
-			Audio.play("ui_deny", -6.0)
+			_deny("NOTHING TO DRILL HERE")
+		return
+	if battery < cost:
+		_deny("NEED %d Wh TO DRILL: WAIT IN THE SUN" % roundi(cost))
 		return
 	drilling = 2.0
 	drill_target = i
+	_pop(rx, ry - 70.0, "-%d Wh" % roundi(cost), UI.BAD)
 	face = 1.0 if float(samples[i]["x"]) >= rx or not has_rover else -1.0
 
-func _pop(x: float, y: float, s: String) -> void:
-	pops.append({"x": x, "y": y, "age": 0.0, "s": s, "spark": false})
+## A small text over the scene, coloured by what it means: UI.BAD a loss, UI.RISK a warning, UI.GOOD a gain.
+func _pop(x: float, y: float, s: String, c: Color = UI.RISK) -> void:
+	pops.append({"x": x, "y": y, "age": 0.0, "s": s, "spark": false, "c": c})
 
-func _finish(text: String) -> void:
+## A refused action: a yellow pop and a buzz, at most twice a second.
+func _deny(s: String) -> void:
+	if t - deny_t < 0.6:
+		return
+	deny_t = t
+	_pop(rx, ry - 70.0, s, UI.RISK)
+	Audio.play("ui_deny", -6.0)
+
+## The battery or the suit ran out. What it costs depends on the level (V7_PLAN.md, Game.diff("fail")):
+## EASY nothing, the outing ends with what was collected; NORMAL the last target(s), x bite; HARD all of
+## them when it happens away from the lander (or on foot).
+func _empty(cause: String, fix: String, easy: String) -> void:
+	var lost: int = 0
+	if fail >= 2 and (crew or not _at_lander()):
+		lost = got
+	elif fail >= 1:
+		lost = mini(got, ceili(bite))
+	if lost <= 0:
+		_finish(easy, UI.RISK if fail == 0 else UI.BAD)
+		return
+	var all: bool = lost == got
+	got -= lost
+	data = maxf(0.0, data - gb_each * lost)
+	_pop(rx, ry - 84.0, "-%d %s" % [lost, _word()], UI.BAD)
+	_finish("%s: %s%d %s LOST. FIX: %s" % [cause, "ALL " if all and lost > 1 else "", lost, _word(), fix], UI.BAD)
+
+func _finish(text: String, col: Color = UI.YELLOW) -> void:
 	if state != "explore":
 		return
 	state = "done"
 	end_t = t + 2.5
 	banner = text
+	banner_col = col
 	hold.clear()
 	work = 0.0
 	if auto:
@@ -541,6 +594,7 @@ func _physics_process(delta: float) -> void:
 	moving = false
 	if drilling > 0.0:
 		draw += drill_draw
+		battery = maxf(0.0, battery - cost * minf(delta, drilling) / 2.0)   # the drill's share, over its 2 s
 		drilling -= delta
 		if drilling <= 0.0:
 			drilling = 0.0
@@ -558,7 +612,7 @@ func _physics_process(delta: float) -> void:
 	draw_now = draw
 	var net: float = gen - draw
 	if net < 0.0:
-		net *= drain_k
+		net *= drain
 	battery = clampf(battery + net * delta * h_rate, 0.0, wh)
 	if life_min > 0.0:
 		minutes += delta * min_rate
@@ -570,16 +624,18 @@ func _physics_process(delta: float) -> void:
 		low_warned = true
 		hazard_hit = true
 		Audio.play("alarm" if crew else "battery_low", -4.0)
+		_pop(rx, ry - 84.0, "OXYGEN LOW: WALK BACK" if crew else "LOW BATTERY: HEAD BACK", UI.RISK)
 	if battery <= 0.0:
-		_finish("BATTERY EMPTY: THE %s SHUT DOWN" % ("ROVER" if has_rover else "LANDER"))
+		_empty("BATTERY EMPTY" + ("" if _at_lander() else " FAR FROM THE LANDER"), "MORE BATTERY OR SOLAR, WAIT IN THE SUN",
+			"BATTERY EMPTY: THE %s SHUT DOWN" % ("ROVER" if has_rover else "LANDER"))
 	elif crew and o2 <= 0.0:
-		_finish("OXYGEN EMPTY: THE RESERVE TANK GOT YOU BACK")
+		_empty("OXYGEN EMPTY", "WALK BACK WHEN OXYGEN TURNS YELLOW", "OXYGEN EMPTY: THE RESERVE TANK GOT YOU BACK")
 	elif life_min > 0.0 and _life_left() <= 0.0:
-		_finish("TOO HOT: THE LANDER DIED AFTER %d min" % roundi(minutes))
+		_finish("TOO HOT: THE LANDER DIED AFTER %d min" % roundi(minutes), UI.BAD)
 	elif job == "photo" and got >= goal:
-		_finish("ALL %d PHOTOS SENT TO EARTH" % goal)
+		_finish("ALL %d PHOTOS SENT TO EARTH" % goal, UI.GOOD)
 	elif _go_home() and _at_lander():
-		_finish("BACK AT THE LANDER: %d OF %d %s" % [got, goal, _word()])
+		_finish("BACK AT THE LANDER: %d OF %d %s" % [got, goal, _word()], UI.GOOD if got >= goal else UI.RISK)
 	else:
 		_maybe_event()
 
@@ -587,10 +643,15 @@ func _physics_process(delta: float) -> void:
 func _score(i: int, text: String) -> void:
 	samples[i]["taken"] = true
 	got += 1
-	data += gb_each
+	var add: float = minf(gb_each, maxf(0.0, store_cap - data))
+	data += add
 	got_t = t
 	var sx: float = float(samples[i]["x"])
-	pops.append({"x": sx, "y": LANE - 30.0, "age": 0.0, "s": text, "spark": true})
+	pops.append({"x": sx, "y": LANE - 30.0, "age": 0.0, "s": text, "spark": true, "c": UI.GOOD})
+	if add < gb_each:
+		_pop(sx, LANE - 58.0, "STORAGE FULL: DATA LOST", UI.BAD)
+	elif add > 0.0:
+		_pop(sx, LANE - 58.0, "+%s Gb" % String.num(add, 1), UI.GOOD)
 	Audio.play("pickup")
 	if got == goal:
 		Audio.play("success", -4.0)
@@ -612,7 +673,7 @@ func _drive(delta: float) -> float:
 	climbing = _wheel_lift(0) > 0.5 or _wheel_lift(1) > 0.5 or _wheel_lift(2) > 0.5
 	if climbing and not was and not climb_told:
 		climb_told = true
-		_pop(rx, ry - 70.0, "SMALL ROCK: CLIMBING SLOWLY")
+		_pop(rx, ry - 70.0, "SMALL ROCK: CLIMBING SLOWLY", UI.RISK)
 	if dir == 0.0 or work > 0.0:
 		return 0.0
 	face = dir
@@ -692,7 +753,7 @@ func _walk(delta: float) -> void:
 		hop_ph = 0.0
 	if not carrying and not _go_home() and absf(rx - LANDER_X) < 50.0:
 		carrying = true
-		_pop(LANDER_X, LANDER_Y - 80.0, "STATION %d OF %d" % [got + 1, goal])
+		_pop(LANDER_X, LANDER_Y - 80.0, "STATION %d OF %d" % [got + 1, goal], UI.TEXT)
 		Audio.play("part_pick", -4.0)
 
 func _lope() -> bool:
@@ -713,6 +774,11 @@ func _work(delta: float) -> void:
 	if i < 0 or moving or not _holding_e():
 		work = maxf(0.0, work - delta * 3.0)
 		return
+	if work <= 0.0:
+		if battery < cost:
+			_deny("NEED %d Wh: WAIT IN THE SUN" % roundi(cost))
+			return
+		_pop(rx, ry - 70.0, "-%d Wh" % roundi(cost), UI.BAD)
 	if not has_rover and not crew:
 		face = 1.0
 	if crew:
@@ -720,7 +786,9 @@ func _work(delta: float) -> void:
 		var sx: float = float(samples[i]["x"])
 		face = 1.0 if sx >= rx else -1.0
 		rx = move_toward(rx, sx - face * 16.0, 60.0 * delta)
-	work += delta / (SETUP_T if crew else PHOTO_T)
+	var step: float = delta / (SETUP_T if crew else PHOTO_T)
+	work += step
+	battery = maxf(0.0, battery - cost * step)   # the camera and radio, or the station, draw while E is held
 	if work < 1.0:
 		return
 	work = 0.0
@@ -793,20 +861,20 @@ func _after_event(res: Dictionary) -> void:
 	var y: float = ry - 72.0
 	if has_rover and WHEEL_EVENTS.has(String(card_ev.get("id", ""))) and not bool(res.get("ok", true)) and wheel_k > WHEEL_SLOW:
 		wheel_k = WHEEL_SLOW
-		_pop(rx, y, "WHEEL DAMAGED: SLOWER")
+		_pop(rx, y, "WHEEL DAMAGED: SLOWER", UI.BAD)
 		y -= 12.0
 	var ap: Dictionary = res.get("applied", {})
 	if ap.has("power") and solar > 0.0:
-		_pop(rx, y, "LESS CHARGE: SOLAR %d W" % roundi(solar * float(Game.run["gen_mult"])))
+		_pop(rx, y, "LESS CHARGE: SOLAR %d W" % roundi(solar * float(Game.run["gen_mult"])), UI.BAD)
 		y -= 12.0
 	if job == "drill" and drill_was and not _drill_ok():
-		_pop(rx, y, "DRILL BROKEN: NO MORE SAMPLES")
+		_pop(rx, y, "DRILL BROKEN: NO MORE SAMPLES", UI.BAD)
 		y -= 12.0
 	for ch: Array in res.get("chips", []):
-		_pop(rx, y, String(ch[1]).to_upper())
+		_pop(rx, y, String(ch[1]).to_upper(), UI.BAD if ch.size() > 2 and bool(ch[2]) else UI.GOOD)
 		y -= 12.0
 	if bool(Game.run.get("dead", false)):
-		_finish("MISSION LOST")
+		_finish("MISSION LOST", UI.BAD)
 
 # ---------------------------------------------------------------- particles
 
@@ -882,7 +950,8 @@ func _night() -> float:
 		return 0.0
 	return 1.0 - clampf(maxf(0.0, sin(PI * (hour - 6.0) / 12.33)) * 3.0, 0.0, 1.0)
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	bat_shown = move_toward(bat_shown, battery, maxf(wh * 0.5, absf(battery - bat_shown) * 3.0) * delta)
 	var night: float = _night()
 	floor_mat.set_shader_parameter("cam", _cam())
 	floor_mat.set_shader_parameter("tint", Color(String(sk["tint"])).darkened(night * 0.6))
@@ -1041,7 +1110,7 @@ func _draw_front() -> void:
 		var a: float = float(p["age"])
 		if bool(p["spark"]):
 			Fx.sparkle(front, Vector2(floorf(float(p["x"]) - cam), float(p["y"]) + 8.0), clampf(a * 1.6, 0.0, 1.0), UI.CYAN, 2)
-		Pix.text_oc(front, floorf(float(p["x"]) - cam), floorf(float(p["y"]) - a * 14.0), String(p["s"]), 10, Color(UI.YELLOW, clampf(2.2 - a, 0.0, 1.0)))
+		Pix.text_oc(front, floorf(float(p["x"]) - cam), floorf(float(p["y"]) - a * 14.0), String(p["s"]), 10, Color(p.get("c", UI.RISK), clampf(2.2 - a, 0.0, 1.0)))
 	_draw_guides(cam)
 	_draw_viewfinder()
 	_draw_hud(night)
@@ -1138,7 +1207,7 @@ func _draw_targets(cam: float, dim: Color) -> void:
 		if i != next_i or state != "explore":
 			continue
 		var by: float = floorf(sy - (36.0 if job != "drill" else 30.0) - absf(sin(t * 3.0)) * 4.0)
-		if absf(rx - wx) >= _reach():
+		if absf(rx - wx) >= _reach() and assist >= 1:
 			front.draw_texture(tex_marker, Vector2(sx - 4, by), Color.WHITE)
 			Pix.text_oc(front, sx, by - 3.0, "%d m" % roundi(absf(wx - rx) / PPM), 10, UI.TEXT)
 
@@ -1272,8 +1341,8 @@ func _draw_astronaut(cam: float, dim: Color) -> void:
 
 ## The way to go: an arrow at the screen edge to the next target, or back to the lander.
 func _draw_guides(cam: float) -> void:
-	if state != "explore":
-		return
+	if state != "explore" or assist < 1:
+		return   # HARD: no arrows, only what the player can see
 	var tx: float = _target()
 	var home: bool = tx == LANDER_X
 	var label: String = "LANDER" if home else _noun()
@@ -1335,12 +1404,13 @@ func _draw_viewfinder() -> void:
 
 # ---------------------------------------------------------------- directions and HUD
 
-## The one thing to do now: [key cap, words]. It changes only when the player has done it.
+## The one thing to do now: [key cap, words, is a warning]. It changes only when the player has done it.
+## EASY shows every direction; NORMAL and HARD only the warnings and the end (see _draw_hud).
 func _direction() -> Array:
 	if state != "explore":
-		return ["", banner]
+		return ["", banner, true]
 	if drilling > 0.0:
-		return ["", "DRILLING: WAIT FOR THE SAMPLE"]
+		return ["", "DRILLING: THE BATTERY PAYS %d Wh" % roundi(cost), false]
 	var tx: float = _target()
 	var side: String = "RIGHT" if tx > rx else "LEFT"
 	var key: String = ">" if tx > rx else "<"
@@ -1355,33 +1425,35 @@ func _direction() -> Array:
 			why = "BATTERY LOW: "
 		elif not _tool_ok() and got < goal:
 			why = "NO WORKING DRILL: "
-		return [key, why + "%s BACK TO THE LANDER" % go]
+		return [key, why + "%s BACK TO THE LANDER" % go, why != "" and why != "ALL SET UP: "]
 	if crew and not carrying:
-		return [key, "WALK BACK TO THE LANDER FOR THE NEXT ONE"]
+		return [key, "WALK BACK TO THE LANDER FOR THE NEXT ONE", false]
 	if _at_target() >= 0:
+		if battery < cost and work <= 0.0:
+			return ["", "WAIT IN THE SUN: %d OF %d Wh" % [roundi(battery), roundi(cost)], true]
 		match job:
 			"photo":
-				return ["E", "HOLD E TO TAKE A PICTURE"]
+				return ["E", "HOLD E TO TAKE A PICTURE", false]
 			"crew":
-				return ["E", "HOLD E TO SET UP THE STATION"]
+				return ["E", "HOLD E TO SET UP THE STATION", false]
 			_:
-				return ["E", "PRESS E TO DRILL THE %s" % String(sk["noun"])]
+				return ["E", "PRESS E TO DRILL THE %s" % String(sk["noun"]), false]
 	if crew:
-		return [key, "HOLD %s: CARRY THE STATION TO THE FLAG" % side]
+		return [key, "HOLD %s: CARRY THE STATION TO THE FLAG" % side, false]
 	var dir: float = signf(tx - rx)
 	if _boulder_ahead(dir) >= 0:
-		return ["UP" if lane == 0 else "DOWN", "PRESS %s TO STEER AROUND THE BOULDER" % ("UP" if lane == 0 else "DOWN")]
+		return ["UP" if lane == 0 else "DOWN", "PRESS %s TO STEER AROUND THE BOULDER" % ("UP" if lane == 0 else "DOWN"), false]
 	if shadow_x >= 0.0 and rx < shadow_x and tx > shadow_x:
-		return [key, "HOLD %s: DRIVE INTO THE DARK CRATER" % side]
+		return [key, "HOLD %s: DRIVE INTO THE DARK CRATER" % side, false]
 	if job == "photo":
-		return [key, "HOLD %s TO DRIVE TO THE FLAG" % side]
-	return [key, "HOLD %s TO DRIVE TO THE GLOWING %s" % [side, String(sk["noun"])]]
+		return [key, "HOLD %s TO DRIVE TO THE FLAG" % side, false]
+	return [key, "HOLD %s TO DRIVE TO THE GLOWING %s" % [side, String(sk["noun"])], false]
 
 ## Big and plain: the count, the battery (or the suit's oxygen), the heat clock on Venus, the direction.
 func _draw_hud(night: float) -> void:
 	var slot_w: float = 42.0
 	var w: float = maxf(236.0, 16.0 + goal * slot_w)
-	var h: float = 48.0 + (30.0 if job == "photo" else 0.0)
+	var h: float = 60.0 + (30.0 if job == "photo" else 0.0)
 	Pix.panel(front, Rect2(6, 6, w, h), pan_accent, pan_body)
 	# the count
 	if job == "photo":
@@ -1393,22 +1465,32 @@ func _draw_hud(night: float) -> void:
 	var cc: Color = UI.GREEN if got >= goal or t - got_t < 0.6 else UI.TEXT
 	Pix.text(front, Vector2(floorf(6.0 + w - 10.0 - Pix.text_w(cnt, 20)), 28), cnt, 20, cc)
 	# battery, or the suit's oxygen
-	var frac: float = o2 if crew else battery / wh
+	var frac: float = o2 if crew else bat_shown / wh
 	var low: bool = frac < (O2_LOW if crew else 0.2)
-	var col: Color = UI.GREEN if frac > 0.4 else (UI.YELLOW if not low else (UI.RED if fposmod(t, 0.6) < 0.3 else UI.YELLOW))
+	var col: Color = UI.GOOD if frac > 0.4 else (UI.RISK if not low else (UI.BAD if fposmod(t, 0.6) < 0.3 else UI.RISK))
+	if not crew and _paying():
+		col = UI.BAD   # red while the battery is paying for a drill, a photo or a station
 	Pix.icon(front, "helmet" if crew else "battery", Vector2(12, 34), col)
 	_text(Vector2(30, 44), "OXYGEN" if crew else "BATTERY", 10, UI.TEXT)
 	var marker: float = O2_LOW if crew else (ASCENT_MIN if bool(d["returns"]) else -1.0)
 	var gw: float = w - 150.0
 	Pix.gauge(front, Rect2(84, 35, gw, 11), frac, col, marker)
-	var val: String = "%d%%" % roundi(frac * 100.0)
+	var val: String = "%d Wh" % roundi(bat_shown)
 	if crew:
 		var hrs: float = frac * SUIT_HOURS
 		val = "%d:%02d h" % [int(hrs), int(fposmod(hrs, 1.0) * 60.0)]
 	_text(Vector2(90.0 + gw, 44), val, 10, UI.TEXT)
+	# the power budget, so every part is felt: generation now, use now, and what each target costs
+	var px: float = 12.0
+	if crew:
+		px = _seg(px, "LANDER %d Wh" % roundi(bat_shown), UI.BAD if _paying() else (UI.GOOD if battery / wh > 0.4 else UI.RISK))
+	else:
+		px = _seg(px, "%s +%d W" % ["SUN" if rtg <= 0.0 else "POWER", roundi(gen_now)], UI.GOOD if gen_now >= draw_now else UI.RISK)
+		px = _seg(px, "USE -%d W" % roundi(draw_now), UI.DIM)
+	_seg(px, "%s -%d Wh" % [{"drill": "DRILL", "photo": "PHOTO", "crew": "STATION"}.get(job, "EACH"), roundi(cost)], UI.BAD)
 	if job == "photo":
 		for i: int in goal:
-			var r: Rect2 = Rect2(12.0 + i * slot_w, 52, 40, 24)
+			var r: Rect2 = Rect2(12.0 + i * slot_w, 64, 40, 24)
 			if i < photos.size():
 				var fly: float = clampf((t - flash_t) / 0.5, 0.0, 1.0) if i == photos.size() - 1 else 1.0
 				var to: Vector2 = r.position
@@ -1426,7 +1508,7 @@ func _draw_hud(night: float) -> void:
 	if not crew and solar > 0.0 and gen_now < draw_now:
 		var dark: String = "SHADOW" if _in_shadow(rx) else ("NIGHT" if night > 0.5 else "")
 		if dark != "":
-			Pix.text_o(front, Vector2(12, 6 + h + 12), "%s: NO SUNLIGHT FOR THE PANELS" % dark, 10, UI.YELLOW)
+			Pix.text_o(front, Vector2(12, 6 + h + 12), "%s: NO SUNLIGHT FOR THE PANELS" % dark, 10, UI.RISK)
 	Pix.panel(front, _help_rect(), pan_accent, pan_body)
 	_text(Vector2(623, 18), "?", 10, UI.YELLOW if help_on else UI.TEXT)
 	if life_min > 0.0:
@@ -1434,6 +1516,9 @@ func _draw_hud(night: float) -> void:
 	# the one direction, at the bottom, big
 	var dr: Array = _direction()
 	var words: String = String(dr[1])
+	if assist < 2 and not bool(dr[2]):
+		words = ""   # NORMAL and HARD: no step-by-step directions, only warnings and the end
+	var wcol: Color = banner_col if state != "explore" else (UI.RISK if bool(dr[2]) else UI.YELLOW)
 	if words != "":
 		var kw: float = maxf(13.0, Pix.text_w(String(dr[0]), 10) + 7.0) + 8.0 if String(dr[0]) != "" else 0.0
 		var tw: float = Pix.text_w(words, 20)
@@ -1443,14 +1528,23 @@ func _draw_hud(night: float) -> void:
 		Pix.panel(front, Rect2(x0, 326, bw, 28), pan_accent, pan_body)
 		if kw > 0.0:
 			Pix.keycap(front, Vector2(x0 + 10.0, 333), String(dr[0]))
-		_text(Vector2(x0 + 10.0 + kw, 348 if size == 20 else 344), words, size, UI.YELLOW)
+		_text(Vector2(x0 + 10.0 + kw, 348 if size == 20 else 344), words, size, wcol)
 	if help_on:
 		_draw_help()
+
+## A drill, a photo or a station is taking its share of the battery right now.
+func _paying() -> bool:
+	return drilling > 0.0 or (work > 0.0 and _holding_e())
+
+## One coloured piece of the HUD's power line; returns where the next one starts.
+func _seg(x: float, s: String, c: Color) -> float:
+	_text(Vector2(x, 58), s, 10, c)
+	return x + Pix.text_w(s, 10) + 7.0
 
 ## The heat clock: how much of the lander's life is gone. It only goes up.
 func _draw_heat() -> void:
 	var used: float = clampf(1.0 - _life_left() / maxf(1.0, life_min), 0.0, 1.0)
-	var col: Color = UI.YELLOW if used < 0.6 else (UI.ORANGE if used < 0.85 else (UI.RED if fposmod(t, 0.5) < 0.3 else UI.ORANGE))
+	var col: Color = UI.RISK if used < 0.85 else (UI.BAD if fposmod(t, 0.5) < 0.3 else UI.RISK)
 	var r: Rect2 = Rect2(256, 6, 228, 36)
 	Pix.panel(front, r, pan_accent, pan_body)
 	front.draw_rect(r.grow(-2), Color(UI.YELLOW, 0.8), false, 1.0)
@@ -1557,6 +1651,8 @@ func debug_drill() -> void:
 	drill_target = 0
 	t = 10.0
 	ev_cool = 99.0
+	battery -= cost * 0.5   # the first half of the drill's share is already paid
+	_pop(rx, ry - 70.0, "-%d Wh" % roundi(cost), UI.BAD)
 
 ## At the first flag, holding E: the viewfinder closes and the picture is taken (or a station set up).
 func debug_photo() -> void:
@@ -1658,6 +1754,7 @@ func debug_help() -> void:
 func debug_auto() -> void:
 	auto = true
 	Engine.time_scale = 3.0
+	print("SURFACE POWER (%s %s): wh %d, battery %d, solar %d x%.2f, rtg %d, draw base %d drill %d rover %d, drain x%.1f" % [skin, job, roundi(wh), roundi(battery), roundi(solar), float(Game.run["gen_mult"]), roundi(rtg), roundi(base_draw), roundi(drill_draw), roundi(rover_draw), Game.diff("drain")])
 
 ## What a bad stuck-wheel call looks like out in the world: the rover limps on at reduced speed.
 func debug_outcome() -> void:

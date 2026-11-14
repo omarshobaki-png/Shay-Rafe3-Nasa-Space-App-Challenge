@@ -16,6 +16,9 @@ extends Control
 ##   EventCard.demo(parent, id = "", choice = -1) -> Control
 ##       for debug hooks and screenshots: opens event `id` (any id from scripts/events.gd; "" = the next
 ##       planned one) on the current mission; choice >= 0 also picks that choice, to show the outcome.
+## v7 colours: every effect of a choice and every result chip is coloured by consequence (Game.tone_color):
+## a loss UI.BAD, a chance UI.RISK, a gain UI.GOOD, a plain fact white. On EASY the safer choice carries a small
+## green MISSION CONTROL RECOMMENDS tag (Game.event_choice()["tip"]); NORMAL and HARD show none.
 ## Sounds (all in scripts/audio.gd): "alarm" (ALERT) or "radio_blip" (MESSAGE) when it opens,
 ## "confirm" / "error" for the outcome, "ui_deny" for a closed choice.
 
@@ -226,11 +229,14 @@ func _draw() -> void:
 	var bw: float = floorf((tw - 8.0) / 2.0)
 	var h_btn: float = 0.0
 	var h_body: float = 0.0
+	var tip_h: float = 0.0
 	if result.is_empty():
 		for i: int in choices.size():
 			var note: String = _note(infos[i])
-			h_btn = maxf(h_btn, 24.0 + _lines(String(choices[i]["text"]), bw - 14.0) * lh + _lines(note, bw - 14.0) * lh + 6.0)
-		h_body = h_btn + 6.0 + 14.0
+			h_btn = maxf(h_btn, 24.0 + _lines(String(choices[i]["text"]), bw - 14.0) * lh + _fx_rows(infos[i].get("fx", []), bw - 14.0) * lh + _lines(note, bw - 14.0) * lh + 6.0)
+			if bool(infos[i].get("tip", false)):
+				tip_h = 11.0
+		h_body = h_btn + 6.0 + 14.0 + tip_h
 	else:
 		h_body = 20.0 + _lines(String(result["text"]), tw) * lh + 8.0 + 18.0 + 8.0 + lh + 6.0 + 24.0
 	var h_top: float = maxf(h_title + h_text, 30.0) if earth else h_title + h_text
@@ -277,6 +283,7 @@ func _draw() -> void:
 		y += h_top + 10.0
 	hit.clear()
 	if result.is_empty():
+		y += tip_h
 		for i: int in choices.size():
 			var info: Dictionary = infos[i]
 			var can: bool = info["can"]
@@ -287,11 +294,20 @@ func _draw() -> void:
 			var dy: float = 1.0 if pressed == i and can else 0.0
 			Pix.keycap(self, Vector2(r.position.x + 6.0, r.position.y + 6.0 + dy), str(i + 1))
 			Pix.title(self, Vector2(r.position.x + 24.0, r.position.y + 17.0 + dy), String(choices[i]["label"]), UI.TEXT if can else UI.DIM)
+			if bool(info.get("tip", false)):
+				# EASY: Mission Control's pick, a small green tag right above the button
+				var tag: String = "MISSION CONTROL RECOMMENDS"
+				var tag_w: float = Pix.text_w(tag, 10) + 8.0
+				draw_rect(Rect2(r.position.x, r.position.y - 11.0, tag_w, 11.0), Color(0.05, 0.22, 0.1))
+				draw_rect(Rect2(r.position.x, r.position.y - 11.0, tag_w, 1.0), UI.GOOD)
+				Pix.text(self, Vector2(r.position.x + 4.0, r.position.y - 2.0), tag, 10, UI.GOOD)
 			var ty: float = r.position.y + 24.0 + dy
 			ty += _para(Vector2(r.position.x + 7.0, ty), String(choices[i]["text"]), bw - 14.0, UI.TEXT if can else Color("5a6488"))
+			ty += _fx_draw(Vector2(r.position.x + 7.0, ty), info.get("fx", []), bw - 14.0, can)
 			var note: String = _note(info)
 			if note != "":
-				var nc: Color = UI.RED if not can else (UI.YELLOW if String(info["warn"]) != "" else (UI.GREEN if bool(info["safe"]) else UI.DIM))
+				var nt: String = String(info.get("note_tone", "info"))
+				var nc: Color = Game.tone_color(nt) if nt != "info" else UI.DIM
 				_para(Vector2(r.position.x + 7.0, ty), note, bw - 14.0, nc)
 		y += h_btn + 6.0
 		var keys: String = "PRESS 1 OR 2, OR CLICK A CHOICE"
@@ -313,10 +329,11 @@ func _draw() -> void:
 				break
 			Pix.frame(self, Rect2(cx, y, cwid, 17.0), "tooltip")
 			Pix.icon(self, String(chip[0]), Vector2(cx + 3.0, y + 2.0))
-			Pix.text(self, Vector2(cx + 18.0, y + 12.0), String(chip[1]), 10, UI.RED if bool(chip[2]) else UI.GREEN)
+			var tone: String = String(chip[3]) if chip.size() > 3 else ("bad" if bool(chip[2]) else "good")
+			Pix.text(self, Vector2(cx + 18.0, y + 12.0), String(chip[1]), 10, Game.tone_color(tone))
 			cx += cwid + 4.0
 		if (result["chips"] as Array).is_empty():
-			Pix.text(self, Vector2(x, y + 12.0), "Nothing was lost.", 10, UI.GREEN)
+			Pix.text(self, Vector2(x, y + 12.0), "Nothing was lost.", 10, UI.GOOD)
 		y += 18.0 + 8.0
 		Pix.text(self, Vector2(x, y + 9.0), "The report counts this as %s." % String(GRADE_WORDS[result["grade"]]), 10, UI.DIM)
 		y += lh + 6.0
@@ -327,10 +344,41 @@ func _draw() -> void:
 	if not earth:
 		_stripes(card.end.y - 9.0)
 
+## Effect segments ([text, tone]) laid out left to right, wrapped to `width`: how many rows they take.
+func _fx_rows(fx: Array, width: float) -> int:
+	if fx.is_empty():
+		return 0
+	var rows: int = 1
+	var cx: float = 0.0
+	for f: Array in fx:
+		var w: float = Pix.text_w(String(f[0]), 10)
+		if cx > 0.0 and cx + w > width:
+			rows += 1
+			cx = 0.0
+		cx += w + 10.0
+	return rows
+
+## Draws the effect segments of a choice, each in its consequence colour; returns the height used.
+func _fx_draw(pos: Vector2, fx: Array, width: float, can: bool) -> float:
+	var cx: float = 0.0
+	var row: int = 0
+	for f: Array in fx:
+		var t: String = String(f[0])
+		var w: float = Pix.text_w(t, 10)
+		if cx > 0.0 and cx + w > width:
+			row += 1
+			cx = 0.0
+		var col: Color = Game.tone_color(String(f[1]))
+		if not can:
+			col = col.darkened(0.5)
+		Pix.text(self, pos + Vector2(cx, row * lh + 9.0), t, 10, col)
+		cx += w + 10.0
+	return _fx_rows(fx, width) * lh
+
 ## The line under a choice in the ship's own numbers: why it is closed, what it leaves short, or the price.
 func _note(info: Dictionary) -> String:
 	if not bool(info["can"]):
 		return String(info["why"])
 	if String(info["warn"]) != "":
 		return String(info["warn"])
-	return String(info["line"]).to_upper() if bool(info["safe"]) else String(info["line"])
+	return "" if bool(info["safe"]) else String(info["line"])   # v7: the green effect line already says it is safe

@@ -109,7 +109,7 @@ static func effect(id: String, n: int, base: Dictionary = {}) -> Dictionary:
 	var b: Dictionary = Game.calc()
 	Game.build = keep
 	var out: Dictionary = {}
-	for k: String in ["mass", "cost", "gen", "draw_ops", "wh", "store", "prop_need", "rate"]:
+	for k: String in ["mass", "cost", "gen", "draw_ops", "wh", "store", "prop_need", "rate", "prop", "pts", "downlink"]:
 		out[k] = float(b[k]) - float(a[k])
 	return out
 
@@ -1010,3 +1010,41 @@ static func checklist() -> Array:
 		rk_hint = "Pick %s: it lifts this ship." % String(Data.ROCKETS[String(fits[0]).trim_prefix("rocket:")]["name"]) if not fits.is_empty() else "Too heavy for any rocket here: take parts off."
 	out.append(_step("rocket", "ROCKET", fits if not rk_done and not fits.is_empty() else ["rocket:" + Game.rocket_id], rk_done, rk_hint, "launcher"))
 	return out
+
+## v7, builder help on NORMAL (hints = 1): one short line that only names what is still missing,
+## "Missing: a power source"; "" when the ship is GO. No part names, no numbers, no how-to.
+const MISSING_WORDS: Dictionary = {
+	"power": "a power source", "battery": "battery power", "radio": "a radio link", "data": "data storage",
+	"science": "the science kit", "down": "a way to land safely", "protect": "protection for the trip",
+	"fuel": "enough fuel", "rocket": "a rocket that lifts the ship", "budget": "money: the ship costs too much",
+	"time": "time: the mission ends too late",
+}
+static func missing_line() -> String:
+	for s: Dictionary in checklist():
+		if not bool(s["done"]):
+			var key: String = s["id"]
+			if key == "power" and s["next"] == "battery":
+				key = "battery"
+			elif key == "radio" and (s["parts"] as Array).has("recorder"):
+				key = "data"
+			elif key == "down" and Game.dest()["kind"] != "land":
+				key = "protect"
+			return "Missing: %s" % MISSING_WORDS[key]
+	for st: Dictionary in stations():
+		if st["status"] == "bad" and MISSING_WORDS.has(st["id"]):
+			return "Missing: %s" % MISSING_WORDS[st["id"]]
+	return ""
+
+## v7: the builder's hint for a help level (Game.diff("hints")): 2 the first open checklist step's full hint,
+## 1 missing_line(), 0 nothing. "" when nothing is left to do.
+static func hint_line(level: int = -1) -> String:
+	if level < 0:
+		level = int(Game.diff("hints"))
+	if level <= 0:
+		return ""
+	if level == 1:
+		return missing_line()
+	for s: Dictionary in checklist():
+		if not bool(s["done"]):
+			return String(s["hint"])
+	return ""
