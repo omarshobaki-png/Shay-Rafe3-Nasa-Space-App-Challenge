@@ -184,6 +184,10 @@ Debug: run with `-- screen=builder dest=mars` (also `launch`, `flight`, `landing
 - **Research write-ups:** Claude compiled the NASA data sheet
   (`context/reference/NASA_Data_In_Game.pdf`, from the team's research notes and the sources in
   `data.gd`), the science pitch guide (`context/reference/Science_Pitch_Guide.pdf`) and helped build the project website (`docs/`, designed by Ahmad Taweel). Claude also merged the partner's game versions with the multiplayer code. The team reviews them.
+- **Pitch:** the problem, the story and the structure are the team's. Claude drafted the slides
+  (`pitch/AstroPixel_Pitch_v3.pptx`), the spoken script and the science study sheet
+  (`pitch/AstroPixel_Pitch_Script_and_Science.pdf`), and looked up the audience figures they cite. The slide
+  backgrounds and icons are made from the game's own art; no AI images.
 - **Multiplayer:** the scope is the team's (decision D7). Where it left gaps, the AI proposed small
   mechanics (a landing-site choice, the Scientist's parachute and legs job, a drone throttle, the Comms
   downlink pick, who decides each event, the team sync weights). They are marked "game rule" in
