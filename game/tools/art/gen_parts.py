@@ -33,6 +33,8 @@ for k, v in {
     "tps0": "2a1814", "tps1": "48281e", "tps2": "6e3e2a", "tps3": "985a3a", "tps4": "c08058",
     "titan0": "222c3c", "titan1": "3c4e68", "titan2": "607a98", "titan3": "92acc6", "titan4": "cfe0ee",
     "lite0": "1a1226", "lite1": "2c1e44", "lite2": "46306a", "lite3": "7a5ab0",
+    "cloth0": "4a463c", "cloth1": "7c7664", "cloth2": "b0a890", "cloth3": "dcd5bf", "cloth4": "f6f2e4",
+    "hull0": "24211e", "hull1": "433d35", "hull2": "6a6152", "hull3": "93876f", "hull4": "b8ab8c", "hull5": "dccfaa",
 }.items():
     P[k] = _rgb(v)
 
@@ -43,6 +45,7 @@ MATS = {n: {"id": v["id"], "ramp": [P[c] for c in v["ramp"]], "order": v["order"
 MATS["tps"]["ramp"] = [P[c] for c in ("tps1", "tps2", "tps3", "tps4", "tps4")]
 MATS["hsin"]["ramp"] = [P[c] for c in ("jet1", "jet2", "jet3", "metal1")]
 LAST = {}   # part map and names of the last render()
+HULL_CUT = 30   # ship y of the bus bottom: hull_front keeps the pressure hull above it
 with open(os.path.join(RAW, "sprites.json")) as fh:
     CANVAS = json.load(fh)
 
@@ -311,6 +314,86 @@ def icon_heatshield():
     return _outline(img, P["ol"], True)
 
 
+def icon_bus_block(img, x0, y0, x1, y1):
+    """A small gold bus: metal deck on top, foil body with a lit strip, a dark skirt."""
+    rect(img, x0 + 1, y0, x1 - 1, y0, "metal3")
+    rect(img, x0, y0 + 1, x1, y0 + 1, "metal2")
+    rect(img, x0, y0 + 2, x1, y1, "gold2")
+    rect(img, x0, y0 + 2, x1, y0 + 2, "gold4")
+    rect(img, x0, y0 + 3, x0 + 1, y1, "gold3")
+    rect(img, x1 - 1, y0 + 3, x1, y1, "gold1")
+    rect(img, x0, y1, x1, y1, "gold0")
+
+
+def icon_sunshade():
+    """The quilted cloth shade bent round the Sun side of a small bus, on two standoffs."""
+    img = np.zeros((24, 24, 4), dtype=np.uint8)
+    icon_bus_block(img, 14, 7, 21, 17)
+    for y in (9, 15):                                  # standoffs
+        rect(img, 9, y, 13, y, "metal3")
+        px(img, 13, y + 1, "metal1")
+    cx, cy, r0, r1 = 17.5, 12.0, 8.6, 15.4
+    for y in range(24):
+        for x in range(24):
+            dx, dy = x + 0.5 - cx, y + 0.5 - cy
+            r = (dx * dx + dy * dy) ** 0.5
+            a = np.degrees(np.arctan2(dy, dx)) % 360    # 180 = straight left
+            if not (r0 <= r < r1 and 124 <= a <= 236):
+                continue
+            ring = (r - r0) / (r1 - r0)
+            if ring > 0.86:
+                c = "metal4" if a < 185 else "metal3"   # frame, outer (sunny) side
+            elif a <= 130 or a >= 230:
+                c = "metal2"                          # frame at the two ends
+            elif a < 190:
+                c = "cloth4" if ring > 0.55 else "cloth3" if ring > 0.2 else "cloth2"
+            else:
+                c = "cloth3" if ring > 0.55 else "cloth2" if ring > 0.2 else "cloth1"
+            px(img, x, y, c)
+    for a in (153, 180, 207):                         # quilt seams across the band
+        for k in range(10):
+            r = r0 + 0.6 + k * 0.5
+            x = int(cx + r * np.cos(np.radians(a)))
+            y = int(cy + r * np.sin(np.radians(a)))
+            px(img, x, y, "cloth1" if a < 190 else "cloth0")
+    for (x, y) in ((8, 2), (8, 21)):                  # tie-down lugs at the ends
+        px(img, x, y, "orange2")
+    return _outline(img, P["ol"], True)
+
+
+def icon_hull():
+    """The bronze-grey pressure bowl round the lower bus: bolted rim, a rivet row, a thick porthole."""
+    img = np.zeros((24, 24, 4), dtype=np.uint8)
+    icon_bus_block(img, 5, 3, 18, 11)
+    cx, cy, rx, ry = 11.5, 9.5, 10.6, 12.0
+    for y in range(10, 23):
+        for x in range(24):
+            u, v = (x + 0.5 - cx) / rx, (y + 0.5 - cy) / ry
+            if u * u + v * v > 1.0:
+                continue
+            lit = -u * 0.8 - v * 0.6                  # light from the upper left
+            c = "hull4" if lit > 0.4 else "hull3" if lit > -0.05 else "hull2" if lit > -0.5 else "hull1"
+            px(img, x, y, c)
+    rect(img, 1, 10, 22, 11, "hull3")                  # rim flange with its ring of bolts
+    rect(img, 1, 10, 22, 10, "hull4")
+    rect(img, 1, 12, 22, 12, "hull1")
+    for x in range(2, 22, 3):
+        px(img, x, 11, "hull5")
+    for x in range(4, 20):                             # weld seam and rivets lower down
+        if 4 < x < 19:
+            px(img, x, 19, "hull1")
+    for x in range(6, 18, 3):
+        px(img, x, 18, "hull4")
+    for x, y in ((9, 14), (10, 14), (11, 14), (8, 15), (12, 15), (8, 16), (12, 16), (9, 17), (10, 17), (11, 17)):
+        px(img, x, y, "hull1")                         # thick porthole frame and glass
+    for x, y in ((9, 13), (10, 13), (11, 13), (8, 14), (12, 14), (7, 15), (7, 16)):
+        px(img, x, y, "hull5")
+    rect(img, 9, 15, 11, 16, "glass1")
+    px(img, 9, 15, "glass3")
+    px(img, 10, 15, "glass2")
+    return _outline(img, P["ol"], True)
+
+
 # ------------------------------------------------------------------ main
 
 def save(name, img):
@@ -357,7 +440,7 @@ def main():
             continue
         img = render(name)
         full = img
-        if name in ("icon_mag", "icon_legs", "icon_heatshield"):
+        if name in ("icon_mag", "icon_legs", "icon_heatshield", "icon_sunshade", "icon_hull"):
             continue
         if name.startswith("icon_") or name.startswith("lv_"):
             if name.startswith("lv_"):
@@ -379,6 +462,12 @@ def main():
             ys, xs = np.where(full[..., 3] > 0)
             pm = LAST["part"][ys.min():ys.max() + 1, xs.min():xs.max() + 1]
             save("heatshield_front", heatshield_front(img, pm, LAST["names"]))
+        if name == "hull":   # the part in front of the bus (drawn over it); the rest stays behind the tanks
+            front = img.copy()
+            front[max(0, HULL_CUT - (y0 + oy)):] = 0
+            front, fx, fy = crop(front)
+            save("hull_front", front)
+            table["hull_front"] = [x0 + ox + fx, y0 + oy + fy, front.shape[1], front.shape[0]]
     if wanted("solar") or wanted("icon_solar") or wanted("lv_icon"):
         for lite in (False, True):
             n = "solar_lite" if lite else "solar"
@@ -392,6 +481,9 @@ def main():
         save("icon_heatshield", icon_heatshield())
         for r in ROCKET_ICONS:
             save("lv_icon_" + r, rocket_icon(r))
+    for n, fn in (("icon_sunshade", icon_sunshade), ("icon_hull", icon_hull)):
+        if wanted(n):
+            save(n, fn())
     with open(TABLE, "w") as fh:
         json.dump(table, fh)
     write_table(table)

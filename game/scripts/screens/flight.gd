@@ -1,47 +1,75 @@
 extends Control
-## Launch, cruise map, orbit arrival (mode "out") and the trip home / data downlink (mode "home").
-## The scene fills the whole 640 px; the mission log is a ticker in the console along the bottom.
-## Art: res://art/flight (tools/art/gen_flight.py). Flames, smoke, sparks, glows, suns: scripts/fx.gd.
+## Cruise map and arrival (mode "out"), the trip home and data downlink (mode "home").
+## The launch has its own screen (launch.gd), so the outbound flight starts at the cruise.
+## Decision events open on the route (EventCard) and the ship reacts to the outcome; the arrival is flown:
+## a braking burn the player holds (SPACE or the on-screen button), or an entry corridor behind a heat shield.
+## Art: res://art/flight (tools/art/gen_flight.py, gen_arrivals.py, gen_flight2_icons.py). Effects: scripts/fx.gd.
 
 const UI = preload("res://scripts/ui.gd")
 const Pix = preload("res://scripts/pix.gd")
 const Fx = preload("res://scripts/fx.gd")
-const ShipKit = preload("res://scripts/ship_kit.gd")
+const EventCard = preload("res://scripts/event_card.gd")
 
-const RX: float = 336.0       # rocket centre x; these four match tools/art/gen_flight.py
-const BASE_Y: float = 262.0   # rocket base, standing on the hold-down posts
-const DECK_Y: float = 272.0   # front edge of the pad deck
-const CON_Y: float = 298.0    # top of the console
-const T_IGN: float = 2.4      # launch timeline in seconds: 3, 2, 1, ignition, liftoff, staging
-const T_LIFT: float = 3.0
-const T_SEP: float = 8.0
-const T_LAUNCH_END: float = 10.8
-const T_BOOM: float = 4.6
-const T_CRUISE_P: float = 2.6
-const T_CRUISE_END: float = 9.0
-const T_ARRIVE_P: float = 2.6
-const T_ARRIVE_END: float = 7.2
-const T_HOME_END: float = 8.0
-const AU_KM: float = 149597871.0
-const SMOKE_WARM: Color = Color(1.0, 0.86, 0.72)
+const CON_Y: float = 298.0     # top of the console
+const T_CRUISE: float = 12.0   # seconds of map time for the whole trip at 1x (game pacing)
+const T_HOME: float = 5.0      # seconds of the trip home before the downlink starts
+const T_DOWNLINK: float = 6.5
+const REACT_S: float = 1.7     # the ship's reaction to an event outcome; the clock waits for it
+const FF: float = 4.0          # fast-forward factor while SPACE is held during a coast
+## Arrival burn and entry, game rules: seconds of holding for the planned speed change, the green band's
+## half-width as a share of the plan (times Game.diff("burn_band")), and the grace after an early release.
+const BURN_FULL_S: float = 4.5
+const BAND: float = 0.10
+const GRACE_S: float = 2.5
+const ENTRY_S: float = 6.0
+const ENTRY_HW: float = 0.24
+const ENTRY_A: Vector2 = Vector2(70, 104)   # the entry corridor on screen: top of the air to the hot part
+const ENTRY_B: Vector2 = Vector2(372, 172)
 const SMOKE_COOL: Color = Color(0.80, 0.76, 0.90)
-## Cassini's real flybys as [day, angle on the map in degrees, orbit radius on the map in px].
-## Days: launch 15 Oct 1997, Venus 26 Apr 1998 and 24 Jun 1999, Earth 18 Aug 1999, Jupiter 30 Dec 2000 (NASA).
-## The map is a diagram, not to scale.
-const CASSINI: Array = [[0.0, 0.0, 52.0], [193.0, 200.0, 34.0], [405.0, 400.0, 72.0], [617.0, 575.0, 34.0],
-	[672.0, 662.0, 52.0], [1172.0, 760.0, 160.0], [2447.0, 900.0, 262.0]]
-## Engine nozzles of each launcher sprite (art/parts/lv_*.png): x from the sprite's left edge, plume width.
-## The first one is the main engine; the others (side boosters) get slightly shorter plumes.
-const NOZZLES: Dictionary = {"electron": [Vector2(6, 8)], "falcon9": [Vector2(11, 11)],
-	"vulcan": [Vector2(17, 14), Vector2(7, 5), Vector2(28, 5)], "heavy": [Vector2(25, 11), Vector2(9, 11), Vector2(40, 11)]}
-const FLYBYS: Array = [[193.0, "VENUS FLYBY"], [617.0, "VENUS FLYBY 2"], [672.0, "EARTH FLYBY"], [1172.0, "JUPITER FLYBY"]]
+
+const PLANETS: Array[String] = ["mercury", "venus", "earth", "mars", "jupiter", "saturn", "uranus", "neptune"]
+## Orbital periods in days (NASA planetary fact sheets): how fast each planet moves on the map.
+const PERIOD: Dictionary = {"mercury": 87.97, "venus": 224.70, "earth": 365.26, "mars": 686.98, "jupiter": 4332.59,
+	"saturn": 10759.22, "uranus": 30685.4, "neptune": 60189.0}
+## Map radius (px) of each orbit, in the real order. Distances are squeezed (the map says "not to scale"):
+## trips inside Jupiter get room for the inner planets, trips beyond it for the giants.
+const R_INNER: Array[float] = [44.0, 80.0, 120.0, 168.0, 212.0, 244.0, 270.0, 292.0]
+const R_OUTER: Array[float] = [22.0, 36.0, 50.0, 66.0, 118.0, 180.0, 240.0, 294.0]
+## Where a planet that the route does not visit sits at the end of the trip (screen degrees): keeps labels apart.
+## Angles in the lower half stay clear of the panels for the slow outer planets.
+const PARK: Dictionary = {"mercury": 250.0, "venus": 140.0, "earth": 200.0, "mars": 105.0, "jupiter": 255.0,
+	"saturn": 295.0, "uranus": 172.0, "neptune": 218.0}
+const END_DEG: float = 335.0   # where the destination is at arrival: lower right, clear of the panels
+## The real flybys of each named path, [day after launch, planet]. Key: "<skin>/<path id>". Dates are not shown.
+const FLYBYS: Dictionary = {
+	# MESSENGER, launched 3 Aug 2004: Earth 2 Aug 2005; Venus 24 Oct 2006, 5 Jun 2007; Mercury 14 Jan 2008, 6 Oct 2008, 29 Sep 2009 (NASA/JHUAPL)
+	"mercury/assist": [[364.0, "earth"], [812.0, "venus"], [1036.0, "venus"], [1259.0, "mercury"], [1525.0, "mercury"], [1883.0, "mercury"]],
+	# BepiColombo, launched 20 Oct 2018: Earth 10 Apr 2020; Venus 15 Oct 2020, 10 Aug 2021; Mercury 1 Oct 2021, 23 Jun 2022, 19 Jun 2023, 4 Sep 2024, 1 Dec 2024, 8 Jan 2025 (ESA)
+	"mercury/slow": [[538.0, "earth"], [726.0, "venus"], [1025.0, "venus"], [1077.0, "mercury"], [1342.0, "mercury"], [1703.0, "mercury"], [2146.0, "mercury"], [2234.0, "mercury"], [2272.0, "mercury"]],
+	# Juno, launched 5 Aug 2011: Earth 9 Oct 2013 (NASA)
+	"jupiter/assist": [[796.0, "earth"]],
+	# Cassini, launched 15 Oct 1997: Venus 26 Apr 1998, 24 Jun 1999; Earth 18 Aug 1999; Jupiter 30 Dec 2000 (NASA)
+	"saturn/assist": [[193.0, "venus"], [617.0, "venus"], [672.0, "earth"], [1172.0, "jupiter"]],
+	# NASA's Uranus Orbiter and Probe plan flies past Jupiter (no date published: placed about where the path crosses Jupiter's orbit)
+	"uranus/slow": [[700.0, "jupiter"]],
+	# Voyager 2, launched 20 Aug 1977: Jupiter 9 Jul 1979, Saturn 26 Aug 1981 (NASA)
+	"uranus/fast": [[688.0, "jupiter"], [1467.0, "saturn"]],
+	# the 12-year Neptune path swings past Jupiter, as Voyager 2 did on 9 Jul 1979 (day 688)
+	"neptune/fast": [[688.0, "jupiter"]],
+}
 
 var stage: String = ""
 var st: float = 0.0
 var t: float = 0.0
 var did: Dictionary = {}
 var frozen: bool = false
-var fast: bool = false
+var auto: bool = false        # debug autopilot: flies, decides and continues by itself
+var sim_hold: bool = false    # debug: SPACE held
+var btn_hold: bool = false    # the on-screen button is held (mouse or touch)
+var help_open: bool = false
+var did_ff: bool = false
+var card: Control = null
+var card_age: float = 0.0
 
 # ticker
 var shown: int = 0
@@ -49,126 +77,127 @@ var lines: Array[Dictionary] = []
 var new_t: float = 99.0
 var hint: String = ""
 
-# effects state
+# effects
 var parts: Array[Dictionary] = []
-var spawn_acc: float = 0.0
 var shake: float = 0.0
 var flash_age: float = 9.0
-var boom_age: float = -1.0
+var flyby_age: float = 9.0
+var flyby_name: String = ""
+
+# events and the ship's reaction
+var react_t: float = -1.0
+var react_kind: String = ""   # "spark" | "burn" | "dim" | "shield" | "ok"
+var react_text: String = ""
+var react_bad: bool = false
+var storm_ev: Dictionary = {}
 var storm_age: float = -1.0
 var storm_hit: float = -1.0
 var storm_speed: float = 200.0
-var flyby_age: float = 9.0
-var flyby_name: String = ""
-var lost_p: float = 0.0
+var storm_asked: bool = false
+var storm_res: Dictionary = {}
 
 # cruise map
-var map_c: Vector2 = Vector2(320, 156)
+var cruise_t: float = 0.0
+var lost: bool = false
+var lost_t: float = 0.0
+var lost_p: float = 0.0
+var moon_map: bool = false
+var map_c: Vector2 = Vector2(320, 158)
 var map_sq: float = 0.48
 var map_rot: float = 0.0
-var map_sun: Vector2 = Vector2(320, 156)
-var bodies: Array[Dictionary] = []
-var others: Array[Dictionary] = []  # the rest of the Solar System: scenery, not part of the route
-var sky: Array[Dictionary] = []     # Moon map only: the planets as far points in the sky
+var map_sun: Vector2 = Vector2(320, 158)
+var radii: Array[float] = []
+var a0: Dictionary = {}       # planet angle (model degrees) at day 0
+var legs: Array[Dictionary] = []
+var flybys: Array = []
+var trip_days: float = 1.0
+var moon_a0: float = 0.0
 var tex_map: ImageTexture = null
 
 # arrival
+var arr: String = ""          # approach | burn | grace | orbit | flyby | entry | entered | burnup | skip
+var arr_t: float = 0.0
+var entry_mode: bool = false
+var cap: float = 0.0          # planned braking speed change, km/s (Game.dv_plan)
+var band_w: float = 0.1
+var dv_done: float = 0.0
+var dv_max: float = 0.0
+var m0: float = 0.0
+var p0: float = 0.0
+var holding: bool = false
+var armed: bool = false       # SPACE must be let go once after the coast, so fast-forward never starts the burn
+var pressed_once: bool = false
+var released_once: bool = false
+var cut_note: String = ""
+var orb_th: float = PI / 2.0
+var fly_p: Vector2 = Vector2.ZERO   # flying past: position and velocity once off the drawn curve
+var fly_v: Vector2 = Vector2.ZERO
+var ang: float = 0.0          # entry: 0 = centre of the corridor, + steeper, - shallower
+var strain: float = 0.0
+var entry_t: float = 0.0
 var orb_c: Vector2 = Vector2(400, 150)
 var orb_rx: float = 190.0
 var orb_ry: float = 52.0
 var orb_tilt: float = 0.14
 
+# home
+var home_t: float = 0.0
+var dl_t: float = 0.0
+
 var tex_space: Texture2D = null
 var tex_deep: Texture2D = null
-var tex_rocket: Texture2D = null
-var nozzles: Array[Vector2] = []
-var tex_sky: Texture2D = null
-var tex_far: Texture2D = null
-var tex_near: Texture2D = null
-var tex_front: Texture2D = null
-var tex_tower: Texture2D = null
-var tex_cap: Texture2D = null
-var tex_arm: Texture2D = null
-var tex_clamp: Texture2D = null
-var tex_bird: Texture2D = null
-var tex_limb: Texture2D = null
 var tex_console: Texture2D = null
 var tex_lamp: Texture2D = null
-var tex_ship8: Texture2D = null
+var tex_marker: Texture2D = null
 var tex_wave: Texture2D = null
 var tex_capsule: Texture2D = null
 var tex_orbiter: Texture2D = null
 var tex_sample: Texture2D = null
 var tex_earth_mid: Texture2D = null
+var tex_earth_map: Texture2D = null
+var tex_moon_map: Texture2D = null
 var tex_big: Texture2D = null
 var tex_big_back: Texture2D = null
 var tex_big_front: Texture2D = null
-var tex_clouds_near: Array[Texture2D] = []
-var tex_clouds_far: Array[Texture2D] = []
-var tex_small: Dictionary = {}
+var tex_icon: Dictionary = {}
 var tex_cam: Array[Texture2D] = []
-## Online (decision D7): every player flies this screen from the same run and cruise seed, so they all
-## see the same flight. Only the host moves on; the others hold the last frame until its "goto".
-var left: bool = false
 
 func _f(name: String) -> Texture2D:
 	return Pix.img("flight/" + name)
 
+func _skin() -> String:
+	return String(Game.dest()["skin"])
+
+func _ring() -> bool:
+	return String(Game.dest()["kind"]) == "ring"
+
 func _ready() -> void:
 	clip_contents = true
+	mouse_filter = Control.MOUSE_FILTER_STOP
+	var skin: String = _skin()
+	moon_map = float(Game.dest()["earth_au"]) < 0.01   # a world that circles the Earth gets the Earth-Moon map
 	tex_space = Pix.img("bg_space")
 	tex_deep = _f("space_far")
-	tex_rocket = ShipKit.launcher(Game.rocket_id)
-	if tex_rocket == null:
-		tex_rocket = Pix.img("rocket")
-	_set_nozzles(Game.rocket_id)
-	tex_sky = _f("sky")
-	tex_far = _f("launch_far")
-	tex_near = _f("launch_near")
-	tex_front = _f("launch_front")
-	tex_tower = _f("tower")
-	tex_cap = _f("tower_cap")
-	tex_arm = _f("arm")
-	tex_clamp = _f("clamp")
-	tex_bird = _f("bird")
-	tex_limb = _f("limb")
 	tex_console = _f("console")
 	tex_lamp = _f("lamp")
-	tex_ship8 = _f("ship8")
+	tex_marker = _f("map_ship")
 	tex_wave = _f("wave")
 	tex_capsule = _f("capsule")
 	tex_orbiter = Pix.img("orbiter")
-	tex_sample = Pix.img("sample_moon_big")
+	tex_sample = Pix.img("sample_%s_big" % skin if ResourceLoader.exists("res://art/sample_%s_big.png" % skin) else "sample_moon_big")
 	tex_earth_mid = Pix.planet(36, "earth")
-	tex_big = _f("big_" + Game.dest_id)
-	if Game.dest_id == "saturn":
-		tex_big_back = _f("big_saturn_back")
-		tex_big_front = _f("big_saturn_front")
-	for i: int in 3:
-		tex_clouds_near.append(_f("cloud_near_%d" % i))
-		tex_clouds_far.append(_f("cloud_far_%d" % i))
-	for n: String in ["earth", "mars", "moon", "venus", "jupiter", "mercury", "uranus", "neptune", "saturn"]:
-		tex_small[n] = _f("p_" + n)
-	tex_small["earth9"] = Pix.planet(9, "earth")
-	tex_small["mars9"] = Pix.planet(9, "mars")
-	tex_small["moon9"] = Pix.planet(9, "moon")
-	tex_small["saturn9"] = Pix.planet(9, "saturn")
-	tex_small["earth22"] = Pix.planet(22, "earth")
-	for r: int in ([9, 12, 22] if Game.dest_id == "saturn" else [9, 12, 22, 36]):
-		tex_cam.append(Pix.planet(r, Game.dest_id))
+	tex_earth_map = Pix.planet(22, "earth")
+	tex_moon_map = Pix.planet(9, "moon")
+	tex_big = _f("big_" + skin)
+	if _ring():
+		tex_big_back = _f("big_%s_back" % skin)
+		tex_big_front = _f("big_%s_front" % skin)
+	for n: String in PLANETS:
+		tex_icon[n] = _f("map_" + n)
+	for r: int in ([9, 12, 22] if _ring() else [9, 12, 22, 36]):
+		tex_cam.append(Pix.planet(r, skin))
 	_update_log(true)  # what happened before this screen sits in the ticker already, without the beeps
-	_set_stage("launch" if Game.run.get("mode", "out") == "out" else "home")
-
-func _set_nozzles(id: String) -> void:
-	nozzles.clear()
-	var rw: float = tex_rocket.get_width()
-	var known: Array = NOZZLES.get(id, [])
-	# a sprite of another size than the table was made for (stand-in art) gets one centred plume
-	if known.is_empty() or Vector2(known[0]).x * 2.0 > rw + 4.0 or Vector2(known[0]).x * 2.0 < rw - 4.0:
-		nozzles.append(Vector2(floorf(rw / 2.0), clampf(rw * 0.55, 8.0, 30.0)))
-	else:
-		for v: Vector2 in known:
-			nozzles.append(v)
+	_set_stage("cruise" if String(Game.run.get("mode", "out")) == "out" else "home")
 
 func _set_stage(s: String) -> void:
 	stage = s
@@ -176,35 +205,81 @@ func _set_stage(s: String) -> void:
 	did = {}
 	parts.clear()
 	shake = 0.0
+	react_t = -1.0
 	Audio.loop("thrust", false)
 	if s == "cruise":
+		cruise_t = 0.0
 		_setup_map()
-		Audio.music("drift")  # the long coast gets the calm track; the launch keeps "ascent"
-	elif s == "arrive" or s == "home":
-		var sat: bool = Game.dest_id == "saturn"
-		if s == "arrive":
-			orb_c = Vector2(396, 150) if sat else Vector2(404, 150)
-		else:
-			orb_c = Vector2(112, 160) if sat else Vector2(84, 196)
-		orb_rx = 188.0 if sat else 172.0
-		orb_ry = 64.0 if sat else 46.0
-		orb_tilt = 0.244 if sat else 0.14
+		Audio.music("drift")
+	elif s == "arrive":
+		_setup_arrive()
+	elif s == "home":
+		home_t = 0.0
+		dl_t = 0.0
+		var h: float = tex_big.get_height() if tex_big != null else 211.0
+		orb_c = Vector2(112, maxf(160.0, 70.0 + floorf(h / 2.0))) if _ring() else Vector2(84, 196)
 	_set_hint()
 
 func _dead() -> bool:
 	return bool(Game.run["dead"])
 
-func _once(key: String, at: float) -> bool:
-	if st < at or did.has(key):
-		return false
-	did[key] = true
-	return true
+func _end() -> void:
+	Audio.loop("thrust", false)
+	Game.finish()
+	Game.goto("report")
+
+# ------------------------------------------------------------- input and clock
+
+func _space_held() -> bool:
+	return Input.is_key_pressed(KEY_SPACE) or btn_hold or sim_hold
+
+## Coasting stages: SPACE fast-forwards. Never while the player must act.
+func _coasting() -> bool:
+	return (stage == "cruise" and not lost) or (stage == "home" and not did.has("p"))
 
 func _process(delta: float) -> void:
-	fast = Input.is_key_pressed(KEY_SPACE)
+	if auto:
+		_auto_card(delta)
+	if help_open or EventCard.is_open():
+		queue_redraw()
+		return
+	var mult: float = 1.0
+	if _coasting() and (_space_held() or auto) and react_t < 0.0 and storm_age < 0.0:
+		mult = FF
+		if not auto:
+			did_ff = true
 	if not frozen:
-		_step(delta * (4.0 if fast else 1.0))
+		_step(delta * mult)
 	queue_redraw()
+
+func _unhandled_key_input(event: InputEvent) -> void:
+	var k: InputEventKey = event as InputEventKey
+	if k == null or not k.pressed or k.echo:
+		return
+	if k.keycode == KEY_SLASH or k.keycode == KEY_QUESTION or k.keycode == KEY_H or k.unicode == 63:
+		help_open = not help_open
+		Audio.play("click", -8.0)
+	elif help_open and k.keycode == KEY_ESCAPE:
+		help_open = false
+
+const HELP_BTN: Rect2 = Rect2(616, 6, 18, 18)
+const BURN_BTN: Rect2 = Rect2(500, 248, 132, 40)
+
+func _burn_btn_on() -> bool:
+	return stage == "arrive" and arr in ["burn", "grace", "entry"]
+
+func _gui_input(event: InputEvent) -> void:
+	var mb: InputEventMouseButton = event as InputEventMouseButton
+	if mb == null or mb.button_index != MOUSE_BUTTON_LEFT:
+		return
+	if mb.pressed:
+		if HELP_BTN.grow(2.0).has_point(mb.position) or help_open:
+			help_open = not help_open
+			Audio.play("click", -8.0)
+		elif _burn_btn_on() and BURN_BTN.has_point(mb.position):
+			btn_hold = true
+	else:
+		btn_hold = false
 
 func _step(dt: float) -> void:
 	t += dt
@@ -213,42 +288,15 @@ func _step(dt: float) -> void:
 	flash_age += dt
 	flyby_age += dt
 	shake = maxf(0.0, shake - dt * 3.0)
-	if boom_age >= 0.0:
-		boom_age += dt
-	if storm_age >= 0.0:
-		storm_age += dt
-	if storm_hit >= 0.0:
-		storm_hit += dt
 	match stage:
-		"launch":
-			_step_launch(dt)
 		"cruise":
-			_step_cruise()
+			_step_cruise(dt)
 		"arrive":
 			_step_arrive(dt)
 		"home":
-			if _once("p", 0.5):
-				Game.phase_home()
-				_set_hint()
-			if float(Game.run["sent"]) > 0.0 and st < 5.8 and _once("rb%d" % int(st / 0.7), 0.8):
-				Audio.play("radio_blip", -14.0, 1.0 + 0.12 * (int(st / 0.7) % 3))  # data packets leaving
-			if st > T_HOME_END:
-				_end()
+			_step_home(dt)
 	_step_parts(dt)
 	_update_log(false)
-
-func _next(s: String) -> void:
-	if _dead():
-		_end()
-	else:
-		_set_stage(s)
-
-func _end() -> void:
-	if left:
-		return
-	left = true
-	Game.finish()
-	Game.flow("report")
 
 # ------------------------------------------------------------- ticker and hints
 
@@ -269,42 +317,60 @@ func _update_log(silent: bool) -> void:
 	var lg: Array = Game.run["log"]
 	while shown < lg.size():
 		var e: Dictionary = lg[shown]
-		var txt: String = String(e["text"])
-		# the storm report waits until the wave has reached the ship
-		if stage == "cruise" and storm_hit < 0.0 and txt.to_lower().contains("storm"):
-			break
 		var ok: bool = e["ok"]
-		for s: String in _wrap(txt, 70):
+		for s: String in _wrap(String(e["text"]), 70):
 			lines.append({"s": s, "ok": ok, "e": shown})
 		shown += 1
 		if not silent:
 			new_t = 0.0
 			Audio.play("radio_blip" if ok else "error", -6.0 if ok else -3.0)
 
+## The console's info line: a fact about what is happening, never an order (those are the directions).
 func _set_hint() -> void:
-	var c: Dictionary = Game.run["calc"]
-	var tr: Dictionary = Game.traj()
+	var d: Dictionary = Game.dest()
 	match stage:
-		"launch":
-			hint = "Rocket limit on this path: %s kg. Your ship: %s kg. Heavier would not fly." % [Game.fmt(c["cap"]), Game.fmt(c["mass"])]
-			if did.has("p") and _dead():
-				hint = "Too heavy for this rocket. Remove parts or fuel, or pick a bigger rocket."
 		"cruise":
-			hint = "%s days of coasting. Sunlight fades with distance, so power must last the trip." % Game.fmt(tr["days"])
-			if did.has("p") and _dead():
-				hint = "The ship ran out of power. Add solar arrays or nuclear power (RTG)."
-			elif storm_age >= 0.0:
-				hint = "A real solar storm from NASA records. Shielding protects science and radio parts."
+			hint = "%s days of coasting. Sunlight fades with distance from the Sun." % Game.fmt(Game.traj()["days"])
+			if lost:
+				hint = "The ship is lost. The report says why."
 		"arrive":
-			var dv: float = float(Game.dv_plan()["capture"])
-			if dv <= 0.0:
-				hint = "Aerobraking: the heat shield rubs on Mars' air to slow down. No fuel needed."
+			if entry_mode:
+				var nm: String = Game.place().capitalize()
+				hint = "Entry: the heat shield rubs on %s%s air to slow down. No fuel needed." % [nm, "'" if nm.ends_with("s") else "'s"]
 			else:
-				hint = "Braking burn: %s km/s to be caught by gravity. Your fuel decides this." % str(dv)
-			if did.has("p") and _dead():
-				hint = "Not enough fuel to slow down. Carry more propellant or choose a gentler path."
+				hint = "Braking burn: %.2f km/s of speed change lets gravity catch the ship." % cap
 		"home":
-			hint = "Radio delay: %s. Antenna speed and storage decide how much gets home." % Game.dest()["light_delay"]
+			hint = "Radio delay: %s. Antenna speed and storage decide what gets home." % d["light_delay"]
+
+## The one direction shown now: [key, words]. It stays until the player has done it.
+func _direction() -> Array:
+	match stage:
+		"cruise":
+			if lost:
+				return ["", "SIGNAL LOST"]
+			if not did_ff:
+				return ["SPACE", "HOLD TO FAST-FORWARD"]
+			return ["", "DECISIONS WAIT AT THE ! MARKS"]
+		"arrive":
+			match arr:
+				"approach", "burn":
+					if entry_mode:
+						return ["SPACE", "HOLD TO LIFT THE NOSE"]
+					if not pressed_once:
+						return ["SPACE", "HOLD TO BRAKE INTO ORBIT"]
+					return ["SPACE", "LET GO INSIDE THE GREEN BAND"]
+				"grace":
+					return ["SPACE", "STILL TOO FAST: HOLD AGAIN"]
+				"entry":
+					if not pressed_once:
+						return ["SPACE", "HOLD TO LIFT THE NOSE"]
+					if not released_once:
+						return ["SPACE", "LET GO TO DIVE STEEPER"]
+					return ["SPACE", "KEEP THE MARKER IN THE GREEN"]
+		"home":
+			if not did_ff and not did.has("p"):
+				return ["SPACE", "HOLD TO FAST-FORWARD"]
+	return ["", ""]
 
 # ------------------------------------------------------------- particles
 
@@ -345,318 +411,156 @@ func _draw_parts(off: Vector2) -> void:
 		else:
 			Fx.sparkle(self, p, a, Color(q["tint"]), int(q["size"]))
 
-# ------------------------------------------------------------- launch
+# ------------------------------------------------------------- decision events
 
-func _launch_failed() -> bool:
-	return did.has("p") and _dead()
+func _open_card(ev: Dictionary) -> void:
+	card = EventCard.open(self, ev, _after_event)
+	card_age = 0.0
 
-## Height climbed above the pad, in pixels.
-func _launch_h() -> float:
-	var tl: float = st - T_LIFT
-	if tl <= 0.0:
-		return 0.0
-	if _launch_failed():
-		return minf(14.0 * tl * tl, 34.0 + 3.0 * sin(tl * 9.0))
-	return 20.0 * pow(tl, 2.2)
+func _after_event(res: Dictionary) -> void:
+	card = null
+	if storm_age >= 0.0 and not storm_ev.is_empty() and bool(storm_ev.get("done", false)) and storm_res.is_empty():
+		storm_res = res      # the wave is still on its way: the ship reacts when it arrives
+		if (res.get("chips", []) as Array).any(func(c: Array) -> bool: return c[0] == "fuel"):
+			_react(res)      # turning tail is a burn, seen at once
+	else:
+		_react(res)
+	if _dead() and stage == "cruise":
+		lost_p = _cruise_p()
+		lost = true
+	_set_hint()
 
-func _burning() -> bool:
-	if st < T_IGN:
-		return false
-	if _launch_failed():
-		return st < T_BOOM
-	return st < T_SEP - 0.3 or st > T_SEP + 0.6
-
-func _step_launch(dt: float) -> void:
-	for i: int in 3:
-		if _once("beep%d" % i, float(i)):
-			Audio.play("countdown_beep", -5.0)
-	var rw: float = tex_rocket.get_width()
-	var rh: float = tex_rocket.get_height()
-	if st < T_IGN and randf() < dt * 7.0:  # oxygen vapour drifting off the tanks
-		_puff(Vector2(RX + rw * 0.5, BASE_Y - rh * randf_range(0.45, 0.6)), Vector2(randf_range(8, 20), randf_range(2, 10)), 1.4, 0, Color(0.95, 0.9, 1.0, 0.8), -6.0)
-	if _once("ign", T_IGN):
-		Audio.play("ignition", -2.0)
-		shake = 5.0
+## The ship shows what the choice did: sparks for damage, a burn for fuel spent, a dim safe mode for power.
+func _react(res: Dictionary) -> void:
+	react_t = 0.0
+	react_kind = "ok"
+	react_bad = not bool(res.get("ok", true))
+	var icons: Array = []
+	for c: Array in res.get("chips", []):
+		icons.append(String(c[0]))
+	if icons.has("wrench") or icons.has("bad"):
+		react_kind = "spark"
+	elif icons.has("fuel"):
+		react_kind = "burn"
+	elif icons.has("power") or icons.has("battery") or icons.has("comms"):
+		react_kind = "dim"
+	var fx: Array = res.get("effects", [])
+	react_text = String(fx[0]) if not fx.is_empty() else ("NO DAMAGE" if bool(res.get("ok", true)) else "")
+	if react_kind == "spark":
+		Audio.play("hit", -4.0)
+		shake = 2.0
 		flash_age = 0.0
-		for i: int in 18:
-			var sd: float = -1.0 if i % 2 == 0 else 1.0
-			_spark(Vector2(RX + sd * 4.0, DECK_Y - 4.0), Vector2(sd * randf_range(50, 190), -randf_range(10, 110)), randf_range(0.35, 0.8), Color("ffb84d"))
-	if _once("p", T_LIFT):
-		Game.phase_launch()
-		Audio.play("launch", -2.0)
-		Audio.play("countdown_beep", -4.0, 2.0)
-		shake = 4.0
-		_set_hint()
-	var failed: bool = _launch_failed()
-	var h: float = _launch_h()
-	if st > T_IGN and h < 400.0 and _burning():
-		shake = maxf(shake, 1.6)
-	if _burning() and st < T_SEP:
-		spawn_acc += dt * (46.0 if h < 110.0 else 26.0)
-		while spawn_acc >= 1.0:
-			spawn_acc -= 1.0
-			if h < 110.0:  # the flame trench throws the exhaust out along the ground
-				var side: float = -1.0 if randf() < 0.5 else 1.0
-				var from_mouth: bool = randf() < 0.35
-				var p0: Vector2 = Vector2(RX + side * randf_range(4, 26), 288.0 - randf() * 5.0) if from_mouth else Vector2(RX + side * randf_range(96, 112), 284.0 - randf() * 6.0)
-				_puff(p0, Vector2(side * randf_range(40, 150), -randf_range(2, 26)), randf_range(1.5, 2.9), 2 if randf() < 0.65 else 1, SMOKE_WARM, randf_range(6, 20))
-			else:  # the trail stays behind in the sky
-				_puff(Vector2(RX + randf_range(-5, 5), BASE_Y - h + randf_range(36, 70)), Vector2(randf_range(-10, 10), randf_range(20, 60)), randf_range(1.2, 2.2), 2 if randf() < 0.5 else 1, SMOKE_WARM, 0.0)
-	if failed:
-		if _once("boom", T_BOOM):
-			Audio.play("explosion")
-			boom_age = 0.0
-			shake = 7.0
-			flash_age = 0.0
-			for i: int in 26:
-				var a: float = randf() * TAU
-				_spark(Vector2(RX, BASE_Y - h - rh * randf()), Vector2(cos(a), sin(a)) * randf_range(40, 200), randf_range(0.5, 1.3), Color("ff9f43"), 160.0)
-			for i: int in 22:
-				_puff(Vector2(RX + randf_range(-20, 20), BASE_Y - h - rh * randf()), Vector2(randf_range(-50, 50), randf_range(-40, 10)), randf_range(1.6, 3.0), 2, Color(0.45, 0.4, 0.5), 14.0)
-		if st > T_BOOM + 3.4:
-			_next("cruise")
+	elif react_kind == "burn":
+		Audio.play("ignition", -12.0, 1.3)
+
+## Autopilot (debug): picks the first choice the ship can pay for, then continues.
+func _auto_card(delta: float) -> void:
+	if card == null or not is_instance_valid(card) or not EventCard.is_open():
 		return
-	if _once("sep", T_SEP):
-		Audio.play("stage_sep", -2.0)
-		shake = 2.5
-		var jy: float = BASE_Y - h - rh + floorf(rh * 0.42)
-		for i: int in 10:
-			var sd2: float = -1.0 if i % 2 == 0 else 1.0
-			_puff(Vector2(RX + sd2 * rw * 0.4, jy), Vector2(sd2 * randf_range(30, 90), _launch_speed() * -1.0 + randf_range(-20, 20)), randf_range(0.6, 1.1), 1 if i < 6 else 0, Color(1, 1, 1, 0.9), 0.0)
-		for i: int in 8:
-			_spark(Vector2(RX, jy), Vector2(randf_range(-120, 120), _launch_speed() * -1.0 + randf_range(-60, 60)), 0.6, Color("fff3b0"), 0.0)
-	Audio.loop("thrust", st > T_SEP + 0.6, -9.0)
-	if st > T_LAUNCH_END:
-		_next("cruise")
+	card_age += delta
+	if card_age < 0.6:
+		return
+	var res: Dictionary = card.get("result")
+	if res.is_empty():
+		var infos: Array = card.get("infos")
+		var pick: int = 0
+		for i: int in infos.size():
+			if bool((infos[i] as Dictionary)["can"]):
+				pick = i
+				break
+		card.call("_choose", pick)
+		card_age = 0.0
+	elif card_age > 0.5:
+		card.call("_continue")
 
-## Climb rate in px/s, so separation puffs start out moving with the rocket.
-func _launch_speed() -> float:
-	return 44.0 * pow(maxf(0.0, st - T_LIFT), 1.2)
-
-func _draw_launch() -> void:
-	var failed: bool = _launch_failed()
-	var h: float = _launch_h()
-	var rw: float = tex_rocket.get_width()
-	var rh: float = tex_rocket.get_height()
-	var ts: float = st - T_SEP
-	var lift: float = 40.0 + 64.0 * smoothstep(0.0, 1.4, ts)   # after staging the camera recentres on the upper stage
-	var cam: float = floorf(maxf(0.0, h - lift))
-	var k: float = clampf(cam / 900.0, 0.0, 1.0)
-	var off: Vector2 = Vector2(0, cam)
-	var cloud_c: Color = Color(1, 1, 1, 1.0 - smoothstep(0.22, 0.5, k))  # no clouds in space
-	if shake > 0.05:
-		off += Vector2(randf_range(-shake, shake), randf_range(-shake, shake)).floor()
-	# sky: stars behind a tall dawn strip that slides up with altitude
-	if k > 0.25:
-		draw_texture(tex_space, Vector2.ZERO)
-		Pix.stars(self, t, Vector2(640, 300), 70, 9, Vector2(0, cam * 0.02))
-	draw_texture_rect_region(tex_sky, Rect2(0, 0, 640, 360), Rect2(0, floorf(720.0 * (1.0 - k)), 640, 360))
-	var fy: float = 208.0 + floorf(cam * 0.35) + off.y - cam
-	if fy < 360.0:
-		Fx.sun(self, Vector2(104, fy + 19.0), 2, Color("ffd75e"), t)
-	for i: int in 9:  # far clouds, slow parallax
-		var ct: Texture2D = tex_clouds_far[i % 3]
-		var cx: float = fposmod(40.0 + i * 163.0 + t * (1.5 + i % 2), 720.0) - 80.0
-		var cy: float = 196.0 - i * 62.0 - (i % 3) * 17.0 + cam * 0.5
-		if cy > -20.0 and cy < 300.0:
-			draw_texture(ct, Vector2(floorf(cx), floorf(cy)), cloud_c)
-	if fy < 360.0:
-		_layer(tex_far, Vector2(off.x, fy))
-		for i: int in 6:  # birds over the lagoon; the ignition scares them off
-			var bt: float = maxf(0.0, st - T_IGN - i * 0.05)
-			var bp: Vector2 = Vector2(86.0 + i * 13.0 + (i % 2) * 5.0 + t * 5.0, 232.0 - (i % 3) * 6.0 + sin(t * 2.0 + i) * 2.0)
-			bp += Vector2(-36.0 - i * 5.0, -30.0 - (i % 3) * 9.0) * bt
-			var fr: int = int(t * (5.0 if bt <= 0.0 else 11.0) + i) % 2
-			draw_texture_rect_region(tex_bird, Rect2((bp + Vector2(off.x, fy - 208.0)).floor(), Vector2(7, 5)), Rect2(fr * 7, 0, 7, 5))
-	var on_pad: bool = cam + off.y - cam < 400.0 and cam < 380.0
-	var burning: bool = _burning()
-	var base: Vector2 = Vector2(RX, BASE_Y - h) + off
-	if on_pad:
-		_layer(tex_near, off)
-		for lp: Vector2 in [Vector2(159, 168), Vector2(245, 196), Vector2(585, 180)]:  # floodlights
-			Fx.glow(self, lp + off, 12.0, Color(1.0, 0.95, 0.75, 0.45 + 0.05 * sin(t * 30.0 + lp.x)), true)
-		if int(t * 1.6) % 2 == 0:  # red beacons on the mast tops
-			for bx: float in [RX - 116.0, RX + 116.0]:
-				Fx.glow(self, Vector2(bx, 46) + off, 6.0, Color(1.0, 0.25, 0.2, 0.7), true)
-		# service tower sized to the rocket, arms swing away at T-2
-		var tr_x: float = floorf(RX - rw / 2.0) - 22.0
-		var th: float = minf(tex_tower.get_height(), rh + 16.0)
-		var tw: float = tex_tower.get_width()
-		draw_texture_rect_region(tex_tower, Rect2(Vector2(tr_x - tw, 266.0 - th) + off, Vector2(tw, th)), Rect2(0, tex_tower.get_height() - th, tw, th))
-		draw_texture(tex_cap, Vector2(tr_x - tw - 4.0, 266.0 - th - tex_cap.get_height()) + off)
-		if int(t * 1.6) % 2 == 1:
-			Fx.glow(self, Vector2(tr_x - tw + 12.0, 266.0 - th - 22.0) + off, 6.0, Color(1.0, 0.25, 0.2, 0.7), true)
-		var arm_f: int = 0 if st < 1.0 else (1 if st < 1.5 else 2)
-		for frac: float in [0.36, 0.62, 0.86]:
-			draw_texture_rect_region(tex_arm, Rect2(Vector2(tr_x, floorf(BASE_Y - rh * frac) - 3.0) + off, Vector2(24, 7)), Rect2(0, arm_f * 7, 24, 7))
-		if burning and h < 140.0:  # engine light on the pad and in the trench
-			var gl: float = 1.0 - h / 140.0
-			Fx.glow(self, Vector2(RX, 270) + off, 96.0 * gl, Color(1.0, 0.72, 0.36, 0.55 * gl))
-	# the rocket: flame first, then the hull (two pieces after staging)
-	var split: float = floorf(rh * 0.42)
-	var top: Vector2 = Vector2(floorf(base.x - rw / 2.0), floorf(base.y - rh))
-	var fw: float = clampf(rw * 0.55, 8.0, 30.0)
-	if failed and boom_age >= 0.15:
-		pass  # nothing left to draw
-	elif ts < 0.0:
-		if burning:
-			var grow: float = clampf((st - T_IGN) / 0.5, 0.2, 1.0)
-			var fl: float = minf((34.0 + rh * 0.42) * grow, h + 14.0) if h < 90.0 else 34.0 + rh * 0.42
-			if failed:
-				fl *= 0.5 + 0.5 * absf(sin(st * 17.0))  # the engine is struggling
-			for i: int in nozzles.size():  # thinner air: the plume balloons
-				var nz: Vector2 = nozzles[i]
-				Fx.flame(self, Vector2(top.x + nz.x, base.y - 1.0), Vector2.DOWN, fl * (1.0 if i == 0 else 0.85), nz.y * (1.0 + 0.9 * k), t + i * 0.37)
-		draw_texture(tex_rocket, top)
-		if burning:  # warm light on the lowest part of the hull
-			draw_texture_rect_region(tex_rocket, Rect2(top + Vector2(0, rh - 26.0), Vector2(rw, 26)), Rect2(0, rh - 26.0, rw, 26), Color(1.0, 0.8, 0.55))
-	else:
-		var fall: Vector2 = Vector2(floorf(-7.0 * ts), floorf(split + 4.0 + 80.0 * ts * ts))
-		draw_texture_rect_region(tex_rocket, Rect2(top + fall, Vector2(rw, rh - split)), Rect2(0, split, rw, rh - split), Color(0.8, 0.8, 0.9))
-		if burning:
-			Fx.flame(self, top + Vector2(rw / 2.0, split - 1.0), Vector2.DOWN, 40.0, maxf(5.0, fw * 0.6), t, Color(0.8, 0.9, 1.0))
-		draw_texture_rect_region(tex_rocket, Rect2(top, Vector2(rw, split)), Rect2(0, 0, rw, split))
-	if on_pad:
-		var cf: int = 0 if st < T_LIFT else 1
-		draw_texture_rect_region(tex_clamp, Rect2(Vector2(floorf(RX - rw / 2.0) - 7.0, 253) + off, Vector2(9, 13)), Rect2(cf * 9, 0, 9, 13))
-		draw_texture_rect_region(tex_clamp, Rect2(Vector2(floorf(RX + rw / 2.0) - 2.0, 253) + off, Vector2(-9, 13)), Rect2(cf * 9, 0, 9, 13))
-		_layer(tex_front, off)
-		if burning and h < 60.0:
-			Fx.glow(self, Vector2(RX, 286) + off, 24.0, Color(1.0, 0.8, 0.4, 0.6))
-		if st > T_LIFT and st < T_LIFT + 0.9:
-			Fx.shockwave(self, Vector2(RX, 288) + off, (st - T_LIFT) / 0.9, 2, Color(1.0, 0.9, 0.8))
-	_draw_parts(off)
-	if boom_age >= 0.0:
-		var bc: Vector2 = Vector2(RX, BASE_Y - h - rh * 0.5) + off
-		Fx.explosion(self, bc + Vector2(0, rh * 0.25), boom_age, 2, 110.0)
-		Fx.explosion(self, bc + Vector2(-6, -rh * 0.2), boom_age - 0.14, 2, 110.0)
-		Fx.explosion(self, bc + Vector2(8, 0), boom_age - 0.3, 1, 110.0)
-	for i: int in 7:  # near clouds rush past in front of the rocket
-		var nt: Texture2D = tex_clouds_near[i % 3]
-		var nx: float = float((i * 263 + 20) % 700) - 90.0
-		var ny: float = -150.0 - i * 105.0 + cam * 1.25
-		if ny > -50.0 and ny < 300.0:
-			draw_texture(nt, Vector2(floorf(nx), floorf(ny)), cloud_c)
-	if k > 0.45:  # the curved edge of the Earth rises into view
-		draw_texture(tex_limb, Vector2(0, floorf(360.0 - (k - 0.45) / 0.55 * 150.0)))
-	Fx.flash(self, flash_age, 0.2, Color(1.0, 0.95, 0.85))
-	# telemetry
-	var rk: Dictionary = Data.ROCKETS[Game.rocket_id]
-	var tl: float = st - T_LIFT
-	Pix.panel(self, Rect2(6, 6, 252, 42))
-	if tl < 0.0:
-		_text(Vector2(13, 28), "T-%d" % ceili(-tl), 20, UI.YELLOW)
-		_text(Vector2(64, 20), String(rk["name"]), 10, UI.TEXT)
-		_text(Vector2(64, 34), "IGNITION" if st >= T_IGN else ("ARMS CLEAR" if st >= 1.0 else "COUNTDOWN"), 10, UI.YELLOW)
-		if st < T_IGN:
-			_big(170.0, 140.0, str(ceili(T_LIFT - st)), Color.WHITE if fposmod(st, 1.0) < 0.12 else UI.YELLOW)
-	else:
-		_text(Vector2(13, 28), "T+%d" % int(tl * 30.0), 20, UI.TEXT)
-		_text(Vector2(100, 20), String(rk["name"]), 10, UI.DIM)
-		if failed:
-			_text(Vector2(100, 34), "NO THRUST MARGIN", 10, UI.RED)
-		elif ts > 0.0:
-			_text(Vector2(100, 34), "STAGE 2 BURN" if ts > 0.6 else "STAGING", 10, UI.GREEN)
-		else:
-			_text(Vector2(100, 34), "LIFTOFF!", 10, UI.GREEN)
-		if not failed:
-			var alt: float = 70.0 * pow(tl / 5.0, 2.2)
-			_alt_tape(alt)
-			var alt_s: String = "%d km" % int(alt)
-			_text(Vector2(250.0 - Pix.text_w("ALTITUDE", 10), 20), "ALTITUDE", 10, UI.DIM)
-			_text(Vector2(250.0 - Pix.text_w(alt_s, 10), 34), alt_s, 10, UI.YELLOW)
-	if failed and boom_age >= 0.0:
-		_big(320.0, 150.0, "LAUNCH FAILED", UI.RED if int(t * 4.0) % 2 == 0 else Color("ff9f9f"))
-
-## Scenery layer with a second copy beside it, so camera shake never opens a gap at the screen edge.
-func _layer(tex: Texture2D, pos: Vector2) -> void:
-	draw_texture(tex, pos)
-	if pos.x != 0.0:
-		draw_texture(tex, pos - Vector2(signf(pos.x) * 640.0, 0))
-
-## Altitude tape on the right edge: a marker climbing past the cloud tops and the edge of space.
-func _alt_tape(alt_km: float) -> void:
-	var x: float = 618.0
-	var y0: float = 280.0
-	var hgt: float = 216.0
-	Pix.panel(self, Rect2(x, y0 - hgt - 4.0, 16, hgt + 8.0))
-	for i: int in 10:
-		draw_rect(Rect2(x + 10.0, floorf(y0 - hgt * i / 9.0), 4, 1), UI.BORDER)
-	var marks: Array = [[12.0, "CLOUD TOPS"], [100.0, "SPACE 100 km"]]
-	for m: Array in marks:
-		var my: float = floorf(y0 - hgt * float(m[0]) / 180.0)
-		draw_rect(Rect2(x + 2.0, my, 12, 1), UI.CYAN if alt_km >= float(m[0]) else UI.DIM)
-		_text(Vector2(x - 4.0 - Pix.text_w(String(m[1]), 10), my + 4.0), String(m[1]), 10, UI.CYAN if alt_km >= float(m[0]) else UI.DIM)
-	var ay: float = floorf(y0 - hgt * clampf(alt_km / 180.0, 0.0, 1.0))
-	draw_rect(Rect2(x + 3.0, ay - 2.0, 8, 5), UI.YELLOW)
-	draw_rect(Rect2(x + 1.0, ay, 12, 1), Color.WHITE)
-
-# ------------------------------------------------------------- cruise
+# ------------------------------------------------------------- cruise map
 
 func _map_pt(ang_deg: float, r: float) -> Vector2:
 	var a: float = deg_to_rad(ang_deg + map_rot)
 	return map_c + Vector2(cos(a) * r, -sin(a) * r * map_sq)
 
-func _body(tex_name: String, label: String, r: float, a0: float, d0: float, rate: float) -> void:
-	bodies.append({"tex": tex_small[tex_name], "name": label, "r": r, "a0": a0, "d0": d0, "rate": rate})
+func _au(name: String) -> float:
+	return 1.0 if name == "earth" else float(Data.DEST[name]["sun_au"])
 
-## A planet that is not on the route. `screen_deg` is where it sits on the map at the END of the trip.
-func _other(tex_name: String, label: String, r: float, screen_deg: float, d0: float, rate: float) -> void:
-	others.append({"tex": tex_small[tex_name], "name": label, "r": r, "a0": screen_deg - map_rot, "d0": d0, "rate": rate})
+## Distance from the Sun in AU to map radius in px: piecewise between the orbits, so the order is always right.
+func _rmap(au: float) -> float:
+	var pa: float = 0.0
+	var pr: float = 0.0
+	for i: int in PLANETS.size():
+		var a: float = _au(PLANETS[i])
+		if au <= a:
+			return lerpf(pr, radii[i], (au - pa) / (a - pa))
+		pa = a
+		pr = radii[i]
+	return pr + (au - pa) * 2.0
+
+func _rate(name: String) -> float:
+	return 360.0 / float(PERIOD[name])
+
+func _planet_deg(name: String, day: float) -> float:
+	return float(a0[name]) + _rate(name) * day
+
+## Model degrees swept by a craft between two distances from the Sun over `days` (Kepler's third law at
+## the mean distance): enough to make each leg look like a real transfer.
+func _sweep(r0: float, r1: float, bump: float, days: float) -> float:
+	var rm: float = (r0 + r1) / 2.0 + bump * 0.64
+	return 360.0 * days / (365.25 * pow(rm, 1.5))
 
 func _setup_map() -> void:
+	var d: Dictionary = Game.dest()
 	var tr: Dictionary = Game.traj()
-	var days: float = float(tr["days"])
-	bodies.clear()
-	others.clear()
-	sky.clear()
-	map_rot = 0.0
+	trip_days = maxf(1.0, float(tr["days"]))
+	legs.clear()
+	a0.clear()
+	flybys = []
 	storm_age = -1.0
 	storm_hit = -1.0
-	var radii: Array[float] = []
-	var belt: Vector2 = Vector2.ZERO
-	if Game.dest_id == "moon":
-		map_c = Vector2(130, 196)
+	if moon_map:
+		map_c = Vector2(130, 190)
 		map_sq = 0.451
 		map_sun = Vector2(-520, 60)
+		map_rot = 0.0
 		radii = [419.0]
-		_body("moon9", "MOON", 419.0, 25.0, days, 360.0 / 27.32)
-		# seen from the Earth-Moon system the planets are far points of light in the sky
-		var spots: Array = [["mercury", "MERCURY", 206, 276], ["venus", "VENUS", 262, 252], ["mars", "MARS", 326, 272],
-			["jupiter", "JUPITER", 396, 248], ["saturn", "SATURN", 462, 274], ["uranus", "URANUS", 528, 250], ["neptune", "NEPTUNE", 594, 272]]
-		for sp: Array in spots:
-			sky.append({"tex": tex_small[sp[0]], "name": sp[1], "pos": Vector2(sp[2], sp[3])})
-	elif Game.dest_id == "mars":
-		map_c = Vector2(320, 156)
-		map_sq = 0.5
-		map_sun = map_c
-		radii = [120.0, 182.0]
-		_body("earth9", "EARTH", 120.0, 0.0, 0.0, 360.0 / 365.25)
-		_body("mars9", "MARS", 182.0, 180.0, days, 360.0 / 687.0)
-		radii.append_array([44.0, 80.0, 226.0, 256.0, 280.0, 300.0])
-		_other("mercury", "", 44.0, 300.0, days, 360.0 / 87.97)
-		_other("venus", "VENUS", 80.0, 140.0, days, 360.0 / 224.7)
-		_other("jupiter", "JUPITER", 226.0, 200.0, days, 360.0 / 4332.6)
-		_other("saturn", "SATURN", 256.0, 348.0, days, 360.0 / 10759.0)
-		_other("uranus", "URANUS", 280.0, 165.0, days, 360.0 / 30687.0)
-		_other("neptune", "NEPTUNE", 300.0, 325.0, days, 360.0 / 60190.0)
+		moon_a0 = 14.0 - trip_days * 360.0 / 27.32  # the Moon (27.32-day orbit, NASA) ends at 14 degrees
 	else:
-		map_c = Vector2(320, 158)
-		map_sq = 0.48
+		var inner: bool = float(d["sun_au"]) < 2.0
+		radii.assign(R_INNER if inner else R_OUTER)
+		map_c = Vector2(320, 156)
+		map_sq = 0.5 if inner else 0.48
 		map_sun = map_c
-		radii = [34.0, 52.0, 74.0, 160.0, 262.0]
-		belt = Vector2(96.0, 124.0)
-		var assist: bool = tr["id"] == "assist"
-		map_rot = 60.0 if assist else 0.0
-		_body("venus", "", 34.0, 200.0, 193.0, 1.7335)
-		_body("earth", "EARTH", 52.0, 0.0, 0.0, 360.0 / 365.25)
-		_body("mars", "", 74.0, 100.0, 0.0, 360.0 / 687.0)
-		_body("jupiter", "JUPITER", 160.0, 760.0 if assist else 60.0, 1172.0, 360.0 / 4332.6)
-		_body("saturn9", "SATURN", 262.0, 900.0 if assist else 180.0, days, 360.0 / 10759.0)
-		radii.append_array([20.0, 292.0, 314.0])
-		_other("mercury", "", 20.0, 250.0, days, 360.0 / 87.97)
-		_other("uranus", "URANUS", 292.0, 350.0, days, 360.0 / 30687.0)
-		_other("neptune", "NEPTUNE", 314.0, 215.0, days, 360.0 / 60190.0)
+		var dest_name: String = _skin()
+		flybys = FLYBYS.get("%s/%s" % [dest_name, tr["id"]], [])
+		var pts: Array = [[0.0, "earth"]]
+		pts.append_array(flybys)
+		pts.append([trip_days, dest_name])
+		a0["earth"] = 0.0
+		var th: float = 0.0
+		for k: int in range(1, pts.size()):
+			var d0: float = float(pts[k - 1][0])
+			var d1: float = float(pts[k][0])
+			var b0: String = pts[k - 1][1]
+			var b1: String = pts[k][1]
+			var r0: float = _au(b0)
+			var r1: float = _au(b1)
+			# a loop from a planet back to the same planet swings out and back (a resonant orbit)
+			var bump: float = r0 * 0.6 if b0 == b1 else 0.0
+			var s: float = _sweep(r0, r1, bump, d1 - d0)
+			var sweep: float = s
+			if a0.has(b1):
+				var target: float = _planet_deg(b1, d1)
+				var base: float = fposmod(target - th, 360.0)
+				var n: int = maxi(0, roundi((s - base) / 360.0))
+				sweep = base + 360.0 * n
+				if sweep < 25.0:
+					sweep += 360.0
+			else:
+				a0[b1] = th + s - _rate(b1) * d1
+			legs.append({"d0": d0, "d1": d1, "th0": th, "th1": th + sweep, "r0": r0, "r1": r1, "bump": bump})
+			th += sweep
+		map_rot = END_DEG - th
+		for n: String in PLANETS:
+			if not a0.has(n):
+				a0[n] = float(PARK[n]) - map_rot - _rate(n) * trip_days
 	# orbits and the asteroid belt are baked once into one texture
 	var im: Image = Image.create(640, 300, false, Image.FORMAT_RGBA8)
 	for r: float in radii:
@@ -664,200 +568,340 @@ func _setup_map() -> void:
 		for i: int in n:
 			var p: Vector2 = _map_pt(360.0 * i / n, r)
 			if p.x >= 0.0 and p.x < 640.0 and p.y >= 0.0 and p.y < 298.0:
-				var near_side: bool = p.y > map_c.y
-				im.set_pixel(int(p.x), int(p.y), Color(0.42, 0.52, 0.86, 0.62 if near_side else 0.36))
-	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
-	rng.seed = 5
-	if belt.y > 0.0:
+				im.set_pixel(int(p.x), int(p.y), Color(0.42, 0.52, 0.86, 0.62 if p.y > map_c.y else 0.36))
+	if not moon_map:
+		var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+		rng.seed = 5
+		var b0: float = _rmap(2.2)
+		var b1: float = _rmap(3.2)  # main asteroid belt, about 2.2 to 3.2 AU
 		for i: int in 420:
-			var bp: Vector2 = _map_pt(rng.randf() * 360.0, rng.randf_range(belt.x, belt.y))
-			im.set_pixel(int(bp.x), int(bp.y), Color(0.62, 0.58, 0.52, rng.randf_range(0.25, 0.7)))
+			var bp: Vector2 = _map_pt(rng.randf() * 360.0, rng.randf_range(b0, b1))
+			if bp.x >= 0.0 and bp.x < 640.0 and bp.y >= 0.0 and bp.y < 298.0:
+				im.set_pixel(int(bp.x), int(bp.y), Color(0.62, 0.58, 0.52, rng.randf_range(0.25, 0.7)))
 	tex_map = ImageTexture.create_from_image(im)
-
-func _body_pos(b: Dictionary, day: float) -> Vector2:
-	return _map_pt(float(b["a0"]) + (day - float(b["d0"])) * float(b["rate"]), float(b["r"]))
 
 ## Where the ship is on the map after the fraction p of the trip.
 func _path(p: float) -> Vector2:
-	var tr: Dictionary = Game.traj()
-	if Game.dest_id == "moon":
+	if moon_map:
 		var a: Vector2 = map_c + Vector2(20, -12)
-		var b: Vector2 = _map_pt(25.0, 419.0) + Vector2(-9, 5)
-		if tr["id"] == "low":  # CAPSTONE swung far past the Moon and fell back
+		var b: Vector2 = _moon_pos(trip_days) + Vector2(-9, 5)
+		if trip_days > 30.0:  # the low-energy path (CAPSTONE) swings far past the Moon and falls back
 			return a.bezier_interpolate(Vector2(330, 0), Vector2(680, 30), b, p)
 		return a.bezier_interpolate(Vector2(230, 96), Vector2(400, 60), b, p)
-	if tr["id"] == "assist":
-		var d: float = p * 2447.0
-		for i: int in CASSINI.size() - 1:
-			var w0: Array = CASSINI[i]
-			var w1: Array = CASSINI[i + 1]
-			if d <= float(w1[0]) or i == CASSINI.size() - 2:
-				var u: float = clampf((d - float(w0[0])) / (float(w1[0]) - float(w0[0])), 0.0, 1.0)
-				return _map_pt(lerpf(float(w0[1]), float(w1[1]), u), lerpf(float(w0[2]), float(w1[2]), smoothstep(0.0, 1.0, u)))
-	var re: float = float(bodies[0]["r"]) if Game.dest_id == "mars" else 52.0
-	var rd: float = float(bodies[bodies.size() - 1]["r"])
-	var e: float = (rd - re) / (rd + re)
-	var th: float = PI * p
-	return _map_pt(rad_to_deg(th), (re + rd) / 2.0 * (1.0 - e * e) / (1.0 + e * cos(th)))
+	var day: float = p * trip_days
+	for i: int in legs.size():
+		var lg: Dictionary = legs[i]
+		if day <= float(lg["d1"]) or i == legs.size() - 1:
+			var u: float = clampf((day - float(lg["d0"])) / maxf(1.0, float(lg["d1"]) - float(lg["d0"])), 0.0, 1.0)
+			var r: float = lerpf(float(lg["r0"]), float(lg["r1"]), (1.0 - cos(PI * u)) / 2.0) + float(lg["bump"]) * sin(PI * u)
+			return _map_pt(lerpf(float(lg["th0"]), float(lg["th1"]), u), _rmap(r))
+	return map_c
+
+func _moon_pos(day: float) -> Vector2:
+	return _map_pt(moon_a0 + day * 360.0 / 27.32, 419.0)
 
 func _cruise_p() -> float:
-	if did.has("p") and _dead():
+	if lost:
 		return lost_p
-	return clampf(st / (T_CRUISE_END - 0.6), 0.0, 1.0)
+	return clampf(cruise_t / T_CRUISE, 0.0, 1.0)
 
-func _step_cruise() -> void:
+## The next stop on the route, in words.
+func _next_stop(p: float) -> String:
+	for fb: Array in flybys:
+		if p * trip_days < float(fb[0]):
+			return "NEXT: %s FLYBY" % String(fb[1]).to_upper()
+	return "NEXT: ARRIVE AT %s" % Game.place()
+
+func _flyby_words(body: String) -> String:
+	# a flyby can add speed (outbound) or take it away (inbound, like MESSENGER's) without fuel
+	if float(Game.dest()["sun_au"]) < 1.0:
+		return "%s FLYBY: GRAVITY SLOWS THE SHIP" % body.to_upper()
+	return "%s FLYBY: FREE SPEED FROM GRAVITY" % body.to_upper()
+
+func _step_cruise(dt: float) -> void:
+	if lost:
+		lost_t += dt
+		if lost_t > 3.6:
+			_end()
+		return
+	if react_t >= 0.0:
+		react_t += dt
+		if react_t > REACT_S:
+			react_t = -1.0
+		elif storm_hit < 0.0:
+			return
+	if storm_age >= 0.0:
+		_step_storm(dt)
+		return
 	var p: float = _cruise_p()
-	var days: float = float(Game.traj()["days"])
-	if Game.traj()["id"] == "assist" and not _dead():
-		for fb: Array in FLYBYS:
-			if p * days >= float(fb[0]) and not did.has(fb[1]):
-				did[fb[1]] = true
-				flyby_age = 0.0
-				flyby_name = String(fb[1])
-				Audio.play("radio_blip", -4.0, 1.4)
-	if _once("p", T_CRUISE_P):
-		lost_p = p
-		Game.phase_cruise()
-		if not Game.run["storm"].is_empty():
-			Audio.play("alarm", -6.0)
+	if not did.has("p") and cruise_t >= 0.4:
+		did["p"] = true
+		if not _dead():
+			Game.phase_cruise(false)
+		if _dead():
+			Audio.play("alarm", -5.0)
+			lost_p = p
+			lost = true
+			_set_hint()
+			return
+	var ev: Dictionary = Game.next_event("cruise")
+	if not ev.is_empty() and did.has("p") and p >= float(ev["at"]):
+		if String(ev["id"]) == "storm":
+			storm_ev = ev
+			storm_res = {}
+			storm_asked = false
 			storm_age = 0.0
-			storm_speed = maxf(150.0, (_path(p) - map_sun).length() / 1.3)
-		_set_hint()
-	if storm_age >= 0.0 and storm_hit < 0.0 and storm_age * storm_speed >= (_path(p) - map_sun).length():
+			storm_hit = -1.0
+			storm_speed = maxf(150.0, (_path(p) - map_sun).length() / 1.6)
+			Audio.play("alarm", -6.0)
+		else:
+			Audio.play("alarm", -10.0)
+			_open_card(ev)
+		return
+	cruise_t += dt
+	p = _cruise_p()
+	for fb: Array in flybys:
+		var key: String = "fb%d" % int(fb[0])
+		if p * trip_days >= float(fb[0]) and not did.has(key):
+			did[key] = true
+			flyby_age = 0.0
+			flyby_name = _flyby_words(String(fb[1]))
+			Audio.play("radio_blip", -4.0, 1.4)
+	if p >= 1.0 and ev.is_empty():
+		if _dead():
+			_end()
+		else:
+			_set_stage("arrive")
+
+## The storm event: the warning, the front racing out from the Sun, the card while it is on its way, the hit.
+func _step_storm(dt: float) -> void:
+	storm_age += dt
+	var dist: float = (_path(_cruise_p()) - map_sun).length()
+	var r: float = storm_age * storm_speed
+	if not storm_asked and r >= dist * 0.55:
+		storm_asked = true
+		_open_card(storm_ev)
+		return
+	if storm_asked and storm_hit < 0.0 and r >= dist:
 		storm_hit = 0.0
 		flash_age = 0.0
-		shake = 3.0 if _storm_big() else 1.0
-	if st > T_CRUISE_END:
-		_next("arrive")
+		if storm_res.is_empty():
+			storm_res = storm_ev.get("result", {})
+		var pick: int = int(storm_ev.get("choice", -1))
+		var risk: Dictionary = (storm_ev["choices"][1] as Dictionary).get("risk", {})
+		_react(storm_res)
+		if pick == 0:   # turned tail: the front washes past the engine
+			react_kind = "ok"
+			react_text = "STORM PASSED"
+		elif pick == 1 and Game.id_has(String(risk.get("save_part", ""))):
+			react_kind = "shield"
+			react_text = "SHIELDING HELD"
+		shake = 3.0 if react_kind == "spark" else 1.0
+	if storm_hit >= 0.0:
+		storm_hit += dt
+		if storm_hit > 1.4 and react_t < 0.0:
+			storm_age = -1.0
+			storm_hit = -1.0
+			storm_ev = {}
 
 func _storm_big() -> bool:
-	var ev: Dictionary = Game.run["storm"]
+	var ev: Dictionary = Game.run.get("storm", {})
 	return not ev.is_empty() and float(ev["kp"]) >= 7.5
 
 func _draw_cruise() -> void:
-	var tr: Dictionary = Game.traj()
-	var days: float = float(tr["days"])
 	var p: float = _cruise_p()
-	var day: float = p * days
-	var lost: bool = did.has("p") and _dead()
+	var day: float = p * trip_days
 	var off: Vector2 = Vector2(randf_range(-shake, shake), randf_range(-shake, shake)).floor() if shake > 0.05 else Vector2.ZERO
 	draw_texture(tex_deep, Vector2.ZERO)
 	Pix.stars(self, t, Vector2(640, 298), 46, 21)
 	draw_texture(tex_map, off)
-	if Game.dest_id == "moon":
-		Pix.sprite(self, tex_small["earth22"], map_c + off)
-		_text_c(map_c.x + off.x, map_c.y + 40.0, "EARTH", UI.DIM)
+	if moon_map:
+		Pix.sprite(self, tex_earth_map, map_c + off)
+		_text_c(map_c.x + off.x, map_c.y + 36.0, "EARTH", UI.DIM)
+		var mp: Vector2 = _moon_pos(day) + off
+		Pix.sprite(self, tex_moon_map, mp)
+		_text_c(mp.x, mp.y + 20.0, "MOON", UI.DIM)
 	else:
-		Fx.glow(self, map_sun + off, 48.0, Color(1.0, 0.75, 0.35, 0.35))
-		Fx.sun(self, map_sun + off, 2, Color("ffd75e"), t)
-	for sk: Dictionary in sky:
-		var st2: Texture2D = sk["tex"]
-		var sp2: Vector2 = Vector2(sk["pos"]) + off
-		Pix.sprite(self, st2, sp2, Color(1, 1, 1, 0.8))
-		_text_c(sp2.x, sp2.y + st2.get_height() / 2.0 + 11.0, String(sk["name"]), Color(UI.DIM, 0.7))
-	for ob: Dictionary in others:
-		var op: Vector2 = _body_pos(ob, day) + off
-		var ot: Texture2D = ob["tex"]
-		Pix.sprite(self, ot, op)
-		if String(ob["name"]) != "":
-			_text_c(op.x, op.y + ot.get_height() / 2.0 + 11.0, String(ob["name"]), Color(UI.DIM, 0.75))
-	for b: Dictionary in bodies:
-		var bp: Vector2 = _body_pos(b, day) + off
-		var bt: Texture2D = b["tex"]
-		Pix.sprite(self, bt, bp)
-		if String(b["name"]) != "":
-			_text_c(bp.x, bp.y + bt.get_height() / 2.0 + 11.0, String(b["name"]), UI.DIM)
+		Fx.glow(self, map_sun + off, 40.0, Color(1.0, 0.75, 0.35, 0.35))
+		Fx.sun(self, map_sun + off, 1, Color("ffd75e"), t)
+		var pos: Dictionary = {}
+		# the Sun, the panels, the ship cam and the bottom note are taken before any label is placed
+		var taken: Array[Rect2] = [Rect2(map_sun - Vector2(9, 9), Vector2(18, 18)), Rect2(6, 6, 232, 62), Rect2(484, 30, 152, 96),
+			Rect2(0, 284, 360, 14), Rect2(240, 4, 244, 24), Rect2(0, 296, 640, 4)]
+		for n: String in PLANETS:
+			pos[n] = (_map_pt(_planet_deg(n, day), _rmap(_au(n))) + off).floor()
+			var bt: Texture2D = tex_icon[n]
+			Pix.sprite(self, bt, pos[n])
+			taken.append(Rect2(Vector2(pos[n]) - bt.get_size() / 2.0, bt.get_size()))
+		# labels: the destination and Earth first, each in the first free spot around its planet
+		var order: Array[String] = [_skin(), "earth"]
+		for n: String in PLANETS:
+			if not order.has(n):
+				order.append(n)
+		for n: String in order:
+			var bt: Texture2D = tex_icon[n]
+			var mine: bool = n == _skin() or n == "earth"
+			var lp: Vector2 = _label_spot(pos[n], bt.get_size() / 2.0, n.to_upper(), taken)
+			_text_c(lp.x, lp.y, n.to_upper(), UI.TEXT if mine else Color(UI.DIM, 0.85))
 	# the road ahead (dotted) and the road travelled (bright near the ship)
-	var n: int = 220 if tr["id"] == "assist" else 110
-	for i: int in n:
-		var q: float = float(i) / n
+	var n_pts: int = 140 + 40 * flybys.size()
+	for i: int in n_pts:
+		var q: float = float(i) / n_pts
 		var pt: Vector2 = (_path(q) + off).floor()
 		if q <= p:
 			draw_rect(Rect2(pt, Vector2(1, 1)), Color(UI.CYAN, 0.25 + 0.75 * pow(q / maxf(p, 0.001), 6.0)))
 		elif i % 3 == 0:
 			draw_rect(Rect2(pt, Vector2(1, 1)), Color(1, 1, 1, 0.22))
+	# decisions still ahead, at their point on the route
+	for ev: Dictionary in Game.run["events"]:
+		if String(ev["phase"]) == "cruise" and not bool(ev["done"]):
+			var ep: Vector2 = (_path(float(ev["at"])) + off).floor()
+			Fx.glow(self, ep, 8.0, Color(1.0, 0.6, 0.2, 0.35 + 0.2 * sin(t * 5.0)), true)
+			Pix.text_oc(self, ep.x, ep.y + 4.0, "!", 10, UI.ORANGE)
 	var ship: Vector2 = (_path(p) + off).floor()
 	var dir: Vector2 = _path(minf(1.0, p + 0.004)) - _path(maxf(0.0, p - 0.004))
 	_draw_storm(off, ship)
-	var fr: int = posmod(roundi(atan2(-dir.y, dir.x) / (PI / 4.0)), 8)
-	if lost:  # a dead ship tumbles slowly through its eight headings
-		draw_texture_rect_region(tex_ship8, Rect2(ship - Vector2(11, 11), Vector2(23, 23)), Rect2((int(t * 2.0) % 8) * 23, 0, 23, 23), Color(0.45, 0.45, 0.55))
-	else:
-		if p > 0.0 and p < 1.0:
-			for j: int in 4:  # engine trail twinkles along the path just flown
-				var tp: Vector2 = _path(maxf(0.0, p - 0.012 * (j + 1))) + off
-				Fx.sparkle(self, tp, fposmod(t * 2.0 + j * 0.25, 1.0), Color("9fe8ff"), 0)
-		draw_texture_rect_region(tex_ship8, Rect2(ship - Vector2(11, 11), Vector2(23, 23)), Rect2(fr * 23, 0, 23, 23))
-		if fposmod(t, 3.0) < 0.3:  # sunlight glinting off the solar panels
-			Fx.sparkle(self, ship + Vector2(-3, -4), fposmod(t, 3.0) / 0.3, Color.WHITE, 0)
+	_draw_marker(ship, dir)
 	if lost:
 		if int(t * 4.0) % 2 == 0:
-			Pix.text_oc(self, ship.x, ship.y - 16.0, "SIGNAL LOST", 10, UI.RED)
-	elif flyby_age < 1.0:
-		Fx.sparkle(self, ship, flyby_age, UI.YELLOW, 2)
-		Fx.glow(self, ship, 16.0, Color(1.0, 0.9, 0.5, 0.5 * (1.0 - flyby_age)), true)
-		Pix.text_oc(self, 320.0, 84.0, flyby_name + ": FREE SPEED FROM GRAVITY", 10, UI.YELLOW)  # clear of the crowded inner planets
+			Pix.text_oc(self, ship.x, ship.y - 12.0, "SIGNAL LOST", 10, UI.RED)
+	elif flyby_age < 1.6:
+		Fx.sparkle(self, ship, minf(1.0, flyby_age), UI.YELLOW, 1)
+		Pix.text_oc(self, 362.0, 42.0, flyby_name, 10, UI.YELLOW)
+	_draw_react(ship, true)
 	Fx.flash(self, flash_age, 0.3, Color(1.0, 0.6, 0.2, 0.5))
-	_draw_cam(p, lost)
-	# day counter, path name, distance and a timeline
+	if moon_map:
+		_draw_far_strip()
+	Pix.text_o(self, Vector2(8, 293), "MAP NOT TO SCALE: SIZES AND DISTANCES SQUEEZED, ORDER REAL" if not moon_map else "MAP NOT TO SCALE", 10, Color(UI.DIM, 0.85))
+	_draw_cam(p)
+	# day counter, path name, next stop and a timeline
+	var tr: Dictionary = Game.traj()
 	Pix.panel(self, Rect2(6, 6, 232, 62))
-	_text(Vector2(13, 28), "DAY %s" % (("%.1f" % day) if days < 10.0 else Game.fmt(int(day))), 20, UI.TEXT)
-	_text(Vector2(232.0 - Pix.text_w("of %s" % Game.fmt(days), 10), 20), "of %s" % Game.fmt(days), 10, UI.DIM)
+	_text(Vector2(13, 28), "DAY %s" % (("%.1f" % day) if trip_days < 10.0 else (str(int(day)) if day < 1000.0 else Game.fmt(int(day)))), 20, UI.TEXT)
+	var of_s: String = "of %s days" % Game.fmt(trip_days)
+	_text(Vector2(232.0 - Pix.text_w(of_s, 10), 20), of_s, 10, UI.DIM)
 	_text(Vector2(13, 41), String(tr["name"]), 10, UI.DIM)
-	var km: float = float(Game.dest()["earth_au"]) * AU_KM * p
-	var far: String = "%s km" % Game.fmt(km) if km < 1.0e6 else "%.1f million km" % (km / 1.0e6)
-	_text(Vector2(13, 53), far + " from Earth", 10, UI.CYAN)
+	_text(Vector2(13, 53), _next_stop(p), 10, UI.CYAN)
 	var bx: float = 13.0
 	var bw: float = 218.0
 	draw_rect(Rect2(bx, 58, bw, 5), Color("05070d"))
 	draw_rect(Rect2(bx + 1.0, 59, floorf((bw - 2.0) * p), 3), UI.CYAN)
-	if tr["id"] == "assist":
-		for fb: Array in FLYBYS:
-			draw_rect(Rect2(bx + floorf(bw * float(fb[0]) / 2447.0), 57, 1, 7), UI.YELLOW)
-	if storm_age >= 0.0:
-		draw_rect(Rect2(bx + floorf(bw * lost_p) - 1.0, 57, 3, 7), UI.ORANGE)
-	if storm_age >= 0.0 and storm_age < 4.2:
-		var ev: Dictionary = Game.run["storm"]
-		var sy: float = floorf(lerpf(-34.0, 6.0, clampf(storm_age / 0.25, 0.0, 1.0)))
-		Pix.panel(self, Rect2(246, sy, 230, 32), UI.ORANGE if int(t * 5.0) % 2 == 0 else UI.RED)
-		_text(Vector2(254, sy + 13.0), "SOLAR STORM WARNING   Kp %s" % str(ev["kp"]), 10, UI.YELLOW)
-		_text(Vector2(254, sy + 26.0), "Real event %s (NASA DONKI)" % ev["time"], 10, UI.TEXT)
+	for fb: Array in flybys:
+		draw_rect(Rect2(bx + floorf(bw * float(fb[0]) / trip_days), 57, 1, 7), UI.YELLOW)
+	for ev: Dictionary in Game.run["events"]:
+		if String(ev["phase"]) == "cruise":
+			draw_rect(Rect2(bx + floorf(bw * float(ev["at"])) - 1.0, 57, 3, 7), UI.ORANGE if not bool(ev["done"]) else UI.BORDER)
+	if storm_age >= 0.0 and storm_hit < 0.0:
+		var sev: Dictionary = Game.run.get("storm", {})
+		var sy: float = floorf(lerpf(-34.0, 70.0, clampf(storm_age / 0.25, 0.0, 1.0)))
+		Pix.panel(self, Rect2(246, sy, 236, 32), UI.ORANGE if int(t * 5.0) % 2 == 0 else UI.RED)
+		_text(Vector2(254, sy + 13.0), "SOLAR STORM WARNING   Kp %s" % str(sev.get("kp", "?")), 10, UI.YELLOW)
+		_text(Vector2(254, sy + 26.0), "Real event %s (NASA DONKI)" % sev.get("time", ""), 10, UI.TEXT)
 
-## The storm front: a ring of charged particles racing out from the Sun, then its effect on the ship.
-func _draw_storm(off: Vector2, ship: Vector2) -> void:
+## Centre-x and baseline for a label next to a body: below, above, right or left, whichever is free.
+func _label_spot(c: Vector2, half: Vector2, s: String, taken: Array[Rect2]) -> Vector2:
+	var w: float = Pix.text_w(s, 10)
+	var spots: Array[Vector2] = [Vector2(c.x, c.y + half.y + 10.0), Vector2(c.x, c.y - half.y - 3.0),
+		Vector2(c.x + half.x + 3.0 + w / 2.0, c.y + 4.0), Vector2(c.x - half.x - 3.0 - w / 2.0, c.y + 4.0),
+		Vector2(c.x + half.x + w / 2.0, c.y + half.y + 10.0), Vector2(c.x - half.x - w / 2.0, c.y - half.y - 3.0)]
+	for sp: Vector2 in spots:
+		var r: Rect2 = Rect2(floorf(sp.x - w / 2.0) - 1.0, sp.y - 9.0, w + 2.0, 10.0)
+		if not taken.any(func(q: Rect2) -> bool: return q.intersects(r)):
+			taken.append(r)
+			return sp
+	return spots[0]
+
+## The ship on the map: a small arrow (a symbol, so it is never drawn bigger than a planet).
+func _draw_marker(ship: Vector2, dir: Vector2) -> void:
+	var fr: int = posmod(roundi(atan2(-dir.y, dir.x) / (PI / 4.0)), 8)
+	if lost:
+		fr = int(t * 3.0) % 8  # a dead ship tumbles
+	var dim: bool = react_t >= 0.0 and react_kind == "dim"
+	var mod: Color = Color(0.45, 0.45, 0.55) if lost else (Color(0.55, 0.55, 0.65) if dim else Color.WHITE)
+	if not lost:
+		Fx.glow(self, ship, 7.0, Color(0.3, 0.8, 1.0, 0.35), true)
+	draw_texture_rect_region(tex_marker, Rect2(ship - Vector2(4, 4), Vector2(9, 9)), Rect2(fr * 9, 0, 9, 9), mod)
+
+## The visible answer to an event: sparks, a burn, a dimmed safe mode, a shield, and the price in words.
+func _draw_react(ship: Vector2, small: bool) -> void:
+	if react_t < 0.0:
+		return
+	var k: float = react_t / REACT_S
+	var s: float = 1.0 if small else 2.4
+	match react_kind:
+		"spark":
+			for j: int in 7:
+				var a: float = j * 0.9 + t * 7.0
+				Fx.sparkle(self, ship + Vector2(cos(a), sin(a * 1.3)) * (4.0 + 9.0 * k) * s, fposmod(k * 3.0 + j * 0.2, 1.0), UI.RED if j % 2 == 0 else UI.ORANGE, 0 if small else 1)
+		"burn":
+			if k < 0.7:
+				Fx.flame(self, ship + Vector2(-3, 0) * s, Vector2.LEFT, 8.0 * s, 3.0 * s, t)
+		"dim":
+			if int(t * 3.0) % 2 == 0:
+				Fx.glow(self, ship, 6.0 * s, Color(1.0, 0.75, 0.2, 0.5), true)
+		"shield":
+			Fx.glow(self, ship, 9.0 * s, Color(0.3, 0.85, 1.0, 0.7 * (1.0 - k)), true)
+			Fx.shockwave(self, ship, k, 0, UI.CYAN)
+		"ok":
+			Fx.sparkle(self, ship, k, UI.GREEN, 0 if small else 1)
+	if react_text != "" and small:
+		var y: float = ship.y - 12.0 - floorf(6.0 * k)
+		Pix.text_oc(self, ship.x, y, react_text.to_upper(), 10, UI.RED if react_bad or react_kind == "spark" else (UI.YELLOW if react_kind != "ok" and react_kind != "shield" else UI.GREEN))
+
+## Moon map only: the planets, far beyond the Moon, framed apart with how much farther they are (NASA fact
+## sheets: closest distance from Earth divided by the Moon's 384,400 km).
+func _draw_far_strip() -> void:
+	var r: Rect2 = Rect2(188, 246, 446, 46)
+	Pix.panel(self, r, UI.BORDER, Color(0.02, 0.03, 0.06, 0.92))
+	_text(r.position + Vector2(7, 12), "FAR BEYOND THE MOON (not to scale)", 10, UI.YELLOW)
+	var note: String = "x = times farther, at closest"
+	_text(Vector2(r.end.x - 7.0 - Pix.text_w(note, 10), r.position.y + 12.0), note, 10, UI.DIM)
+	var moon_mkm: float = float(Game.dest()["earth_min_mkm"])
+	var order: Array = []
+	for n: String in PLANETS:
+		if n != "earth":
+			order.append(n)
+	order.sort_custom(func(a: String, b: String) -> bool: return float(Data.DEST[a]["earth_min_mkm"]) < float(Data.DEST[b]["earth_min_mkm"]))
+	var x: float = r.position.x + 8.0
+	for n: String in order:
+		var ratio: float = float(Data.DEST[n]["earth_min_mkm"]) / moon_mkm
+		var rs: String = Game.fmt(snappedf(ratio, 5.0) if ratio < 1000.0 else snappedf(ratio, 100.0)) + "x"
+		var tex: Texture2D = tex_icon[n]
+		var cw: float = maxf(float(tex.get_width()), 1.0)
+		Pix.sprite(self, tex, Vector2(x + floorf(cw / 2.0), r.position.y + 31.0), Color(1, 1, 1, 0.9))
+		var tx: float = x + cw + 3.0
+		_text(Vector2(tx, r.position.y + 28.0), n.to_upper(), 10, UI.DIM)
+		_text(Vector2(tx, r.position.y + 40.0), rs, 10, UI.TEXT)
+		x = tx + maxf(Pix.text_w(rs, 10), Pix.text_w(n, 10)) + 8.0
+
+## The storm front: a ring of charged particles racing out from the Sun.
+func _draw_storm(off: Vector2, _ship: Vector2) -> void:
 	if storm_age < 0.0:
 		return
 	var big: bool = _storm_big()
 	var r: float = storm_age * storm_speed
 	var fade: float = clampf(1.0 - (r - 520.0) / 300.0, 0.0, 1.0)
-	if fade > 0.0:
-		var c: Vector2 = map_sun + off
-		var wide: bool = Game.dest_id != "moon"
-		var span: float = PI if wide else 0.42
-		var n: int = 110 if wide else 46
-		for i: int in n:
-			var a: float = -span + 2.0 * span * (i + 0.5 * sin(i * 12.9)) / n
-			var layer: int = i % 3
-			var rr: float = r - layer * 9.0 - 6.0 * sin(i * 7.3)
-			var pp: Vector2 = c + Vector2(cos(a) * rr, sin(a) * rr * (map_sq if wide else 1.0))
-			if rr > 4.0 and pp.x > -8.0 and pp.x < 648.0 and pp.y > -8.0 and pp.y < CON_Y:
-				Fx.sparkle(self, pp, fposmod(t * 1.7 + i * 0.37, 1.0) * (1.0 - 0.5 * fade), Color("ffd75e") if layer == 0 else Color("ff9f43"), (1 if big else 0) if layer == 0 else 0)
-	if storm_hit >= 0.0 and storm_hit < 1.2:
-		var k: float = storm_hit / 1.2
-		if big and Game.id_has("shield"):
-			Fx.glow(self, ship, 16.0, Color(0.3, 0.85, 1.0, 0.7 * (1.0 - k)), true)
-			Fx.shockwave(self, ship + Vector2(0, 2), k, 0, UI.CYAN)
-		else:
-			for j: int in 5:
-				Fx.sparkle(self, ship + Vector2(cos(j * 1.3 + t * 9.0), sin(j * 2.1 + t * 7.0)) * (6.0 + 10.0 * k), k, UI.RED if big else UI.YELLOW, 1 if big else 0)
+	if fade <= 0.0:
+		return
+	var c: Vector2 = map_sun + off
+	var wide: bool = not moon_map
+	var span: float = PI if wide else 0.42
+	var n: int = 110 if wide else 46
+	for i: int in n:
+		var a: float = -span + 2.0 * span * (i + 0.5 * sin(i * 12.9)) / n
+		var layer: int = i % 3
+		var rr: float = r - layer * 9.0 - 6.0 * sin(i * 7.3)
+		var pp: Vector2 = c + Vector2(cos(a) * rr, sin(a) * rr * (map_sq if wide else 1.0))
+		if rr > 4.0 and pp.x > -8.0 and pp.x < 648.0 and pp.y > -8.0 and pp.y < CON_Y:
+			Fx.sparkle(self, pp, fposmod(t * 1.7 + i * 0.37, 1.0) * (1.0 - 0.5 * fade), Color("ffd75e") if layer == 0 else Color("ff9f43"), (1 if big else 0) if layer == 0 else 0)
 
 func _blit(tex: Texture2D, pos: Vector2, clip: Rect2, mod: Color = Color.WHITE) -> void:
 	var r: Rect2 = Rect2(pos.floor(), tex.get_size()).intersection(clip)
 	if r.size.x > 0.0 and r.size.y > 0.0:
 		draw_texture_rect_region(tex, r, Rect2(r.position - pos.floor(), r.size), mod)
 
-## Close-up window: the ship with the destination growing ahead of it.
-func _draw_cam(p: float, lost: bool) -> void:
+## Close-up window: the ship with the destination growing ahead of it, and its reaction to events.
+func _draw_cam(p: float) -> void:
 	var win: Rect2 = Rect2(486, 32, 148, 92)
 	draw_rect(win.grow(2.0), Color("05070d"))
 	draw_rect(win.grow(1.0), UI.BORDER, false, 1.0)
@@ -876,157 +920,524 @@ func _draw_cam(p: float, lost: bool) -> void:
 		for i: int in 14:
 			var sx: float = fposmod(i * 37.0 + t * 260.0, win.size.x - 8.0) + 4.0
 			Fx.sparkle(self, win.position + Vector2(sx, 8.0 + fposmod(i * 23.0, win.size.y - 16.0)), k, Color("ffb84d"), 0)
-		if _storm_big() and Game.id_has("shield"):
-			Fx.glow(self, sp, 48.0, Color(0.3, 0.85, 1.0, 0.6 * (1.0 - k)), true)
-	_blit(tex_orbiter, sp - tex_orbiter.get_size() / 2.0, win)
-	_text(win.position + Vector2(4, 11), "SHIP CAM", 10, UI.DIM)
+	var dim: bool = react_t >= 0.0 and react_kind == "dim"
+	if react_t >= 0.0 and react_kind == "burn" and react_t < REACT_S * 0.7:
+		Fx.flame(self, sp + Vector2(-24, 5), Vector2.LEFT, 26.0, 9.0, t)
+	_blit(tex_orbiter, sp - tex_orbiter.get_size() / 2.0, win, Color(0.5, 0.5, 0.6) if dim else Color.WHITE)
+	if react_t >= 0.0 and react_kind != "burn":
+		_draw_react(sp, false)
+	_text(win.position + Vector2(4, 11), "SAFE MODE" if dim else "SHIP CAM", 10, UI.YELLOW if dim else UI.DIM)
 	if int(t * 1.5) % 2 == 0:
 		draw_rect(Rect2(win.end.x - 9.0, win.position.y + 4.0, 5, 5), UI.RED)
 
 # ------------------------------------------------------------- arrival
 
-func _orbit_pt(a: float) -> Vector2:
-	return orb_c + Vector2(cos(a) * orb_rx, sin(a) * orb_ry).rotated(orb_tilt)
+func _setup_arrive() -> void:
+	var dv: Dictionary = Game.dv_plan()
+	cap = float(dv["capture"])
+	entry_mode = cap <= 0.0   # the core says: heat shield in air = direct entry, no braking burn
+	band_w = BAND * Game.diff("burn_band")
+	arr = "approach"
+	arr_t = 0.0
+	dv_done = 0.0
+	pressed_once = false
+	released_once = false
+	holding = false
+	armed = false
+	cut_note = ""
+	ang = 0.0
+	strain = 0.0
+	entry_t = 0.0
+	orb_th = deg_to_rad(177.0)
+	fly_p = Vector2.ZERO
+	fly_v = Vector2.ZERO
+	m0 = float(Game.run["mass"])
+	p0 = float(Game.run["prop"])
+	dv_max = Game.ve() * log(m0 / maxf(0.001, m0 - p0)) if m0 > p0 else 99.0
+	if _ring():
+		orb_c = Vector2(396, 150)
+		orb_rx = 188.0
+		orb_ry = 64.0
+		orb_tilt = 0.244
+	else:
+		orb_c = Vector2(404, 150)
+		orb_rx = 172.0
+		orb_ry = 46.0
+		orb_tilt = 0.14
+	if entry_mode:
+		orb_c = Vector2(470, 214)
 
-func _aerobrake() -> bool:
-	return Game.dest_id == "mars" and Game.id_has("heatshield")
+func _lo() -> float:
+	return cap * (1.0 - band_w)
 
-func _arrive_failed() -> bool:
-	return did.has("p") and _dead()
+func _hi() -> float:
+	return cap * (1.0 + band_w)
 
-## Ship position in the arrival scene and whether it is behind the planet.
-func _arrive_ship() -> Vector2:
-	var a0: float = 2.25
-	var p2: Vector2 = _orbit_pt(a0)
-	var dir: Vector2 = (_orbit_pt(a0 - 0.05) - p2).normalized()
-	if st < T_ARRIVE_P:
-		var u: float = st / T_ARRIVE_P
-		u = 1.0 - (1.0 - u) * (1.0 - u) * (1.0 - 0.35 * u)  # arrives fast, slows as it brakes
-		var p1: Vector2 = p2 - dir * 150.0
-		return Vector2(-70, p1.y - 24.0).bezier_interpolate(p1.lerp(Vector2(-70, p1.y - 24.0), 0.5), p1, p2, u)
-	if _arrive_failed():
-		return p2 + (dir * 0.8 + Vector2(0.6, -0.12)).normalized() * 210.0 * (st - T_ARRIVE_P)
-	return _orbit_pt(a0 - 1.2 * (st - T_ARRIVE_P))
+func _cutoff() -> float:
+	return cap * (1.0 + 3.0 * band_w)
+
+## Fuel on board while the burn runs: the rocket equation on the speed change made so far.
+func _fuel_now() -> float:
+	if stage == "arrive" and not entry_mode and arr in ["burn", "grace"]:
+		return maxf(0.0, p0 - m0 * (1.0 - exp(-dv_done / Game.ve())))
+	return float(Game.run["prop"])
+
+## Shape of the orbit for the speed change made so far: open (e > 1) until the band, then an ellipse that
+## closes to the planned circle; burning past the plan pulls the far side down (apoapsis at the ship).
+func _ecc() -> float:
+	if dv_done <= _lo():
+		return 1.0 + 0.6 * (_lo() - dv_done) / maxf(0.001, _lo())
+	if dv_done <= cap:
+		return 0.85 * (cap - dv_done) / maxf(0.001, cap - _lo())
+	return minf(0.35, (dv_done - cap) / cap * 1.2)
+
+func _conic_pt(th: float, e: float) -> Vector2:
+	var dd: float = th - PI / 2.0
+	var r: float = (1.0 - e) / (1.0 - e * cos(dd)) if dv_done > cap else (1.0 + e) / (1.0 + e * cos(dd))
+	return orb_c + Vector2(cos(th) * r * orb_rx, sin(th) * r * orb_ry).rotated(orb_tilt)
+
+func _conic_ok(th: float, e: float) -> bool:
+	if dv_done > cap:
+		return true
+	var den: float = 1.0 + e * cos(th - PI / 2.0)
+	return den > 0.05 and (1.0 + e) / den < 2.6
 
 func _step_arrive(dt: float) -> void:
-	var burning: bool = st < T_ARRIVE_P and not _aerobrake()
-	Audio.loop("thrust", burning, -8.0)
-	if st < T_ARRIVE_P and _aerobrake() and randf() < dt * 30.0:
-		_spark(_arrive_ship() + Vector2(randf_range(10, 30), randf_range(-14, 20)), Vector2(-randf_range(60, 140), randf_range(-20, 20)), 0.5, Color("ff9f43"), 0.0)
-	if _once("p", T_ARRIVE_P):
-		Game.phase_arrive()
-		if _dead():
-			Audio.play("alarm", -5.0)
-			for i: int in 6:
-				_puff(_arrive_ship() + Vector2(28, 6), Vector2(randf_range(10, 50), randf_range(-16, 16)), 0.9, 0, Color(0.7, 0.7, 0.8), 0.0)
-		else:
-			Audio.play("arrive", -3.0)
-			flyby_age = 0.0
-		_set_hint()
-	if st > T_ARRIVE_END:
-		if _dead():
-			_end()
-		elif not left:
-			left = true
-			Game.flow("probe" if Game.dest_id == "saturn" else "landing")
+	arr_t += dt
+	var held: bool = _space_held()
+	if not armed:
+		armed = not held
+		held = false
+	if auto:
+		held = _auto_hold()
+	match arr:
+		"approach":
+			var u: float = clampf(arr_t / 2.0, 0.0, 1.0)
+			if entry_mode:
+				if arr_t >= 1.6:
+					arr = "entry"
+					arr_t = 0.0
+			else:
+				orb_th = lerpf(deg_to_rad(177.0), PI / 2.0, 1.0 - (1.0 - u) * (1.0 - u))
+				if u >= 1.0:
+					arr = "burn"
+					arr_t = 0.0
+		"burn", "grace":
+			_step_burn(dt, held)
+		"orbit":
+			orb_th -= dt * 1.1
+			if arr_t > 2.8:
+				Game.goto("probe" if _ring() else "landing")
+		"flyby":
+			var e: float = _ecc()
+			var nth: float = orb_th - dt * 0.8
+			if fly_p == Vector2.ZERO:
+				fly_p = _conic_pt(orb_th, e)
+			if _conic_ok(nth, e) and fly_v.length() < 400.0:
+				var np: Vector2 = _conic_pt(nth, e)
+				fly_v = (np - fly_p) / maxf(dt, 0.001)
+				fly_p = np
+				orb_th = nth
+			else:
+				fly_p += fly_v * dt
+			if arr_t > 3.4:
+				_end()
+		"entry":
+			_step_entry(dt, held)
+		"entered":
+			if arr_t > 1.8:
+				Game.goto("probe" if _ring() else "landing")
+		"burnup", "skip":
+			if arr_t > 3.0:
+				_end()
+	if holding and not entry_mode and randf() < dt * 30.0:
+		var sh: Vector2 = _conic_pt(orb_th, _ecc())
+		_puff(sh + Vector2(26, 6), Vector2(randf_range(40, 90), randf_range(-12, 12)), 0.6, 0, Color(1.0, 0.85, 0.7, 0.7), 0.0)
 
-func _orbit_half(front: bool, done: bool) -> void:
-	var n: int = 150
+func _auto_hold() -> bool:
+	if entry_mode:
+		return ang > -0.02
+	return arr in ["burn", "grace"] and dv_done < cap
+
+func _step_burn(dt: float, held: bool) -> void:
+	var fuel_out: bool = dv_done >= dv_max - 0.0001
+	if held and not fuel_out:
+		if not holding:
+			Audio.play("ignition", -8.0)
+		holding = true
+		pressed_once = true
+		arr = "burn"
+		dv_done = minf(dv_done + cap / BURN_FULL_S * dt, dv_max)
+		shake = maxf(shake, 0.8)
+		Audio.loop("thrust", true, -8.0)
+		if dv_done >= _cutoff():
+			cut_note = "SAFETY CUT-OFF"
+			_burn_done()
+		return
+	Audio.loop("thrust", false)
+	var was: bool = holding
+	holding = false
+	if fuel_out and dv_done < cap:
+		_burn_done()   # the tank is dry before the plan: the core decides what that means
+		return
+	if was:
+		released_once = true
+		if dv_done >= _lo():
+			_burn_done()
+		else:
+			arr = "grace"
+			arr_t = 0.0
+	elif arr == "grace":
+		orb_th -= dt * 0.12
+		if arr_t > GRACE_S:
+			_flew_past()
+
+## The burn is over: the core books the planned capture (and radiation, objectives), then the fuel is set
+## to what this burn really used, by the same rocket equation, and its log line says the real numbers.
+func _burn_done() -> void:
+	Audio.loop("thrust", false)
+	holding = false
+	if dv_max < cap:
+		Game.phase_arrive()   # not enough fuel for the plan: the core fails the arrival and says why
+		if _dead():
+			arr = "flyby"
+			arr_t = 0.0
+			Audio.play("alarm", -5.0)
+			_set_hint()
+			return
+	else:
+		Game.phase_arrive()
+	# undo the planned burn the core booked and make the one flown, with the core's own rocket equation
+	Game.run["mass"] = m0
+	Game.run["prop"] = p0
+	var used: float = absf(Game.burn(dv_done))
+	var ve: float = Game.ve()
+	var mf: float = float(Game.run["mass"])
+	var lg: Array = Game.run["log"]
+	for i: int in range(lg.size() - 1, -1, -1):
+		if String(lg[i]["text"]).begins_with("Orbit reached"):
+			lg[i]["text"] = "Orbit reached: braking burn of %.2f km/s (plan %.2f km/s) used %s kg of fuel (rocket equation, Isp %d s)." % [
+				dv_done, cap, Game.fmt(used), int(Data.ISP)]
+			break
+	if dv_done > _hi():
+		var waste: float = m0 * exp(-_hi() / ve) - mf
+		Game.note(false, "BURNED TOO LONG%s: %s km/s past the green band wasted %s kg of fuel." % [
+			" (" + cut_note + ")" if cut_note != "" else "", str(snappedf(dv_done - _hi(), 0.01)), Game.fmt(waste)])
+	elif dv_done < cap:
+		Game.note(true, "Stopped %s km/s short of the plan: captured into a longer orbit." % str(snappedf(cap - dv_done, 0.01)))
+	arr = "orbit"
+	arr_t = 0.0
+	flyby_age = 0.0
+	Audio.play("arrive", -3.0)
+	_set_hint()
+
+func _flew_past() -> void:
+	var used: float = Game.burn(dv_done)
+	Game.fail("FLEW PAST %s. The braking burn stopped at %s km/s, short of the green band (%s km/s): gravity could not catch the ship. It used %s kg of fuel." % [
+		Game.place(), str(snappedf(dv_done, 0.01)), str(snappedf(_lo(), 0.01)), Game.fmt(absf(used))])
+	arr = "flyby"
+	arr_t = 0.0
+	Audio.play("alarm", -5.0)
+	_set_hint()
+
+## Entry: hold to lift the nose (shallower), let go to dive (steeper). Gusts push it about. Out of the green
+## for about a second: too steep burns up, too shallow skips off the air. Game rules.
+func _step_entry(dt: float, held: bool) -> void:
+	var hw: float = ENTRY_HW * Game.diff("burn_band")
+	if held:
+		pressed_once = true
+	elif pressed_once:
+		released_once = true
+	if not pressed_once:
+		return   # the lander waits at the top of the air until the player starts
+	entry_t += dt
+	var gust: float = 0.28 * sin(t * 2.3) + 0.18 * sin(t * 5.1 + 1.0)
+	ang += ((-0.55 if held else 0.38) + gust) * dt
+	ang = clampf(ang, -1.0, 1.0)
+	Audio.loop("thrust", true, -14.0, 0.6)
+	if absf(ang) > hw:
+		strain += dt / 1.1
+	else:
+		strain = maxf(0.0, strain - dt * 0.6)
+	if randf() < dt * (20.0 + 30.0 * maxf(0.0, ang)):
+		var sh: Vector2 = _entry_ship()
+		_spark(sh + Vector2(randf_range(-4, 4), randf_range(-3, 3)), Vector2(-randf_range(60, 140), -randf_range(10, 50)), 0.5, Color("ff9f43"), 0.0)
+	if strain >= 1.0 or absf(ang) >= 1.0:
+		Audio.loop("thrust", false)
+		if ang > 0.0:
+			Game.fail("BURNED UP. The entry was too steep: the air heated the shield past what it could take and the lander broke apart.")
+			arr = "burnup"
+			Audio.play("explosion", -2.0)
+			flash_age = 0.0
+		else:
+			Game.fail("SKIPPED OFF. The entry was too shallow: the lander bounced off the top of the air and flew back out into space.")
+			arr = "skip"
+			Audio.play("alarm", -5.0)
+		arr_t = 0.0
+		_set_hint()
+		return
+	if entry_t >= ENTRY_S:
+		Audio.loop("thrust", false)
+		Game.phase_arrive()
+		arr = "entered"
+		arr_t = 0.0
+		Audio.play("arrive", -3.0)
+		_set_hint()
+
+## Entry: the lander slides down a corridor from the upper left toward the glowing edge of the air.
+func _entry_ship() -> Vector2:
+	var u: float = clampf(entry_t / ENTRY_S, 0.0, 1.0)
+	if arr == "approach":
+		u = -0.25 * (1.0 - arr_t / 1.6)
+	var a: Vector2 = ENTRY_A
+	var b: Vector2 = ENTRY_B
+	var nrm: Vector2 = (b - a).normalized().orthogonal()   # points up and right: "shallower"
+	var pos: Vector2 = a.lerp(b, u) - nrm * ang * 34.0
+	if arr == "skip":
+		pos += Vector2(150, -90) * arr_t
+	return pos
+
+func _orbit_half(front: bool, e: float, solid: bool) -> void:
+	var n: int = 420
+	var c: Color = UI.CYAN
+	if arr in ["burn", "grace", "approach"]:
+		c = UI.GREEN if dv_done >= _lo() and dv_done <= _hi() else (UI.ORANGE if dv_done < _lo() else UI.RED)
+	var open_curve: bool = dv_done < _lo()
 	for j: int in n:
-		var a: float = TAU * j / n
-		if (sin(a) >= 0.0) != front or (not done and j % 2 == 0):
+		var th: float = TAU * j / n
+		if (sin(th) >= 0.0) != front or (open_curve and j % 4 == 3) or not _conic_ok(th, e):
 			continue
-		draw_rect(Rect2(_orbit_pt(a).floor(), Vector2(1, 1)), Color(UI.CYAN, (0.75 if front else 0.3) * (1.0 if done else 0.6)))
+		draw_rect(Rect2(_conic_pt(th, e).floor(), Vector2(1, 1)), Color(c, 1.0 if front else 0.55))
 
 func _draw_big_planet(layer: int) -> void:
 	var tex: Texture2D = [tex_big_back, tex_big, tex_big_front][layer]
 	if tex != null:
 		Pix.sprite(self, tex, orb_c)
 
-func _draw_orbiter(pos: Vector2, flip: bool) -> void:
+func _draw_orbiter(pos: Vector2, flip: bool, mod: Color = Color.WHITE) -> void:
 	var s: Vector2 = tex_orbiter.get_size()
 	var tl: Vector2 = (pos - s / 2.0).floor()
 	if flip:
-		draw_texture_rect(tex_orbiter, Rect2(tl, Vector2(-s.x, s.y)), false)  # a negative width mirrors in place
+		draw_texture_rect(tex_orbiter, Rect2(tl, Vector2(-s.x, s.y)), false, mod)  # a negative width mirrors in place
 	else:
-		draw_texture(tex_orbiter, tl)
+		draw_texture(tex_orbiter, tl, mod)
 
 func _draw_arrive() -> void:
-	var ua: float = clampf(st / T_ARRIVE_P, 0.0, 1.0)
-	var scroll: float = 3.0 * st + 70.0 * T_ARRIVE_P * (1.0 - pow(1.0 - ua, 3.0)) / 3.0  # fast in, slow once caught
-	Pix.tiled(self, tex_space, 0, scroll * 0.5)
-	Pix.stars(self, t, Vector2(640, 298), 60, 33, Vector2(-scroll, 0))
-	var failed: bool = _arrive_failed()
-	var done: bool = did.has("p") and not failed
-	var ship: Vector2 = _arrive_ship().floor()
-	var a_now: float = 2.25 - 1.2 * (st - T_ARRIVE_P)
-	var behind: bool = done and sin(a_now) < 0.0
+	var slow: float = 0.25 if arr in ["burn", "grace", "entry"] else 1.0
+	Pix.tiled(self, tex_space, 0, t * 6.0 * slow)
+	Pix.stars(self, t, Vector2(640, 298), 60, 33, Vector2(-t * 12.0 * slow, 0))
+	if entry_mode:
+		_draw_entry()
+		return
+	var e: float = _ecc()
+	var solid: bool = arr == "orbit"
+	var ship: Vector2 = _conic_pt(orb_th, e).floor()
+	if arr == "flyby" and fly_p != Vector2.ZERO:
+		ship = fly_p.floor()
+	var behind: bool = sin(orb_th) < 0.0 and arr == "orbit"
+	var off: Vector2 = Vector2(randf_range(-shake, shake), randf_range(-shake, shake)).floor() if shake > 0.3 else Vector2.ZERO
 	_draw_big_planet(0)
-	_orbit_half(false, done)
+	_orbit_half(false, e, solid)
 	if behind:
-		_draw_orbiter(ship, true)
+		_draw_orbiter(ship + off, true)
 	_draw_big_planet(1)
 	_draw_big_planet(2)
-	_orbit_half(true, done)
+	_orbit_half(true, e, solid)
 	if not behind:
-		if st < T_ARRIVE_P:
-			if _aerobrake():
-				Fx.glow(self, ship + Vector2(30, 4), 24.0, Color(1.0, 0.55, 0.2, 0.7), true)
-			else:
-				Fx.flame(self, ship + Vector2(25, 6), Vector2.RIGHT, 38.0, 11.0, t)
-				Fx.glow(self, ship + Vector2(40, 6), 24.0, Color(1.0, 0.7, 0.35, 0.4), true)
-		_draw_orbiter(ship, true)
+		if holding:
+			Fx.flame(self, ship + off + Vector2(25, 6), Vector2.RIGHT, 30.0 + 6.0 * sin(t * 30.0), 10.0, t)
+			Fx.glow(self, ship + off + Vector2(38, 6), 22.0, Color(1.0, 0.7, 0.35, 0.45), true)
+		_draw_orbiter(ship + off, true)
 	_draw_parts(Vector2.ZERO)
-	if done and flyby_age < 1.0:
+	if arr == "orbit" and flyby_age < 1.0:
 		Fx.sparkle(self, ship, flyby_age, UI.GREEN, 2)
-	Pix.panel(self, Rect2(6, 6, 250, 42))
+	# the speed-change gauge: green band from Game.diff, the plan, and where the fuel runs out
+	Pix.panel(self, Rect2(6, 6, 300, 64))
 	_text(Vector2(13, 28), Game.place(), 20, UI.TEXT)
-	if failed:
-		_text(Vector2(13, 42), "NO FUEL TO BRAKE: FLYING PAST", 10, UI.RED)
-	elif done:
-		_text(Vector2(13, 42), "IN ORBIT", 10, UI.GREEN)
+	var status: String = "BRAKING BURN"
+	var sc: Color = UI.ORANGE
+	match arr:
+		"approach":
+			status = "APPROACHING"
+			sc = UI.DIM
+		"grace":
+			status = "STILL TOO FAST"
+			sc = UI.RED if int(t * 4.0) % 2 == 0 else UI.ORANGE
+		"orbit":
+			status = "IN ORBIT" if dv_done <= _hi() else "FUEL WASTED"
+			sc = UI.GREEN if dv_done <= _hi() else UI.YELLOW
+		"flyby":
+			status = "FLEW PAST"
+			sc = UI.RED
+	_text(Vector2(118, 28), status, 10, sc)
+	var dv_s: String = "%.2f of %.2f km/s" % [dv_done, cap]
+	_text(Vector2(13, 42), "SPEED CHANGE", 10, UI.DIM)
+	_text(Vector2(13 + Pix.text_w("SPEED CHANGE ", 10), 42), dv_s, 10, UI.YELLOW)
+	var g: Rect2 = Rect2(13, 46, 286, 10)
+	var gmax: float = _cutoff()
+	draw_rect(g.grow(1.0), UI.BORDER, false, 1.0)
+	draw_rect(g, Color("05070d"))
+	var bx0: float = g.position.x + floorf(g.size.x * _lo() / gmax)
+	var bx1: float = g.position.x + floorf(g.size.x * _hi() / gmax)
+	draw_rect(Rect2(bx0, g.position.y, bx1 - bx0, g.size.y), Color(UI.GREEN, 0.35))
+	draw_rect(Rect2(g.position.x + 1.0, g.position.y + 2.0, floorf((g.size.x - 2.0) * clampf(dv_done / gmax, 0.0, 1.0)), g.size.y - 4.0),
+		UI.GREEN if dv_done >= _lo() and dv_done <= _hi() else (UI.ORANGE if dv_done < _lo() else UI.RED))
+	var px: float = g.position.x + floorf(g.size.x * cap / gmax)
+	draw_rect(Rect2(px, g.position.y - 2.0, 1, g.size.y + 4.0), Color.WHITE)
+	_text(Vector2(px - 9.0, 66), "PLAN", 10, UI.DIM)
+	if dv_max < gmax:
+		var fx_: float = g.position.x + floorf(g.size.x * dv_max / gmax)
+		draw_rect(Rect2(fx_, g.position.y - 2.0, 1, g.size.y + 4.0), UI.RED)
+		var fw: float = Pix.text_w("FUEL OUT", 10)
+		_text(Vector2(299.0 - fw, 42), "FUEL OUT", 10, UI.RED)
+	_text(Vector2(13, 66), "OPEN", 10, UI.DIM)
+	if arr == "grace":
+		var gw: float = floorf(120.0 * (1.0 - arr_t / GRACE_S))
+		draw_rect(Rect2(320.0 - gw / 2.0, 92, gw, 3), UI.RED)
+	if _burn_btn_on():
+		_draw_burn_btn("HOLD: BURN")
+
+func _draw_burn_btn(label: String) -> void:
+	var down: bool = _space_held()
+	Pix.button(self, BURN_BTN, label, "btn_go" if not down else "btn_go", "pressed" if down else "normal")
+
+func _draw_entry() -> void:
+	var hw: float = ENTRY_HW * Game.diff("burn_band")
+	var u: float = clampf(entry_t / ENTRY_S, 0.0, 1.0)
+	_draw_big_planet(1)
+	# the glowing top of the air along the limb
+	var rr: float = tex_big.get_width() / 2.0 - 5.0 if tex_big != null else 100.0
+	for i: int in 48:
+		var a: float = PI + 0.12 + 1.4 * i / 47.0
+		var lp: Vector2 = orb_c + Vector2(cos(a), sin(a)) * (rr + 3.0)
+		draw_rect(Rect2(lp.floor(), Vector2(1, 1)), Color(1.0, 0.85, 0.6, 0.35))
+	# the corridor: centre line and the green edges on the scene itself
+	var a0p: Vector2 = ENTRY_A
+	var b0p: Vector2 = ENTRY_B
+	var nrm: Vector2 = (b0p - a0p).normalized().orthogonal()
+	for i: int in 160:
+		var q: float = i / 159.0
+		var c: Vector2 = a0p.lerp(b0p, q)
+		draw_rect(Rect2((c - nrm * hw * 34.0).floor(), Vector2(1, 1)), Color(UI.GREEN, 0.85 if q > u else 0.25))
+		draw_rect(Rect2((c + nrm * hw * 34.0).floor(), Vector2(1, 1)), Color(UI.GREEN, 0.85 if q > u else 0.25))
+		if i % 2 == 0:
+			draw_rect(Rect2((c - nrm * 34.0).floor(), Vector2(1, 1)), Color(UI.RED, 0.5))
+			draw_rect(Rect2((c + nrm * 34.0).floor(), Vector2(1, 1)), Color(UI.ORANGE, 0.5))
+	var mid_c: Vector2 = a0p.lerp(b0p, 0.42)
+	Pix.text_oc(self, mid_c.x + nrm.x * 46.0, mid_c.y + nrm.y * 46.0, "TOO SHALLOW: SKIPS OFF", 10, Color(UI.ORANGE, 0.95))
+	Pix.text_oc(self, mid_c.x - nrm.x * 44.0, mid_c.y - nrm.y * 44.0 + 8.0, "TOO STEEP: BURNS UP", 10, Color(UI.RED, 0.95))
+	var ship: Vector2 = _entry_ship().floor()
+	var heat: float = clampf(0.25 + 0.6 * u + 0.6 * maxf(0.0, ang), 0.0, 1.0) if arr == "entry" and pressed_once else 0.15
+	if arr == "burnup":
+		Fx.explosion(self, ship, arr_t, 2, 60.0)
 	else:
-		_text(Vector2(13, 42), "AEROBRAKING..." if _aerobrake() else "BRAKING BURN...", 10, UI.ORANGE)
-		var dv: float = float(Game.dv_plan()["capture"])
-		if dv > 0.0:
-			var dv_s: String = "%.2f of %.2f km/s" % [dv * ua, dv]
-			_text(Vector2(250.0 - Pix.text_w(dv_s, 10), 42), dv_s, 10, UI.YELLOW)
+		Fx.glow(self, ship + Vector2(6, 4), 10.0 + 14.0 * heat, Color(1.0, 0.55, 0.2, 0.25 + 0.5 * heat), true)
+		_draw_orbiter(ship, false, Color(1.0, 0.9 - 0.3 * heat, 0.8 - 0.4 * heat))
+	_draw_parts(Vector2.ZERO)
+	Fx.flash(self, flash_age, 0.3, Color(1.0, 0.7, 0.3, 0.6))
+	# the corridor gauge
+	Pix.panel(self, Rect2(6, 6, 300, 64))
+	_text(Vector2(13, 28), Game.place(), 20, UI.TEXT)
+	var status: String = "ENTRY: HOLD THE CORRIDOR"
+	var sc: Color = UI.ORANGE
+	match arr:
+		"approach":
+			status = "AT THE TOP OF THE AIR"
+			sc = UI.DIM
+		"entered":
+			status = "THROUGH THE HOT PART"
+			sc = UI.GREEN
+		"burnup":
+			status = "BURNED UP"
+			sc = UI.RED
+		"skip":
+			status = "SKIPPED OFF THE AIR"
+			sc = UI.RED
+	_text(Vector2(118, 28), status, 10, sc)
+	var g: Rect2 = Rect2(13, 46, 286, 10)
+	draw_rect(g.grow(1.0), UI.BORDER, false, 1.0)
+	draw_rect(g, Color("05070d"))
+	var mid: float = g.position.x + floorf(g.size.x / 2.0)
+	var bw: float = floorf(g.size.x / 2.0 * hw)
+	draw_rect(Rect2(mid - bw, g.position.y, bw * 2.0 + 1.0, g.size.y), Color(UI.GREEN, 0.4))
+	var mx: float = mid + floorf(g.size.x / 2.0 * clampf(ang, -1.0, 1.0))
+	draw_rect(Rect2(mx - 1.0, g.position.y - 2.0, 3, g.size.y + 4.0), UI.GREEN if absf(ang) <= hw else UI.RED)
+	_text(Vector2(13, 42), "SHALLOW", 10, UI.DIM)
+	_text(Vector2(299.0 - Pix.text_w("STEEP", 10), 42), "STEEP", 10, UI.DIM)
+	_text(Vector2(13, 66), "AIR BRAKING", 10, UI.DIM)
+	Pix.gauge(self, Rect2(84, 59, 100, 8), u, UI.CYAN)
+	if strain > 0.05:
+		_text(Vector2(192, 66), "DANGER", 10, UI.RED)
+		Pix.gauge(self, Rect2(234, 59, 64, 8), strain, UI.RED)
+	if _burn_btn_on():
+		_draw_burn_btn("HOLD: LIFT")
 
 # ------------------------------------------------------------- home
+
+func _step_home(dt: float) -> void:
+	if react_t >= 0.0:
+		react_t += dt
+		if react_t > REACT_S:
+			react_t = -1.0
+		return
+	if not did.has("p"):
+		var ev: Dictionary = Game.next_event("home")
+		if not ev.is_empty() and home_t / T_HOME >= float(ev["at"]):
+			Audio.play("alarm", -10.0)
+			_open_card(ev)
+			return
+		home_t += dt
+		if home_t >= T_HOME and Game.next_event("home").is_empty():
+			did["p"] = true
+			Game.phase_home()
+			_set_hint()
+		return
+	dl_t += dt
+	if float(Game.run["sent"]) > 0.0 and dl_t < 5.8 and not did.has("rb%d" % int(dl_t / 0.7)) and dl_t > 0.8:
+		did["rb%d" % int(dl_t / 0.7)] = true
+		Audio.play("radio_blip", -14.0, 1.0 + 0.12 * (int(dl_t / 0.7) % 3))  # data packets leaving
+	if dl_t > T_DOWNLINK:
+		_end()
 
 func _draw_home() -> void:
 	Pix.tiled(self, tex_space, 0, t * 2.0)
 	Pix.stars(self, t, Vector2(640, 298), 60, 44)
-	var moon: bool = Game.dest_id == "moon"
 	var obj: Dictionary = Game.run["obj"]
 	var sent: float = float(Game.run["sent"])
 	var made: float = maxf(float(Game.run["data"]), 0.001)
-	var e_pos: Vector2 = Vector2(540, 104) if moon else Vector2(586, 74)
+	var e_pos: Vector2 = Vector2(540, 104) if moon_map else Vector2(586, 74)
 	_draw_big_planet(0)
 	_draw_big_planet(1)
 	_draw_big_planet(2)
-	if moon:
+	if moon_map:
 		Pix.sprite(self, tex_earth_mid, e_pos)
 	else:
 		Fx.glow(self, e_pos, 12.0, Color(0.4, 0.7, 1.0, 0.4), true)
-		Pix.sprite(self, tex_small["earth"], e_pos)
-	_text_c(e_pos.x, e_pos.y + (52.0 if moon else 20.0), "EARTH", UI.DIM)
-	var ship: Vector2 = Vector2(300, 178) if moon else Vector2(318, 170)
+		Pix.sprite(self, tex_icon["earth"], e_pos)
+	_text_c(e_pos.x, e_pos.y + (52.0 if moon_map else 18.0), "EARTH", UI.DIM)
+	var ship: Vector2 = Vector2(300, 178) if moon_map else Vector2(318, 170)
 	ship += Vector2(0, roundf(sin(t * 1.2) * 2.0))
 	var dish: Vector2 = ship + Vector2(42, 2)
-	if sent > 0.0:  # radio waves crawl to Earth
+	var dim: bool = react_t >= 0.0 and react_kind == "dim"
+	if sent > 0.0 and did.has("p"):  # radio waves crawl to Earth
 		for i: int in 6:
-			var k: float = fposmod(st * 0.3 + i / 6.0, 1.0)
+			var k: float = fposmod(dl_t * 0.3 + i / 6.0, 1.0)
 			var wp: Vector2 = dish.lerp(e_pos + Vector2(-14, 4), k).floor()
 			var wf: int = mini(2, int(k * 3.0))
 			draw_texture_rect_region(tex_wave, Rect2(wp - Vector2(6, 22), Vector2(12, 44)), Rect2(wf * 12, 0, 12, 44), Color(1, 1, 1, minf(1.0, 3.0 * (1.0 - k))))
-	_draw_orbiter(ship, false)
-	var title: String = "SENDING SCIENCE HOME"
-	var sub: String = ""
+	if react_t >= 0.0 and react_kind == "burn" and react_t < REACT_S * 0.7:
+		Fx.flame(self, ship + Vector2(-26, 4), Vector2.LEFT, 18.0, 7.0, t)
+	_draw_orbiter(ship, false, Color(0.5, 0.5, 0.6) if dim else Color.WHITE)
+	_draw_react(ship, false)
+	if react_t >= 0.0 and react_text != "":
+		Pix.text_oc(self, ship.x, ship.y - 30.0 - floorf(6.0 * react_t / REACT_S), react_text.to_upper(), 10, UI.RED if react_bad or react_kind == "spark" else UI.YELLOW)
+	_draw_parts(Vector2.ZERO)
+	var title: String = "SENDING SCIENCE HOME" if did.has("p") else "AFTER THE SITE"
+	var sub: String = "" if did.has("p") else "Getting ready to send it all home"
 	var sub_c: Color = UI.DIM
-	if moon and did.has("p"):
+	if bool(Game.dest()["returns"]) and did.has("p"):
 		if obj.get("return", false):
-			var p: float = clampf((st - 1.2) / 5.6, 0.0, 1.0)
+			var p: float = clampf((dl_t - 1.2) / 5.6, 0.0, 1.0)
 			var from: Vector2 = orb_c + Vector2(70, -72)
 			var pos: Vector2 = from.bezier_interpolate(Vector2(250, 40), Vector2(420, 30), e_pos + Vector2(-34, 6), p).floor()
 			if p > 0.0 and p < 1.0:
@@ -1040,26 +1451,32 @@ func _draw_home() -> void:
 			elif p >= 1.0:
 				Fx.sparkle(self, e_pos + Vector2(-30, 6), fposmod(t, 1.0), UI.GREEN, 2)
 			title = "SAMPLES COMING HOME"
-			sub = "%d Moon samples on board" % int(Game.run["samples"])
+			sub = "%d samples on board" % int(Game.run["samples"])
 			sub_c = UI.GREEN
 		else:
 			title = "NO RIDE HOME"
-			sub = "The samples stay on the Moon"
+			sub = "The samples stay on %s" % Game.place().capitalize()
 			sub_c = UI.RED
 	Pix.panel(self, Rect2(6, 6, 262, 62))
 	_text(Vector2(13, 28), title, 20, UI.TEXT)
 	if sub != "":
 		_text(Vector2(13, 42), sub, 10, sub_c)
 	if not did.has("p"):
+		var bx: float = 13.0
+		draw_rect(Rect2(bx, 54, 248, 5), Color("05070d"))
+		draw_rect(Rect2(bx + 1.0, 55, floorf(246.0 * clampf(home_t / T_HOME, 0.0, 1.0)), 3), UI.CYAN)
+		for ev: Dictionary in Game.run["events"]:
+			if String(ev["phase"]) == "home":
+				draw_rect(Rect2(bx + floorf(248.0 * float(ev["at"])) - 1.0, 53, 3, 7), UI.ORANGE if not bool(ev["done"]) else UI.BORDER)
 		return
-	var shown_gb: float = sent * clampf((st - 0.8) / 5.0, 0.0, 1.0)
+	var shown_gb: float = sent * clampf((dl_t - 0.8) / 5.0, 0.0, 1.0)
 	_text(Vector2(13, 55), "DATA", 10, UI.DIM)
 	Pix.gauge(self, Rect2(42, 48, 120, 8), clampf(shown_gb / made, 0.0, 1.0), UI.CYAN if sent / made >= 0.9 else UI.YELLOW)
 	if sent > 0.0:
 		_text(Vector2(168, 55), "%s of %s Gb" % [Game.fmt(shown_gb), Game.fmt(made)], 10, UI.TEXT)
 	else:
 		_text(Vector2(168, 55), "NOTHING SENT", 10, UI.RED)
-	if moon and obj.get("return", false):
+	if bool(Game.dest()["returns"]) and obj.get("return", false):
 		for i: int in mini(8, int(Game.run["samples"])):
 			draw_texture(tex_sample, Vector2(180 + i * 11, 30))
 
@@ -1068,8 +1485,6 @@ func _draw_home() -> void:
 func _draw() -> void:
 	draw_rect(Rect2(0, 0, 640, 360), UI.BG)
 	match stage:
-		"launch":
-			_draw_launch()
 		"cruise":
 			_draw_cruise()
 		"arrive":
@@ -1078,7 +1493,10 @@ func _draw() -> void:
 			_draw_home()
 	if st < 0.32 and t > st + 0.01:  # not on the first phase: main.gd fades the screen in itself
 		draw_rect(Rect2(0, 0, 640, CON_Y), Color(0, 0, 0, 1.0 - floorf(st / 0.08) * 0.25))
+	_draw_direction()
 	_draw_console()
+	if help_open:
+		_draw_help()
 
 func _text(p: Vector2, s: String, size: int, c: Color) -> void:
 	Pix.text(self, p, s, size, c)
@@ -1086,12 +1504,37 @@ func _text(p: Vector2, s: String, size: int, c: Color) -> void:
 func _text_c(cx: float, y: float, s: String, c: Color) -> void:
 	Pix.text_c(self, cx, y, s, 10, c)
 
-## 30 px display text, centred (countdown digits, the failure stamp).
-func _big(cx: float, y: float, s: String, c: Color) -> void:
-	var f: FontFile = Pix.font()
-	var p: Vector2 = Vector2(floorf(cx - f.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x / 2.0), y)
-	draw_string(f, p + Vector2(3, 3), s, HORIZONTAL_ALIGNMENT_LEFT, -1, 30, Color(0, 0, 0, 0.8))
-	draw_string(f, p, s, HORIZONTAL_ALIGNMENT_LEFT, -1, 30, c)
+## The one direction, centred at the top, with its key; and the "?" button for the list of controls.
+func _draw_direction() -> void:
+	var dr: Array = _direction()
+	var key: String = dr[0]
+	var words: String = dr[1]
+	if words != "":
+		var kw: float = (Pix.text_w(key, 10) + 7.0 + 4.0) if key != "" else 0.0
+		var w: float = kw + Pix.text_w(words, 10) + 14.0
+		var x: float = floorf(362.0 - w / 2.0) if stage == "cruise" else floorf(460.0 - w / 2.0)
+		var y: float = 6.0
+		var hot: bool = key != ""
+		Pix.panel(self, Rect2(x, y, w, 20), UI.YELLOW if hot and int(t * 2.0) % 2 == 0 else UI.BORDER)
+		if key != "":
+			Pix.key_hint(self, Vector2(x + 7.0, y + 3.0), key, words, UI.YELLOW)
+		else:
+			_text(Vector2(x + 7.0, y + 13.0), words, 10, UI.DIM)
+	Pix.panel(self, HELP_BTN, UI.CYAN if help_open else UI.BORDER)
+	Pix.text_c(self, HELP_BTN.get_center().x + 1.0, HELP_BTN.position.y + 13.0, "?", 10, UI.TEXT)
+
+func _draw_help() -> void:
+	draw_rect(Rect2(0, 0, 640, 360), Color(0, 0, 0, 0.55))
+	var r: Rect2 = Rect2(150, 70, 340, 150)
+	Pix.panel(self, r, UI.CYAN)
+	_text(r.position + Vector2(12, 18), "CONTROLS", 20, UI.TEXT)
+	var rows: Array = [["SPACE", "hold: fast-forward the cruise"], ["SPACE", "hold: braking burn, let go in green"],
+		["SPACE", "hold: lift the nose during entry"], ["1 2 3", "pick a choice on a decision card"],
+		["ENTER", "continue after a decision"], ["?", "show or hide this list"]]
+	for i: int in rows.size():
+		var y: float = r.position.y + 30.0 + i * 18.0
+		Pix.key_hint(self, Vector2(r.position.x + 12.0, y), String(rows[i][0]), String(rows[i][1]), UI.TEXT)
+	_text(r.position + Vector2(12, 144), "Click, tap or press ? to close", 10, UI.DIM)
 
 func _lamp(center: Vector2, state: int) -> void:
 	draw_texture_rect_region(tex_lamp, Rect2(center - Vector2(5, 5), Vector2(11, 11)), Rect2(state * 11, 0, 11, 11))
@@ -1102,12 +1545,12 @@ func _gauge(y: float, label: String, frac: float, value: String) -> void:
 	Pix.gauge(self, Rect2(34, y, 80, 8), frac, col)
 	_text(Vector2(118, y + 8.0), value, 10, UI.TEXT)
 
-## Mission-control console: phase lamps, fuel and battery gauges, hint line and the log ticker.
+## Mission-control console: phase lamps, fuel and battery gauges, the info line and the log ticker.
 func _draw_console() -> void:
 	draw_texture(tex_console, Vector2(0, CON_Y))
 	var r: Dictionary = Game.run
-	var cur: int = {"launch": 0, "cruise": 1, "arrive": 2, "home": 4}[stage]
-	var names: Array[String] = ["LIFT", "CRUISE", "ORBIT", "RINGS" if Game.dest_id == "saturn" else "LAND", "HOME"]
+	var cur: int = {"cruise": 1, "arrive": 2, "home": 4}[stage]
+	var names: Array[String] = ["LIFT", "CRUISE", "ARRIVE", "RINGS" if _ring() else "LAND", "HOME"]
 	for i: int in 5:
 		var state: int = 0
 		if i < cur:
@@ -1120,10 +1563,11 @@ func _draw_console() -> void:
 		_lamp(Vector2(cx, CON_Y + 14.0), state)
 		_text_c(cx, CON_Y + 31.0, names[i], UI.TEXT if i == cur else UI.DIM)
 	var prop0: float = maxf(1.0, float(r["calc"]["prop"]))
-	_gauge(CON_Y + 36.0, "FUEL", float(r["prop"]) / prop0, "%s kg" % Game.fmt(r["prop"]))
+	var fuel: float = _fuel_now()
+	_gauge(CON_Y + 36.0, "FUEL", fuel / prop0, "%s kg" % Game.fmt(fuel))
 	var bat: float = float(r["battery"]) / maxf(1.0, float(r["wh"]))
 	_gauge(CON_Y + 47.0, "BATT", bat, "%d%%" % roundi(bat * 100.0) if float(r["wh"]) > 0.0 else "none")
-	# ticker: the hint, then the last three log lines with the newest entry typed out and lit
+	# ticker: the info line, then the last three log lines with the newest entry typed out and lit
 	_text(Vector2(192, CON_Y + 17.0), hint, 10, UI.YELLOW)
 	var first: int = maxi(0, lines.size() - 3)
 	var typed: int = int(new_t * 140.0)
@@ -1139,102 +1583,237 @@ func _draw_console() -> void:
 		if i == 0 or int(lines[i - 1]["e"]) != int(ln["e"]):
 			draw_rect(Rect2(192, y - 6.0, 4, 4), (UI.GREEN if ok else UI.RED) if newest else UI.BORDER)
 		_text(Vector2(200, y), s, 10, (UI.TEXT if ok else UI.RED) if newest else UI.DIM)
-	# key hint: the same framed key cap strip as the landing, surface and drone screens
-	var kl: String = "4x SPEED" if fast else "SPEED UP"
-	var kw: float = Pix.text_w("SPACE", 10) + 7.0 + 4.0 + Pix.text_w(kl, 10) + 12.0
-	Pix.panel(self, Rect2(634.0 - kw, 6, kw, 20))
-	Pix.key_hint(self, Vector2(640.0 - kw, 10.0 if fast else 9.0), "SPACE", kl, UI.YELLOW if fast else UI.TEXT)
 
-# ------------------------------------------------------------- debug hooks for screenshots (tools/dev/shot.sh call=...)
+# ------------------------------------------------------------- debug hooks (tools/dev/shot.sh call=...)
 
-func _warp(to_stage: String, to_st: float) -> void:
+## Steps the screen as the game would, 30 times a second, until `done` says stop (or 60 s of game time).
+func _warp(done: Callable) -> void:
 	var guard: int = 0
-	while (stage != to_stage or st < to_st) and guard < 4000 and is_inside_tree():
+	while not bool(done.call()) and guard < 1800 and is_inside_tree():
+		if EventCard.is_open():
+			break
 		_step(1.0 / 30.0)
 		guard += 1
 
 func debug_freeze() -> void:
 	frozen = true
 
-## The widest launcher the ship kit may hand over (60 x 200), to check that tower, clamps and flame follow it.
-func debug_big_rocket() -> void:
-	var im: Image = tex_rocket.get_image()
-	im.resize(60, 200, Image.INTERPOLATE_NEAREST)
-	tex_rocket = ImageTexture.create_from_image(im)
-	_set_nozzles("")
-
-## Each real launcher sprite from the ship kit on the pad (Game.rocket_id only changes the name shown).
-func _debug_lv(id: String) -> void:
-	Game.rocket_id = id
-	tex_rocket = ShipKit.launcher(id)
-	_set_nozzles(id)
-
-func debug_lv_electron() -> void:
-	_debug_lv("electron")
-
-func debug_lv_falcon9() -> void:
-	_debug_lv("falcon9")
-
-func debug_lv_vulcan() -> void:
-	_debug_lv("vulcan")
-
-func debug_lv_heavy() -> void:
-	_debug_lv("heavy")
-
-func debug_countdown() -> void:
-	_warp("launch", 1.3)
-
-func debug_ignition() -> void:
-	_warp("launch", T_IGN + 0.45)
-
-func debug_liftoff() -> void:
-	_warp("launch", T_LIFT + 1.5)
-
-func debug_climb() -> void:
-	_warp("launch", T_LIFT + 3.3)
-
-func debug_sep() -> void:
-	_warp("launch", T_SEP + 0.5)
-
-func debug_launch_fail() -> void:
-	Game.run["calc"]["mass"] = float(Game.run["calc"]["cap"]) * 2.0
-	_warp("launch", T_BOOM + 0.25)
-
+## Cruise start, half-way, and the first flyby on paths that have one.
 func debug_cruise() -> void:
-	_warp("cruise", 1.6)
+	did_ff = false
+	_warp(func() -> bool: return cruise_t >= 1.2)
+
+func debug_cruise_mid() -> void:
+	_warp_cruise(0.6)
+
+func _warp_cruise(p: float) -> void:
+	for ev: Dictionary in Game.run["events"]:   # the cards are shown by the event hooks below
+		if String(ev["phase"]) == "cruise" and float(ev["at"]) < p:
+			ev["done"] = true
+	_warp(func() -> bool: return _cruise_p() >= p)
 
 func debug_flyby() -> void:
-	_warp("cruise", 2.2)
+	if flybys.is_empty():
+		_warp_cruise(0.5)
+		return
+	_warp_cruise(float(flybys[0][0]) / trip_days + 0.004)
 
+## The next planned cruise event, opened at its point on the route.
+func debug_event() -> void:
+	_warp(func() -> bool: return EventCard.is_open() or stage != "cruise")
+
+## The second planned event: the first one is decided with its first choice.
+func debug_event2() -> void:
+	debug_event()
+	if card != null:
+		card.call("_choose", 0)
+		card.call("_continue")
+	react_t = -1.0
+	debug_event()
+
+func _force_event(id: String, at: float) -> void:
+	var ev: Dictionary = Game.event_by_id(id)
+	ev["at"] = at
+	ev["phase"] = "cruise"
+	for e: Dictionary in Game.run["events"]:
+		if String(e["phase"]) == "cruise":
+			e["done"] = true
+	(Game.run["events"] as Array).push_front(ev)
+
+## The storm: the front on its way, then the card.
 func debug_storm() -> void:
-	_warp("cruise", T_CRUISE_P + 0.9)
+	_force_event("storm", 0.3)
+	_warp(func() -> bool: return storm_age >= 0.35)
 
-func debug_cruise_late() -> void:
-	_warp("cruise", 6.5)
+func debug_storm_card() -> void:
+	_force_event("storm", 0.3)
+	_warp(func() -> bool: return EventCard.is_open())
+
+## The storm hits after "keep working": damage sparks, or the shielding glows.
+func debug_storm_hit() -> void:
+	_force_event("storm", 0.3)
+	_warp(func() -> bool: return EventCard.is_open())
+	if card != null:
+		card.call("_choose", 1)
+		card.call("_continue")
+	_warp(func() -> bool: return storm_hit >= 0.25)
+
+## An event whose choice burns fuel: the ship fires its engine.
+func debug_react_burn() -> void:
+	_force_event("units", 0.3)
+	_warp(func() -> bool: return EventCard.is_open())
+	if card != null:
+		card.call("_choose", 1)
+		card.call("_continue")
+	_warp(func() -> bool: return react_t >= 0.3)
+
+func debug_react_dim() -> void:
+	_force_event("micro", 0.3)
+	_warp(func() -> bool: return EventCard.is_open())
+	if card != null:
+		card.call("_choose", 1)
+		card.call("_continue")
+	_warp(func() -> bool: return react_t >= 0.3)
 
 func debug_cruise_lost() -> void:
 	Game.run["calc"]["draw_cruise"] = 99999.0
-	_warp("cruise", T_CRUISE_P + 1.0)
+	_warp(func() -> bool: return lost_t >= 0.6)
 
+func _to_arrive() -> void:
+	if stage == "cruise":
+		if not did.has("p"):
+			Game.phase_cruise(false)
+		for ev: Dictionary in Game.run["events"]:
+			if String(ev["phase"]) == "cruise":
+				ev["done"] = true
+		_set_stage("arrive")
+
+## Arrival: approach, the burn waiting for SPACE, holding inside the band, burning too long, released too early.
 func debug_arrive() -> void:
-	_warp("arrive", 1.7)
+	_to_arrive()
+	_warp(func() -> bool: return arr_t >= 1.0)
 
+func debug_burn() -> void:
+	_to_arrive()
+	_warp(func() -> bool: return arr in ["burn", "entry"] and arr_t >= 0.5)
+
+func debug_burn_band() -> void:
+	_to_arrive()
+	_warp(func() -> bool: return arr == "burn" or entry_mode)
+	sim_hold = true
+	_warp(func() -> bool: return entry_mode or dv_done >= cap * (1.0 + band_w * 0.4) or arr != "burn")
+	frozen = true
+
+func debug_burn_long() -> void:
+	_to_arrive()
+	_warp(func() -> bool: return arr == "burn" or entry_mode)
+	sim_hold = true
+	_warp(func() -> bool: return entry_mode or dv_done >= cap * (1.0 + band_w * 2.2) or arr != "burn")
+	frozen = true
+
+func debug_burn_open() -> void:
+	_to_arrive()
+	_warp(func() -> bool: return arr == "burn" or entry_mode)
+	sim_hold = true
+	_warp(func() -> bool: return entry_mode or dv_done >= cap * 0.45 or arr != "burn")
+	frozen = true
+
+func debug_burn_early() -> void:
+	_to_arrive()
+	_warp(func() -> bool: return arr == "burn" or entry_mode)
+	sim_hold = true
+	_warp(func() -> bool: return entry_mode or dv_done >= cap * 0.5)
+	sim_hold = false
+	_warp(func() -> bool: return arr == "flyby" and arr_t > 0.8 or entry_mode)
+
+## In orbit after a burn in the band; after one too long.
 func debug_orbit() -> void:
-	_warp("arrive", T_ARRIVE_P + 1.0)
+	_to_arrive()
+	_warp(func() -> bool: return arr == "burn" or entry_mode)
+	sim_hold = true
+	_warp(func() -> bool: return entry_mode or dv_done >= cap)
+	sim_hold = false
+	_warp(func() -> bool: return arr in ["orbit", "entered"] and arr_t > 0.9 or entry_mode)
 
-func debug_orbit_behind() -> void:
-	_warp("arrive", T_ARRIVE_P + 2.4)
+## Arrived: in orbit after a burn in the band, or through the hot part of an entry.
+func debug_arrived() -> void:
+	if not entry_mode and stage == "arrive" or stage == "cruise":
+		_to_arrive()
+	if entry_mode:
+		auto = true
+		_warp(func() -> bool: return arr != "entry" and arr != "approach")
+		auto = false
+		frozen = true
+	else:
+		debug_orbit()
+		frozen = true
 
-func debug_arrive_fail() -> void:
-	_warp("arrive", 0.1)
-	Game.run["prop"] = 0.0
-	_warp("arrive", T_ARRIVE_P + 0.7)
+func debug_orbit_wasted() -> void:
+	_to_arrive()
+	_warp(func() -> bool: return arr == "burn" or entry_mode)
+	sim_hold = true
+	_warp(func() -> bool: return entry_mode or arr == "orbit")
+	sim_hold = false
+	_warp(func() -> bool: return arr_t > 0.9 or entry_mode)
 
+## Direct entry (heat shield in air): the start, the middle, burning up, skipping off.
+func debug_entry() -> void:
+	_to_arrive()
+	_warp(func() -> bool: return arr == "entry" and arr_t > 0.4 or not entry_mode)
+
+func debug_entry_mid() -> void:
+	_to_arrive()
+	auto = true
+	_warp(func() -> bool: return entry_t >= ENTRY_S * 0.55 or not entry_mode)
+	auto = false
+	frozen = true
+
+func debug_entry_steep() -> void:
+	_to_arrive()
+	_warp(func() -> bool: return arr == "entry" or not entry_mode)
+	pressed_once = true
+	_warp(func() -> bool: return arr == "burnup" and arr_t > 0.4 or not entry_mode)
+
+func debug_entry_skip() -> void:
+	_to_arrive()
+	_warp(func() -> bool: return arr == "entry" or not entry_mode)
+	sim_hold = true
+	_warp(func() -> bool: return arr == "skip" and arr_t > 0.5 or not entry_mode)
+
+## The trip home: coasting with an event ahead, an event open, and the downlink.
 func debug_home() -> void:
 	if stage != "home":
 		_set_stage("home")
-	if Game.dest_id == "moon":
+	_warp(func() -> bool: return home_t >= 0.5)
+
+func debug_home_event() -> void:
+	if stage != "home":
+		_set_stage("home")
+	if Game.next_event("home").is_empty():
+		var ev: Dictionary = Game.event_by_id("gyro")
+		ev["at"] = 0.3
+		ev["phase"] = "home"
+		(Game.run["events"] as Array).append(ev)
+	_warp(func() -> bool: return EventCard.is_open())
+
+func debug_downlink() -> void:
+	if stage != "home":
+		_set_stage("home")
+	if bool(Game.dest()["returns"]):
 		Game.run["samples"] = 3
 		Game.run["obj"]["land"] = true
 	Game.run["data"] = maxf(float(Game.run["data"]), 12.0)
-	_warp("home", 3.6)
+	for ev: Dictionary in Game.run["events"]:
+		if String(ev["phase"]) == "home":
+			ev["done"] = true
+	_warp(func() -> bool: return dl_t >= 3.6)
+
+func debug_help() -> void:
+	help_open = true
+
+## Flies the whole screen by itself (at fast-forward): decides every event, burns into the band or holds the
+## corridor, then hands over to the next screen (or the report on the way home). For error checks.
+func debug_autopilot() -> void:
+	auto = true
+	if stage == "home":
+		Game.run["data"] = maxf(float(Game.run["data"]), 2.0)

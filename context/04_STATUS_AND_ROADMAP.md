@@ -1,8 +1,35 @@
 # Status and roadmap
 
-_Last updated: 13 Nov 2026 (night), when Mahdi's v4 export (round 4) was merged into this repo._
+_Last updated: 14 Nov 2026, when the partner's v5 source (AstroPixel) was merged into this repo._
 
-## Where we are
+## v5 is merged (14 Nov). Read this first
+
+**The game is now v5, named "AstroPixel".** The full design and core API are in
+[`../game/docs/V5_DESIGN.md`](../game/docs/V5_DESIGN.md). Where it disagrees with the older text
+below, V5_DESIGN.md wins (it records the team's 13–14 Nov decisions). What's new in v5:
+- 8 destinations (moon, mercury, venus, mars = `kind "land"`; jupiter, saturn, uranus, neptune =
+  `kind "ring"`); screens read `Game.dest()["kind"/"air"/"returns"/"skin"]`, never the dest id;
+- 3 tasks per destination (`Data.TASKS`), which set `Game.difficulty` (EASY/NORMAL/HARD);
+- NASA margins in `Data.MARGIN` (JPL CML 4); the UNDER / WELL USED / OVER rating per resource;
+- 37 decision events (`events.gd`) with a shared pop-up (`event_card.gd`) on cruise, site and home;
+- a new flown launch screen (`screens/launch.gd`: throttle, max-Q, staging, fairing, deploy);
+- calmer builder (REQUIRED / RECOMMENDED / OPTIONAL / NOT NEEDED tags, a checklist);
+- report with the 4 score parts, a build report and a letter grade;
+- `tools/dev/balance.gd` checks every task has an all-green ship (prints `BALANCE OK`).
+
+**Multiplayer (roadmap #9) is NOT wired into v5 yet.** v5 was built from v4 in parallel with the
+multiplayer commit (ce5c943). In the merge, v5 won every screen script, so the lobby, shared builder,
+landing/drone jobs and team sync score are gone from the screens. What's still in the repo and
+works: `net.gd` (Net autoload), `server/` (relay), `team_ui.gd`, the multiplayer helpers and state
+in `game.gd` (`multi()`, `job()`, `cpu()`, signing, snapshots, `_on_net`, `team_sync()`), and the MP
+constants in `data.gd`. `mp_test.gd` is stale. The reference for re-porting is
+`git show ce5c943 -- game/scripts/screens/`.
+
+Checked after the merge (headless only, not played by hand): `balance.gd` prints BALANCE OK, and
+menu/builder/launch/flight/landing/surface/probe/report boot without script errors for moon, mars,
+venus, saturn and neptune. `docs/` now holds the partner's v5 web export.
+
+## Where we were (v4, 13 Nov)
 
 **This repository = game v4.** v4 is the "round 4" rebuild described further down. It is merged and
 every screen loads without script errors for all 3 destinations (headless smoke test, not played by

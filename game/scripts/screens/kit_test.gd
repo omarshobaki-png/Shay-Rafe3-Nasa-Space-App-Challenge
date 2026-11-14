@@ -5,7 +5,8 @@ extends Control
 ##   debug_bare, debug_max, debug_three (the three example ships), debug_parts (every part alone with
 ##   its id), debug_icons (bin icons and launchers), debug_fuel, debug_fuel2 (the tank at
 ##   growing unit counts), debug_power (wings, RTGs, racks filling up), debug_slots (next_slot ghosts),
-##   debug_hit (hit boxes), debug_hl (highlight), debug_check (prints layout checks to the log).
+##   debug_hit (hit boxes), debug_hl (highlight), debug_check (prints layout checks to the log),
+##   debug_add_sunshade, debug_add_hull (the three example ships with that part added; both: call both).
 
 const UI = preload("res://scripts/ui.gd")
 const Pix = preload("res://scripts/pix.gd")
@@ -14,6 +15,7 @@ const ShipKit = preload("res://scripts/ship_kit.gd")
 var mode: String = "ship"
 var show_hit: bool = false
 var hl: String = ""
+var add: Array = []        # parts added to the example ships in "three" mode
 
 func debug_bare() -> void:
 	Game.build = {"bus": 1}
@@ -26,6 +28,14 @@ func debug_max() -> void:
 func debug_three() -> void:
 	mode = "three"
 	queue_redraw()
+
+func debug_add_sunshade() -> void:
+	add.append("sunshade")
+	debug_three()
+
+func debug_add_hull() -> void:
+	add.append("hull")
+	debug_three()
 
 func debug_parts() -> void:
 	mode = "parts"
@@ -71,7 +81,9 @@ func _example(dest: String) -> Dictionary:
 	var keep_rocket: String = Game.rocket_id
 	Game.dest_id = dest
 	Game.example_build()
-	var b: Dictionary = Game.build
+	var b: Dictionary = Game.build.duplicate()
+	for id: String in add:
+		b[id] = 1
 	Game.dest_id = keep_dest
 	Game.build = keep_build
 	Game.rocket_id = keep_rocket
@@ -110,7 +122,8 @@ func debug_check() -> void:
 		var a: Rect2 = items[i]["box"]
 		for j: int in range(i + 1, items.size()):
 			var f: Rect2 = items[j]["box"]
-			if f.encloses(a) and not items[i].has("deco") and items[j]["id"] != "heatshield_front" and items[j]["id"] != "shield":
+			var own: bool = items[j].get("owner", "") == items[i]["id"]
+			if f.encloses(a) and not own and not items[i].has("deco") and items[j]["id"] != "heatshield_front" and items[j]["id"] != "shield":
 				print("KIT CHECK ", items[i]["id"], " ", items[i]["n"], " is inside the box of ", items[j]["id"])
 	for dest: String in ["moon", "mars", "saturn"]:
 		print("KIT CHECK size ", dest, " ", ShipKit.bounds(_example(dest)).size)

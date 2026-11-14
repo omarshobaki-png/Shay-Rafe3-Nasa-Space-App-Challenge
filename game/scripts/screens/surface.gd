@@ -1,18 +1,21 @@
 extends Control
-## Surface exploration: drive the rover under real gravity, drill rocks, watch the battery.
+## Surface exploration on any landing world: drive the rover under real gravity, drill rocks (or ice),
+## watch the battery, and decide what to do when something goes wrong (site events, scripts/events.gd).
 ## Depth in the style of a pixel racing game: three mountain ranges, a perspective floor
 ## (shaders/floor.gdshader), craters, hills and rocks at many depths, contact shadows, tread tracks.
 ## Every puff, glow, sparkle and sun goes through the shared effects kit (scripts/fx.gd).
+## The world is read from Data.DEST: kind, air, returns, skin, hazards. Art is looked up by skin.
 
 const UI = preload("res://scripts/ui.gd")
 const Pix = preload("res://scripts/pix.gd")
 const Fx = preload("res://scripts/fx.gd")
+const EventCard = preload("res://scripts/event_card.gd")
 const FLOOR_SHADER = preload("res://shaders/floor.gdshader")
 
 const WORLD: float = 4000.0
 const PPM: float = 20.0          # px per metre at the rover's lane
 const JUMP_V: float = 3.2        # m/s take-off speed (game rule)
-const HOURS_PER_SEC: float = 0.1 # 1 real second = 6 minutes on the planet
+const DAY_RATE: float = 0.3      # game rule: planet hours per real second (6 minutes a frame-second x 3)
 const LANDER_X: float = 333.0
 const HORIZON: float = 232.0
 const LANE: float = 300.0        # screen y of the ground under the rover
@@ -20,10 +23,31 @@ const PEBBLE_W: Array[int] = [6, 9, 14, 20, 30, 44]
 const CRATER_W: Array[int] = [18, 26, 40, 64, 98]
 const HILL_W: Array[int] = [46, 84, 130]
 const SPLIT: int = 38            # rover sprite rows above this are the sprung body, below are the wheels
+const WHEEL_EVENTS: Array[String] = ["stuck_wheel", "sharp_rocks"]
+const ASCENT_MIN: float = 0.3   # game rule (Game.phase_home): the ascent stage needs 30% battery
+const WHEEL_SLOW: float = 0.6    # game rule: a damaged wheel drags, the rover keeps 60% of its speed
+
+## How each landing world looks (research/v5/skins.md). Art settings, not facts.
+## shadow: px from the lander to the rim of a permanently shadowed crater that holds the samples.
+const SKIN: Dictionary = {
+	"moon": {"haze": "2a2c3a", "haze_max": 0.75, "haze_tint": "7a7c92", "dust": "b9b9c6", "fill": "", "tint": "ffffff",
+		"light": "ffffff", "accent": "3a4a7a", "body": [0.03, 0.04, 0.08, 0.82], "noun": "ROCK", "stars": true, "earth": true},
+	"mercury": {"haze": "141210", "haze_max": 0.7, "haze_tint": "4a443c", "dust": "a49684", "fill": "100e0b", "tint": "ffffff",
+		"light": "ffffff", "accent": "6a6258", "body": [0.05, 0.045, 0.04, 0.85], "noun": "ICE", "stars": true, "big_sun": true, "shadow": 400.0},
+	"venus": {"haze": "d8a650", "haze_max": 0.95, "haze_tint": "d8a650", "dust": "c08848", "fill": "d8a650", "tint": "ffffff",
+		"light": "e6b878", "accent": "9a6a34", "body": [0.17, 0.09, 0.03, 0.86], "noun": "ROCK", "clouds": true, "bolts": true},
+	"mars": {"haze": "c99470", "haze_max": 0.85, "haze_tint": "e8b890", "dust": "d98a55", "fill": "e8c49c", "tint": "dbccc7",
+		"light": "ffffff", "accent": "8a5a3c", "body": [0.16, 0.08, 0.06, 0.85], "noun": "ROCK", "clouds": true, "devils": true, "moonlet": true},
+}
 
 var t: float = 0.0
 var state: String = "explore"
 var end_t: float = 0.0
+var banner: String = ""
+var d: Dictionary = {}
+var sk: Dictionary = {}
+var skin: String = "moon"
+var air: String = "none"
 var g: float = 1.62
 var rx: float = LANDER_X + 85.0
 var ry: float = 0.0
@@ -33,6 +57,7 @@ var face: float = 1.0
 var moving: bool = false
 var has_rover: bool = false
 var speed: float = 100.0
+var wheel_k: float = 1.0
 var drilling: float = 0.0
 var drill_target: int = -1
 var samples: Array = []
@@ -47,11 +72,25 @@ var drill_draw: float = 0.0
 var rover_draw: float = 0.0
 var solar: float = 0.0
 var rtg: float = 0.0
+var gen_now: float = 0.0
+var draw_now: float = 0.0
 var hour: float = 8.0
+var h_rate: float = DAY_RATE
+var drain_k: float = 1.0
 var gb_sample: float = 0.0
-var msg: String = ""
-var msg_t: float = 0.0
-var moon: bool = true
+var shadow_x: float = -1.0       # world x where the crater's permanent shadow begins (-1 = none)
+var life_min: float = 0.0        # minutes the lander lives here (0 = no heat clock)
+var minutes: float = 0.0         # minutes spent on the surface (heat clock)
+var min_rate: float = 0.0        # minutes per real second
+var crit: String = "battery"     # the highlighted gauge: battery, data or heat
+var fired: int = 0
+var hazard_hit: bool = false
+var ev_cool: float = 0.0
+var card: Control = null
+var card_ev: Dictionary = {}
+var help_on: bool = false
+var low_warned: bool = false
+var auto: bool = false
 var tex_lander: Texture2D = null
 var tex_rover: Texture2D = null
 var tex_earth: Texture2D = null
@@ -68,6 +107,7 @@ var tex_sky_day: Texture2D = null
 var tex_sky_night: Texture2D = null
 var tex_cloud: Array[Texture2D] = []
 var tex_phobos: Texture2D = null
+var tex_sun: Texture2D = null
 var tex_devil: Texture2D = null
 var tex_sheet: Texture2D = null
 var tex_streak: Texture2D = null
@@ -90,31 +130,31 @@ var land_x: float = 0.0
 var got_t: float = -9.0
 var haze_tint: Color = Color.WHITE
 var dust_col: Color = Color.WHITE
+var light: Color = Color.WHITE
 var pan_accent: Color = Color("3a4a7a")
 var pan_body: Color = Color(0.03, 0.04, 0.08, 0.82)
 var was_ground: bool = true
 var hold: Dictionary = {}
 var confirm_t: float = -10.0
-var told: Dictionary = {}   # one-time tips already shown
 var floor_mat: ShaderMaterial = null
 var front: Control = null
-var driver: bool = true         # this game drives (offline, or the room host); others watch its "state"
-var send_t: float = 0.0
 
 func _ready() -> void:
-	g = float(Game.dest()["gravity"])
-	moon = Game.dest_id == "moon"
-	var kind: String = "moon" if moon else "mars"
-	goal = int(Game.dest()["samples_goal"])
+	d = Game.dest()
+	skin = String(d["skin"])
+	sk = SKIN.get(skin, SKIN["moon"])
+	air = String(d["air"])
+	g = float(d["gravity"])
+	goal = int(d["samples_goal"])
+	var hz: float = Game.diff("surface_hazards")
+	drain_k = minf(hz, 1.2)   # EASY: the battery drains 40% slower (game rule)
 	tex_lander = Pix.img("lander")
 	tex_rover = Pix.img("rover")
-	tex_earth = Pix.planet(22, "earth")
-	tex_halo = Pix.img("surface/earth_halo")
-	tex_dist = Pix.img("surface/%s_range_dist" % kind)
-	tex_far = Pix.img(kind + "_range_far")
-	tex_mid = Pix.img(kind + "_range_near")
-	tex_boulder = {23: Pix.img("boulder_%s_23" % kind), 50: Pix.img("boulder_%s_50" % kind)}
-	tex_sample = Pix.img("sample_%s_big" % kind)
+	tex_dist = Pix.img("surface/%s_range_dist" % skin)
+	tex_far = Pix.img(skin + "_range_far")
+	tex_mid = Pix.img(skin + "_range_near")
+	tex_boulder = {23: Pix.img("boulder_%s_23" % skin), 50: Pix.img("boulder_%s_50" % skin)}
+	tex_sample = Pix.img("sample_%s_big" % skin)
 	tex_scorch = Pix.img("surface/scorch")
 	tex_marker = Pix.img("surface/marker")
 	tex_arrow = Pix.img("surface/arrow_r")
@@ -122,22 +162,36 @@ func _ready() -> void:
 	tex_streak = Pix.img("surface/streak")
 	tex_rock = [Pix.img("surface/ic_rock0"), Pix.img("surface/ic_rock1")]
 	for i: int in PEBBLE_W.size():
-		tex_pebble.append(Pix.img("pebble_%s_%d" % [kind, i]))
+		tex_pebble.append(Pix.img("pebble_%s_%d" % [skin, i]))
 	for i: int in CRATER_W.size():
-		tex_crater.append(Pix.img("surface/crater_%s_%d" % [kind, i]))
+		tex_crater.append(Pix.img("surface/crater_%s_%d" % [skin, i]))
 	for i: int in HILL_W.size():
-		tex_hill.append(Pix.img("surface/hill_%s_%d" % [kind, i]))
-	if not moon:
-		tex_sky_day = Pix.img("surface/mars_sky_day")
-		tex_sky_night = Pix.img("surface/mars_sky_night")
-		tex_cloud = [Pix.img("surface/mars_cloud_0"), Pix.img("surface/mars_cloud_1"), Pix.img("surface/mars_cloud_2")]
+		tex_hill.append(Pix.img("surface/hill_%s_%d" % [skin, i]))
+	if skin != "moon":
+		tex_sky_day = Pix.img("surface/%s_sky_day" % skin)
+		tex_sky_night = Pix.img("surface/%s_sky_night" % skin)
+	if bool(sk.get("earth", false)):
+		tex_earth = Pix.planet(22, "earth")
+		tex_halo = Pix.img("surface/earth_halo")
+	if bool(sk.get("clouds", false)):
+		for i: int in 3:
+			tex_cloud.append(Pix.img("surface/%s_cloud_%d" % [skin, i]))
+	if bool(sk.get("moonlet", false)):
 		tex_phobos = Pix.img("surface/phobos")
+	if bool(sk.get("big_sun", false)):
+		tex_sun = Pix.img("surface/%s_sun" % skin)
+	if bool(sk.get("devils", false)):
 		tex_devil = Pix.img("surface/dust_devil")
 		tex_sheet = Pix.img("surface/dust_sheet")
-		pan_accent = Color("8a5a3c")
-		pan_body = Color(0.16, 0.08, 0.06, 0.85)
-	haze_tint = Color("7a7c92") if moon else Color("e8b890")
-	dust_col = Color("b9b9c6") if moon else Color("d98a55")
+	elif bool(sk.get("bolts", false)):
+		tex_devil = Pix.img("surface/%s_lightning" % skin)
+		tex_sheet = Pix.img("surface/%s_haze" % skin)
+	haze_tint = Color(String(sk["haze_tint"]))
+	dust_col = Color(String(sk["dust"]))
+	light = Color(String(sk["light"]))
+	pan_accent = Color(String(sk["accent"]))
+	var bd: Array = sk["body"]
+	pan_body = Color(float(bd[0]), float(bd[1]), float(bd[2]), float(bd[3]))
 	var c: Dictionary = Game.run["calc"]
 	has_rover = Game.id_has("rover") or Game.id_has("rover_big")
 	if Game.id_has("rover_big"):
@@ -152,51 +206,73 @@ func _ready() -> void:
 	rtg = float(c["rtg"])
 	wh = maxf(1.0, float(Game.run["wh"]))
 	battery = float(Game.run["battery"])
-	for id: String in Game.build:
-		var p: Dictionary = Data.PARTS[id]
-		if p["cat"] == "science" and not Game.run["broken"].has(id):
-			gb_sample += float(p["gb"])
-	# terrain features on the rover's lane
+	_reload()
+	# the heat clock: where the lander lives only minutes, the whole site runs on its clock
+	if d.has("surface_minutes"):
+		life_min = float(d["surface_minutes"])
+		if not Game.id_has("hull"):
+			life_min *= 0.2   # game rule: without the pressure hull the lander would last a fraction of it
+		min_rate = 1.25 + 1.25 * hz   # game rule: EASY 2.0, NORMAL 2.5, HARD 3.0 minutes per second
+		h_rate = min_rate / 60.0
+	# which gauge is the critical one here (Data critical list, mapped to what the surface shows)
+	for r: String in d["critical"]:
+		if r == "power":
+			crit = "battery"
+			break
+		if r == "time" and life_min > 0.0:
+			crit = "heat"
+			break
+		if r == "data" or r == "comms":
+			crit = "data"
+			break
+	# terrain on the rover's lane: boulders the jump can clear, samples spread by the difficulty
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
-	rng.seed = 7 if moon else 11
+	rng.seed = hash(skin)
+	var hop_px: float = pow(JUMP_V, 2) / (2.0 * g) * PPM
+	var gap: float = 300.0 + 150.0 * hz   # game rule: EASY rocks 390 px apart, NORMAL 450, HARD 510
+	var first: float = LANDER_X + 300.0 + 100.0 * hz
+	if sk.has("shadow"):
+		shadow_x = LANDER_X + float(sk["shadow"])
+		first = shadow_x + 100.0
 	if not has_rover:
 		samples.append({"x": LANDER_X + 117.0, "taken": false})
 	for i: int in goal + 2:
-		var sx: float = 800.0 + i * 500.0 + rng.randf_range(-67, 67)
-		var bh: float = 23.0
-		if moon and i % 2 == 1:
-			bh = 50.0
-		boulders.append(Rect2(sx - 150.0, 0.0, 67.0, bh))
+		var sx: float = first + i * gap + rng.randf_range(-40, 40)
+		var roll: float = rng.randf()
+		var bh: float = 50.0 if hop_px > 55.0 and i % 2 == 1 else 23.0
+		if hop_px > 26.0 and roll < 0.45 + 0.4 * hz:
+			boulders.append(Rect2(sx - 150.0, 0.0, 67.0, bh))
 		samples.append({"x": sx, "taken": false})
 	# scenery at many depths (s = distance, 1 at the lane, >1 behind, <1 in front):
 	# k 0 rock, 1 crater, 2 low hill (only far away)
 	var rd: RandomNumberGenerator = RandomNumberGenerator.new()
-	rd.seed = 21 if moon else 22
+	rd.seed = hash(skin) + 21
+	var crater_k: float = 0.45 if air == "none" else 0.25   # airless worlds keep every crater sharp
 	for i: int in 300:
 		var s: float = exp(rd.randf_range(log(0.55), log(9.0)))
 		if s > 0.8 and s < 1.3:
 			continue
 		var span: float = 320.0 * s + 60.0
 		var k: int = 0
-		var roll: float = rd.randf()
-		if s > 3.0 and roll < 0.18:
+		var roll2: float = rd.randf()
+		if s > 3.0 and roll2 < 0.18:
 			k = 2
-		elif s > 1.0 and roll < (0.45 if moon else 0.25):
+		elif s > 1.0 and roll2 < crater_k:
 			k = 1
-		var size: float = rd.randf_range(8.0, 44.0) * (0.45 if s < 1.0 else 1.0)
+		var size_px: float = rd.randf_range(8.0, 44.0) * (0.45 if s < 1.0 else 1.0)
 		if k == 1:
-			size = rd.randf_range(40.0, 160.0)
+			size_px = rd.randf_range(40.0, 160.0)
 		elif k == 2:
-			size = rd.randf_range(150.0, 700.0)
-		decor.append({"x": rd.randf_range(320.0 - span, WORLD - 320.0 + span), "s": s, "b": size, "k": k})
+			size_px = rd.randf_range(150.0, 700.0)
+		decor.append({"x": rd.randf_range(320.0 - span, WORLD - 320.0 + span), "s": s, "b": size_px, "k": k})
 	decor.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["s"]) > float(b["s"]))
 	ry = ground(rx)
 	# layers: this node draws sky and mountains; then the floor; then the world and HUD
 	floor_mat = ShaderMaterial.new()
 	floor_mat.shader = FLOOR_SHADER
-	floor_mat.set_shader_parameter("floor_tex", Pix.img("floor_" + kind))
-	floor_mat.set_shader_parameter("haze", Color("2a2c3a") if moon else Color("c99470"))
-	floor_mat.set_shader_parameter("haze_max", 0.75 if moon else 0.85)
+	floor_mat.set_shader_parameter("floor_tex", Pix.img("floor_" + skin))
+	floor_mat.set_shader_parameter("haze", Color(String(sk["haze"])))
+	floor_mat.set_shader_parameter("haze_max", float(sk["haze_max"]))
 	floor_mat.set_shader_parameter("horizon", HORIZON)
 	floor_mat.set_shader_parameter("lane", LANE)
 	floor_mat.set_shader_parameter("top", HORIZON)
@@ -214,67 +290,33 @@ func _ready() -> void:
 	add_child(front)
 	if DisplayServer.is_touchscreen_available():
 		_hold_buttons()
-	driver = Net.is_host()
-	if Net.is_online():
-		Net.received.connect(_on_net)
 
-# ---------------------------------------------------------------- multiplayer (decision D7)
-# The surface has no split jobs: the host drives and sends a light "state"; everyone else watches.
+func _exit_tree() -> void:
+	Engine.time_scale = 1.0   # the autopilot test speeds the game up
+	Audio.loop("drill", false)
+	Audio.loop("rover_loop", false)
 
-## Host: where the rover is and what it has done, about 15 times a second (force with delta >= 1).
-func _send_state(delta: float) -> void:
-	if not Net.is_online():
-		return
-	send_t -= delta
-	if send_t > 0.0:
-		return
-	send_t = 1.0 / float(Data.NET_RATES["state_hz"])
-	var taken: Array = []
-	for i: int in samples.size():
-		if samples[i]["taken"]:
-			taken.append(i)
-	Net.send("state", {"s": state, "t": t, "rx": rx, "ry": ry, "face": face, "mv": moving, "gr": on_ground, "dr": drilling,
-		"dt": drill_target, "got": got, "data": data, "bat": battery, "hour": hour, "taken": taken, "msg": msg, "mt": msg_t})
+## Science per sample from the instruments that still work.
+func _reload() -> void:
+	gb_sample = 0.0
+	for id: String in Game.build:
+		var p: Dictionary = Data.PARTS[id]
+		if p["cat"] == "science" and not Game.run["broken"].has(id):
+			gb_sample += float(p.get("gb", 0.0))
 
-func _on_net(kind: String, d: Dictionary, _from_id: int) -> void:
-	if kind != "state" or driver:
-		return
-	t = float(d.get("t", t))
-	rx = float(d.get("rx", rx))
-	ry = float(d.get("ry", ry))
-	face = float(d.get("face", face))
-	moving = bool(d.get("mv", false))
-	on_ground = bool(d.get("gr", true))
-	drilling = float(d.get("dr", 0.0))
-	drill_target = int(d.get("dt", -1))
-	var ngot: int = int(d.get("got", got))
-	if ngot > got:
-		got_t = t
-		Audio.play("pickup")
-	got = ngot
-	data = float(d.get("data", data))
-	battery = float(d.get("bat", battery))
-	hour = float(d.get("hour", hour))
-	if d.get("taken") is Array:
-		for i: Variant in d["taken"]:
-			if int(i) >= 0 and int(i) < samples.size():
-				samples[int(i)]["taken"] = true
-	msg = String(d.get("msg", msg))
-	msg_t = float(d.get("mt", msg_t))
-	state = String(d.get("s", state))
-	Audio.loop("drill", drilling > 0.0, -12.0)
-	Audio.loop("rover_loop", moving and on_ground, -10.0)
+func _drill_ok() -> bool:
+	return Game.id_has("drill") and not Game.run["broken"].has("drill")
 
 func _hold_buttons() -> void:
 	var defs: Array = [["<", 8, 40, "l"], [">", 52, 40, "r"], ["JUMP", 452, 80, "u"], ["DRILL", 540, 92, "e"]]
-	for d: Array in defs:
+	for df: Array in defs:
 		var b: Button = Button.new()
-		b.text = d[0]
+		b.text = df[0]
 		b.focus_mode = Control.FOCUS_NONE
 		add_child(b)
-		b.position = Vector2(float(d[1]), 326)
-		b.size = Vector2(float(d[2]), 28)
-		var key: String = d[3]
+		b.position = Vector2(float(df[1]), 300)
+		b.size = Vector2(float(df[2]), 28)
+		var key: String = df[3]
 		b.button_down.connect(func() -> void: hold[key] = true)
 		b.button_up.connect(func() -> void: hold.erase(key))
 
@@ -285,22 +327,37 @@ func ground(x: float) -> float:
 			y = minf(y, LANE - b.size.y)
 	return y
 
+func _in_shadow(x: float) -> bool:
+	return shadow_x >= 0.0 and x >= shadow_x
+
 func _pressed(key: Key, act: String, h: String) -> bool:
 	return hold.has(h) or Input.is_physical_key_pressed(key) or (act != "" and Input.is_action_pressed(act))
 
 func _input(event: InputEvent) -> void:
-	if not driver:
+	if EventCard.is_open():
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		var k: InputEventKey = event
 		if k.physical_keycode == KEY_E or k.keycode == KEY_ENTER:
 			_use()
+		elif k.physical_keycode == KEY_H or k.physical_keycode == KEY_SLASH or k.physical_keycode == KEY_F1:
+			help_on = not help_on
+			Audio.play("ui_click", -8.0)
+
+func _gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+		if _help_rect().has_point((event as InputEventMouseButton).position) or help_on:
+			help_on = not help_on
+			Audio.play("ui_click", -8.0)
+
+func _help_rect() -> Rect2:
+	return Rect2(617, 6, 17, 17)
 
 func _reach() -> float:
 	return 40.0 if has_rover else 150.0
 
 func _at_lander() -> bool:
-	return absf(rx - LANDER_X) < 70.0 and (has_rover or got > 0 or not Game.id_has("drill"))
+	return absf(rx - LANDER_X) < 70.0 and (has_rover or got > 0 or not _drill_ok())
 
 ## Index of the closest sample still on the ground, or -1.
 func _nearest() -> int:
@@ -312,70 +369,90 @@ func _nearest() -> int:
 			best = i
 	return best
 
+## True when the rover should head home: everything drilled, nothing left to drill, or the battery low.
+func _go_home() -> bool:
+	return got >= goal or _nearest() < 0 or not _drill_ok() or _low()
+
+## Battery under 20% and still falling (charging in the sun is fine).
+func _low() -> bool:
+	return battery / wh < 0.2 and gen_now < draw_now
+
 func _use() -> void:
-	if state != "explore" or drilling > 0.0:
+	if state != "explore" or drilling > 0.0 or EventCard.is_open():
 		return
 	if _at_lander():
 		if got == 0 and t > confirm_t:
-			confirm_t = t + 3.0
-			_say("No samples yet! Press E again to end anyway.")
+			confirm_t = t + 4.0
 			Audio.play("ui_deny", -6.0)
 			return
-		_finish("Back at the lander. Exploration complete.")
+		_finish("BACK AT THE LANDER: %d OF %d SAMPLES" % [got, goal])
 		return
 	for i: int in samples.size():
 		var s: Dictionary = samples[i]
 		if not s["taken"] and absf(rx - float(s["x"])) < _reach():
-			if not Game.id_has("drill"):
-				_say("No drill on board: you can't pick it up!")
+			if not _drill_ok():
+				_pop(rx, ry - 70.0, "NO WORKING DRILL")
 				Audio.play("ui_deny", -6.0)
 				return
 			drilling = 2.0
 			drill_target = i
 			face = 1.0 if float(s["x"]) >= rx or not has_rover else -1.0
 			return
-	_say("Nothing to drill here. Follow the arrow to a glowing rock.")
+	_pop(rx, ry - 70.0, "NOTHING TO DRILL HERE")
 	Audio.play("ui_deny", -6.0)
 
-func _say(s: String, secs: float = 3.0) -> void:
-	msg = s
-	msg_t = secs
+func _pop(x: float, y: float, s: String) -> void:
+	pops.append({"x": x, "y": y, "age": 0.0, "s": s, "spark": false})
 
 func _finish(text: String) -> void:
 	if state != "explore":
 		return
 	state = "done"
 	end_t = t + 2.5
-	_say(text)
+	banner = text
+	hold.clear()
+	if auto:
+		print("SURFACE AUTOPILOT: %s. samples %d/%d, battery %d%%, events %d, t %.1f s" % [text, got, goal, roundi(100.0 * battery / wh), fired, t])
 	Audio.loop("drill", false)
 	Audio.loop("rover_loop", false)
-	Audio.play("error" if battery <= 0.0 else "confirm", -4.0)
+	Audio.play("error" if battery <= 0.0 or (life_min > 0.0 and _life_left() <= 0.0) else "confirm", -4.0)
+
+func _life_left() -> float:
+	return life_min - minutes - float(Game.run.get("minutes_lost", 0.0))
 
 func _physics_process(delta: float) -> void:
+	if auto:
+		_auto_step()
+	if EventCard.is_open():
+		Audio.loop("drill", false)
+		Audio.loop("rover_loop", false)
+		return
 	t += delta
-	msg_t -= delta
+	ev_cool -= delta
 	_particles(delta)
-	if not driver:
-		return   # watching: the host's "state" moves the rover
-	_send_state(delta)
 	if state != "explore":
 		if t > end_t:
 			set_physics_process(false)
 			Game.surface_result(got, battery, data)
+			if bool(Game.run.get("dead", false)):
+				Game.finish()
+				Game.goto("report")
+				return
 			Game.run["mode"] = "home"
-			Game.flow("flight")
+			Game.goto("flight")
 		return
-	_tips()
 	if hold.has("e"):
 		hold.erase("e")
 		_use()
-	# power
+	# power: the Sun (day and night where there are nights, nothing inside the crater's shadow)
 	var draw: float = base_draw
 	var sun: float = 1.0
-	if float(Game.dest()["night_hours"]) > 0.0:
-		hour = fposmod(8.0 + t * HOURS_PER_SEC * 3.0, 24.66)
+	if float(d["night_hours"]) > 0.0:
+		hour = fposmod(8.0 + t * h_rate, 24.66)
 		sun = maxf(0.0, sin(PI * (hour - 6.0) / 12.33)) * 1.57
-	var gen: float = solar * sun + rtg
+	if _in_shadow(rx):
+		sun = 0.0
+	var gen: float = solar * float(Game.run["gen_mult"]) * sun + rtg
 	moving = false
 	if drilling > 0.0:
 		draw += drill_draw
@@ -387,13 +464,10 @@ func _physics_process(delta: float) -> void:
 			data += gb_sample
 			got_t = t
 			var sx: float = float(samples[drill_target]["x"])
-			pops.append({"x": sx, "y": ground(sx) - 18.0, "age": 0.0, "s": "+1 SAMPLE"})
+			pops.append({"x": sx, "y": ground(sx) - 18.0, "age": 0.0, "s": "+1 SAMPLE", "spark": true})
 			Audio.play("pickup")
 			if got == goal:
 				Audio.play("success", -4.0)
-				_say("All %d samples! Drive back to the lander and press E." % goal, 4.0)
-			else:
-				_say("Sample %d collected! +%s Gb of science." % [got, Game.fmt(gb_sample)])
 	elif has_rover:
 		var dir: float = 0.0
 		if _pressed(KEY_A, "ui_left", "l"):
@@ -402,7 +476,7 @@ func _physics_process(delta: float) -> void:
 			dir += 1.0
 		if dir != 0.0:
 			face = dir
-			var nx: float = clampf(rx + dir * speed * delta, 40.0, WORLD - 40.0)
+			var nx: float = clampf(rx + dir * speed * wheel_k * delta, 40.0, WORLD - 40.0)
 			if ground(nx + dir * 28.0) >= ry - 3.0 and ground(nx) >= ry - 3.0:
 				rx = nx
 			moving = true
@@ -422,7 +496,7 @@ func _physics_process(delta: float) -> void:
 	else:
 		on_ground = false
 	if moving and on_ground and ry >= LANE - 1.0 and absf(rx - last_track) >= 3.0:
-		tracks.append(rx)  # no wind on the Moon: tracks there last for millions of years
+		tracks.append(rx)  # no wind on an airless world: tracks there last for millions of years
 		last_track = rx
 		if tracks.size() > 3000:
 			tracks.remove_at(0)
@@ -430,50 +504,121 @@ func _physics_process(delta: float) -> void:
 		Audio.play("land", -12.0)
 		land_t = t
 		land_x = rx
+		if ry < LANE - 1.0:
+			hazard_hit = true   # made it onto a boulder
 		for i: int in 8:
 			puffs.append({"p": Vector2(rx + randf_range(-30, 30), ry - 2.0), "v": Vector2(randf_range(-40, 40), -randf_range(4, 18)), "age": 0.0, "life": randf_range(0.6, 1.1), "size": 1})
 	was_ground = on_ground
 	Audio.loop("drill", drilling > 0.0, -12.0)
 	Audio.loop("rover_loop", moving and on_ground, -10.0)
-	battery = clampf(battery + (gen - draw) * delta * HOURS_PER_SEC * 3.0, 0.0, wh)
-	if battery <= 0.0:
-		_finish("BATTERY EMPTY. The robot shut down.")
-
-## One-time tips, each shown once, when it first matters.
-func _tips() -> void:
-	if moon and t > 1.0 and not told.has("ascent"):
-		told["ascent"] = true
-		_say("The ascent home needs 30% battery: keep above the yellow mark.", 4.0)
-	if battery / wh < 0.2 and not told.has("low"):
-		told["low"] = true
+	gen_now = gen
+	draw_now = draw
+	var net: float = gen - draw
+	if net < 0.0:
+		net *= drain_k
+	battery = clampf(battery + net * delta * h_rate, 0.0, wh)
+	if life_min > 0.0:
+		minutes += delta * min_rate
+	# hazards: the moments a site event may come up
+	if _in_shadow(rx) or _night() > 0.3 or (life_min > 0.0 and _life_left() < life_min * 0.5) or got >= 2:
+		hazard_hit = true
+	if _low() and not low_warned:
+		low_warned = true
+		hazard_hit = true
 		Audio.play("battery_low", -4.0)
-		_say("BATTERY LOW: head back to the lander.", 4.0)
-	if not moon and _night() > 0.5 and not told.has("night"):
-		told["night"] = true
-		_say("Night on Mars: no solar power. Headlights on, battery draining.", 4.0)
+	if battery <= 0.0:
+		_finish("BATTERY EMPTY: THE ROVER SHUT DOWN")
+	elif life_min > 0.0 and _life_left() <= 0.0:
+		_finish("TOO HOT: THE LANDER DIED AFTER %d min" % roundi(minutes))
+	else:
+		_maybe_event()
 
-## Wheel dust as puffs, rock chips from the drill. No air on the Moon (dust falls straight back),
-## thin air on Mars (it hangs and drifts with the wind).
+# ---------------------------------------------------------------- decision events
+
+## Site events come after the first sample, then at a hazard (shadow, dusk, half the heat clock, a boulder).
+func _maybe_event() -> void:
+	if ev_cool > 0.0 or drilling > 0.0 or not on_ground or state != "explore":
+		return
+	var ev: Dictionary = Game.next_event("site")
+	if ev.is_empty():
+		return
+	var ready: bool = got >= 1 if fired == 0 else (hazard_hit and got >= 1)
+	if fired >= 2:
+		ready = hazard_hit and got >= 2
+	if ready:
+		fired += 1
+		_open_event(ev)
+
+func _open_event(ev: Dictionary) -> void:
+	Game.run["battery"] = battery
+	Game.run["data"] = data
+	Game.run["samples"] = got
+	hold.erase("l")
+	hold.erase("r")
+	hold.erase("u")
+	moving = false
+	card_ev = ev
+	card = EventCard.open(self, ev, _after_event)
+
+## Reads the ship back after a card, and shows what changed out in the world.
+func _after_event(res: Dictionary) -> void:
+	battery = clampf(float(Game.run["battery"]), 0.0, wh)
+	data = float(Game.run["data"])
+	got = int(Game.run["samples"])
+	card = null
+	ev_cool = 5.0
+	if auto:
+		print("SURFACE AUTOPILOT EVENT %s: %s" % [card_ev.get("id", ""), res.get("text", "")])
+	var drill_was: bool = gb_sample > 0.0 and _drill_ok()
+	_reload()
+	var y: float = ry - 72.0
+	if WHEEL_EVENTS.has(String(card_ev.get("id", ""))) and not bool(res.get("ok", true)) and wheel_k > WHEEL_SLOW:
+		wheel_k = WHEEL_SLOW
+		_pop(rx, y, "WHEEL DAMAGED: SLOWER")
+		y -= 12.0
+	var ap: Dictionary = res.get("applied", {})
+	if ap.has("power") and solar > 0.0:
+		_pop(rx, y, "LESS CHARGE: SOLAR %d W" % roundi(solar * float(Game.run["gen_mult"])))
+		y -= 12.0
+	if drill_was and not _drill_ok():
+		_pop(rx, y, "DRILL BROKEN: NO MORE SAMPLES")
+		y -= 12.0
+	for ch: Array in res.get("chips", []):
+		_pop(rx, y, String(ch[1]).to_upper())
+		y -= 12.0
+	if bool(Game.run.get("dead", false)):
+		_finish("MISSION LOST")
+
+# ---------------------------------------------------------------- particles
+
+## Wheel dust as puffs, rock chips from the drill. With no air the dust flies on clean arcs and falls
+## straight back; thin air lets it hang and drift with the wind; thick air holds it like water.
 func _particles(delta: float) -> void:
 	puff_t -= delta
 	if has_rover and moving and on_ground and puff_t <= 0.0:
 		puff_t = 0.07
 		for wx: float in [-22.0, 26.0]:
+			var life: float = randf_range(0.35, 0.6) if air == "none" else (randf_range(0.8, 1.4) if air == "thin" else randf_range(1.4, 2.2))
 			puffs.append({"p": Vector2(rx + face * wx - face * 6.0, ry - 2.0), "v": Vector2(-face * randf_range(10, 34), -randf_range(10, 26)),
-				"age": 0.0, "life": randf_range(0.35, 0.6) if moon else randf_range(0.8, 1.4), "size": 0})
-	var drag: float = 0.0 if moon else 2.2
-	for d: Dictionary in puffs:
-		var v: Vector2 = d["v"]
-		if moon:
+				"age": 0.0, "life": life, "size": 0})
+		if wheel_k < 1.0 and randf() < 0.3:   # the damaged wheel scrapes
+			chips.append({"p": Vector2(rx - face * 22.0, ry - 3.0), "v": Vector2(-face * randf_range(10, 30), -randf_range(20, 40)), "age": 0.0, "rest": ry + randf_range(0, 2)})
+	var drag: float = 0.0 if air == "none" else (2.2 if air == "thin" else 5.0)
+	for p: Dictionary in puffs:
+		var v: Vector2 = p["v"]
+		if air == "none":
 			v.y += g * PPM * delta
-		else:
+		elif air == "thin":
 			v.x += 14.0 * delta     # wind
 			v.y -= 3.0 * delta
+		else:
+			v.x += 4.0 * delta      # slow, heavy air
+			v.y -= 1.0 * delta
 		v *= 1.0 - drag * delta
-		d["v"] = v
-		d["p"] = Vector2(d["p"]) + v * delta
-		d["age"] = float(d["age"]) + delta
-	puffs = puffs.filter(func(d: Dictionary) -> bool: return float(d["age"]) < float(d["life"]))
+		p["v"] = v
+		p["p"] = Vector2(p["p"]) + v * delta
+		p["age"] = float(p["age"]) + delta
+	puffs = puffs.filter(func(p: Dictionary) -> bool: return float(p["age"]) < float(p["life"]))
 	# drill: the bit grinds after it reaches the rock, chips fly
 	if drilling > 0.0 and drilling < 1.6:
 		chip_t -= delta
@@ -502,7 +647,7 @@ func _particles(delta: float) -> void:
 	chips = chips.filter(func(c: Dictionary) -> bool: return float(c["age"]) < 1.4)
 	for p: Dictionary in pops:
 		p["age"] = float(p["age"]) + delta
-	pops = pops.filter(func(p: Dictionary) -> bool: return float(p["age"]) < 1.5)
+	pops = pops.filter(func(p: Dictionary) -> bool: return float(p["age"]) < 2.2)
 
 ## World position of the drill bit: under the sample being drilled.
 func _bit_world() -> Vector2:
@@ -515,15 +660,15 @@ func _cam() -> float:
 	return floorf(clampf(rx - 320.0, 0.0, WORLD - 640.0))
 
 func _night() -> float:
-	if moon:
+	if float(d["night_hours"]) <= 0.0:
 		return 0.0
 	return 1.0 - clampf(maxf(0.0, sin(PI * (hour - 6.0) / 12.33)) * 3.0, 0.0, 1.0)
 
 func _process(_delta: float) -> void:
+	var night: float = _night()
 	floor_mat.set_shader_parameter("cam", _cam())
-	var tint: Color = Color.WHITE if moon else Color(0.86, 0.8, 0.78)
-	floor_mat.set_shader_parameter("tint", tint.darkened(_night() * 0.6))
-	floor_mat.set_shader_parameter("haze", (Color("2a2c3a") if moon else Color("c99470")).darkened(_night() * 0.6))
+	floor_mat.set_shader_parameter("tint", Color(String(sk["tint"])).darkened(night * 0.6))
+	floor_mat.set_shader_parameter("haze", Color(String(sk["haze"])).darkened(night * 0.6))
 	queue_redraw()
 	front.queue_redraw()
 
@@ -536,49 +681,62 @@ func _draw() -> void:
 	var cam: float = _cam()
 	var night: float = _night()
 	var dim: Color = Color.WHITE.darkened(night * 0.6)
-	if moon:
+	if tex_sky_day == null:
 		draw_rect(Rect2(0, 0, 640, 360), Color("04050a"))
-		Pix.stars(self, t, Vector2(640, 230), 110, 8, Vector2(-cam * 0.03, 0))
-		# a meteor now and then
-		var mt: float = fposmod(t, 9.0)
-		if mt < 0.6:
-			draw_texture(tex_streak, Vector2(floorf(80.0 + mt * 260.0), floorf(40.0 + mt * 50.0)), Color(1, 1, 1, 1.0 - mt / 0.6))
-		Pix.sprite(self, tex_halo, Vector2(520, 70))
-		Pix.sprite(self, tex_earth, Vector2(520, 70))
 	else:
-		var sun_k: float = maxf(0.0, sin(PI * (hour - 6.0) / 12.33))
-		draw_rect(Rect2(0, 200, 640, 60), Color("e8c49c").darkened(night * 0.6))
+		draw_rect(Rect2(0, 200, 640, 60), Color(String(sk["fill"])).darkened(night * 0.6))
 		draw_texture(tex_sky_day, Vector2(0, -40))
 		if night > 0.0:
 			draw_texture(tex_sky_night, Vector2(0, -40), Color(1, 1, 1, night))
-		if night > 0.6:
-			Pix.stars(self, t, Vector2(640, 200), 70, 4)
+	if bool(sk.get("stars", false)):
+		Pix.stars(self, t, Vector2(640, 200), 110, 8, Vector2(-cam * 0.03, 0))   # no air: stars by day
+	elif night > 0.6:
+		Pix.stars(self, t, Vector2(640, 200), 70, 4)
+		var mt: float = fposmod(t, 9.0)   # a meteor burning up in the thin air now and then
+		if mt < 0.6:
+			draw_texture(tex_streak, Vector2(floorf(80.0 + mt * 260.0), floorf(40.0 + mt * 50.0)), Color(1, 1, 1, 1.0 - mt / 0.6))
+	if tex_earth != null:
+		Pix.sprite(self, tex_halo, Vector2(520, 70))
+		Pix.sprite(self, tex_earth, Vector2(520, 70))
+	if tex_sun != null:
+		# the Sun skims the horizon at the pole, two to three times wider than from Earth
+		Pix.sprite(self, tex_sun, Vector2(110, 150))
+	if tex_phobos != null:
+		var sun_k: float = maxf(0.0, sin(PI * (hour - 6.0) / 12.33))
 		if sun_k > 0.0:
 			# Mars sunsets glow blue: fine dust scatters blue light forward (NASA Curiosity images).
 			var sp: Vector2 = Vector2(120 + (hour - 6.0) * 30.0, 250.0 - 190.0 * sun_k).floor()
 			Fx.sun(self, sp, 1, Color("fff0d8").lerp(Color("bcd8ff"), clampf(1.0 - sun_k * 2.5, 0.0, 1.0)), t)
 		# Phobos crosses the sky fast: it orbits Mars three times a day
 		draw_texture(tex_phobos, Vector2(floorf(fposmod(560.0 - t * 4.0, 760.0) - 60.0), 46.0), dim.lightened(night * 0.4))
-		for i: int in 5:
-			var cx: float = fposmod(i * 173.0 + t * (2.0 + i % 2) - cam * 0.02, 780.0) - 130.0
-			draw_texture(tex_cloud[i % 3], Vector2(floorf(cx), floorf(50.0 + i * 24.0)), Color(dim, 0.7))
+	for i: int in (5 if not tex_cloud.is_empty() else 0):
+		var cx: float = fposmod(i * 173.0 + t * (2.0 + i % 2) - cam * 0.02, 780.0) - 130.0
+		draw_texture(tex_cloud[i % 3], Vector2(floorf(cx), floorf(50.0 + i * 24.0)), Color(dim, 0.7))
 	Pix.tiled(self, tex_dist, HORIZON - tex_dist.get_height() + 4, cam * 0.02, 640, dim)
 	Pix.tiled(self, tex_far, HORIZON - tex_far.get_height() + 3, cam * 0.06, 640, dim)
-	if not moon:
+	if tex_devil != null:
 		for i: int in 2:
 			var dvx: float = fposmod(t * (5.0 + i * 3.0) + 380.0 + i * 310.0 - cam * 0.1, 760.0) - 60.0
-			draw_texture_rect_region(tex_devil, Rect2(floorf(dvx), HORIZON - 38.0 - i * 4.0, 16, 34), Rect2(16 * ((int(t * 6.0) + i) % 4), 0, 16, 34), Color(dim, 0.75 - i * 0.2))
+			var fr: int = (int(t * 6.0) + i) % 4
+			if bool(sk.get("bolts", false)):
+				# lightning: mostly nothing (frame 3), a bolt, a fade and a glow every few seconds
+				dvx = fposmod(170.0 + i * 290.0 - cam * 0.1, 760.0) - 60.0
+				var ph: float = fposmod(t + i * 1.9, 3.7)
+				fr = 0 if ph < 0.07 else (1 if ph < 0.14 else (2 if ph < 0.32 else 3))
+			draw_texture_rect_region(tex_devil, Rect2(floorf(dvx), HORIZON - 38.0 - i * 4.0, 16, 34), Rect2(16 * fr, 0, 16, 34), Color(dim, 0.75 - i * 0.2))
 	Pix.tiled(self, tex_mid, HORIZON - tex_mid.get_height() + 8, cam * 0.16, 640, dim)
-	if not moon:
+	if tex_sheet != null:
 		Pix.tiled(self, tex_sheet, HORIZON - 14.0, cam * 0.2 - t * 9.0, 640.0, Color(dim, 0.85))
 
 # ---------------------------------------------------------------- front layer
 
 ## A soft pixel ellipse on the ground (contact shadow), pushed right: the sun is on the left.
+## With no air to scatter light, shadows are darker and sharper.
 func _shadow(cx: float, y: float, w: float, a: float) -> void:
+	var k: float = 1.7 if air == "none" else 1.0
 	for dy: int in range(-2, 3):
 		var hw: float = floorf(w * 0.5 * sqrt(1.0 - pow(dy / 2.6, 2.0)))
-		front.draw_rect(Rect2(floorf(cx + 5.0 - hw), floorf(y) + dy, hw * 2.0, 1), Color(0, 0, 0, a))
+		front.draw_rect(Rect2(floorf(cx + 5.0 * k - hw), floorf(y) + dy, hw * 2.0, 1), Color(0, 0, 0, minf(0.85, a * k)))
 
 func _pick(widths: Array[int], want: float) -> int:
 	var k: int = 0
@@ -586,21 +744,34 @@ func _pick(widths: Array[int], want: float) -> int:
 		k += 1
 	return k
 
+## Light on a thing at world x: the world's light, darkened at night and in the crater's shadow.
+func _lit(x: float, dim: Color) -> Color:
+	return dim * light * (Color(0.26, 0.28, 0.36) if _in_shadow(x) else Color.WHITE)
+
+## The crater's permanent shadow on the floor: a hard black edge (no air, nothing softens it).
+func _draw_crater_shadow(cam: float) -> void:
+	if shadow_x < 0.0:
+		return
+	var ex: float = shadow_x - cam - 320.0
+	var bx: float = 320.0 + ex * (360.0 - HORIZON) / (LANE - HORIZON)
+	var pts: PackedVector2Array = PackedVector2Array([Vector2(320.0 + ex * 0.02, HORIZON), Vector2(bx, 360.0), Vector2(4000, 360.0), Vector2(4000, HORIZON)])
+	front.draw_colored_polygon(pts, Color(0.0, 0.0, 0.02, 0.8))
+
 ## Scenery: `near` draws the rocks in front of the lane (after the rover).
 func _decor(cam: float, near: bool, dim: Color) -> void:
-	var hmax: float = float(floor_mat.get_shader_parameter("haze_max"))
-	for d: Dictionary in decor:
-		var s: float = d["s"]
+	var hmax: float = float(sk["haze_max"])
+	for p: Dictionary in decor:
+		var s: float = p["s"]
 		if (s < 1.0) != near:
 			continue
-		var sx: float = 320.0 + (float(d["x"]) - cam - 320.0) / s
+		var sx: float = 320.0 + (float(p["x"]) - cam - 320.0) / s
 		if sx < -80.0 or sx > 720.0:
 			continue
 		var sy: float = HORIZON + (LANE - HORIZON) / s
-		var want: float = float(d["b"]) / s
+		var want: float = float(p["b"]) / s
 		var fog: float = clampf((s - 1.0) / 9.0, 0.0, 1.0) * hmax
-		var mod: Color = dim * Color.WHITE.lerp(haze_tint, fog)
-		match int(d["k"]):
+		var mod: Color = _lit(float(p["x"]), dim) * Color.WHITE.lerp(haze_tint, fog)
+		match int(p["k"]):
 			1:
 				var ct: Texture2D = tex_crater[_pick(CRATER_W, want)]
 				front.draw_texture(ct, Vector2(floorf(sx - ct.get_width() * 0.5), floorf(sy - ct.get_height() * 0.5)), mod)
@@ -623,6 +794,7 @@ func _draw_front() -> void:
 	var cam: float = _cam()
 	var night: float = _night()
 	var dim: Color = Color.WHITE.darkened(night * 0.6)
+	_draw_crater_shadow(cam)
 	_decor(cam, false, dim)
 	# tread tracks: near and far wheels, a chevron every few pixels
 	for x: float in tracks:
@@ -636,9 +808,10 @@ func _draw_front() -> void:
 	# lander, set slightly behind the lane, on its own engine scorch
 	var lx: float = floorf(LANDER_X - cam)
 	if lx > -120.0 and lx < 760.0:
-		front.draw_texture(tex_scorch, Vector2(lx - 34.0, LANE - 14.0), Color(dim, 0.55))
+		var lc: Color = _lit(LANDER_X, dim)
+		front.draw_texture(tex_scorch, Vector2(lx - 34.0, LANE - 14.0), Color(lc, 0.55))
 		_shadow(lx + 10.0, LANE - 6.0, 92.0, 0.35)
-		front.draw_texture(tex_lander, Vector2(lx - 38.0, LANE - 6.0 - 71.0), dim)
+		front.draw_texture(tex_lander, Vector2(lx - 38.0, LANE - 6.0 - 71.0), lc)
 		if fposmod(t, 1.4) < 0.18:
 			Fx.glow(front, Vector2(lx + 16.0, LANE - 59.0), 4.0, Color(1.0, 0.35, 0.3, 0.7), true)
 			front.draw_rect(Rect2(lx + 15.0, LANE - 60.0, 2, 2), Color("ffb0a0"))
@@ -647,14 +820,15 @@ func _draw_front() -> void:
 		if bx < -80 or bx > 720:
 			continue
 		_shadow(bx + 34.0, LANE + 1.0, 78.0, 0.35)
-		front.draw_texture(tex_boulder[int(b.size.y)], Vector2(bx, LANE - b.size.y), dim)
+		front.draw_texture(tex_boulder[int(b.size.y)], Vector2(bx, LANE - b.size.y), _lit(b.position.x + 33.0, dim))
 	_draw_samples(cam, dim)
 	# dust behind the rover
 	for i: int in puffs.size():
-		var d: Dictionary = puffs[i]
-		Fx.puff(front, (Vector2(d["p"]) - Vector2(cam, 0)).floor(), float(d["age"]) / float(d["life"]), int(d["size"]), dust_col * dim, i % 4)
+		var p: Dictionary = puffs[i]
+		var pp: Vector2 = p["p"]
+		Fx.puff(front, (pp - Vector2(cam, 0)).floor(), float(p["age"]) / float(p["life"]), int(p["size"]), dust_col * _lit(pp.x, dim), i % 4)
 	if t - land_t < 0.5:
-		Fx.shockwave(front, Vector2(floorf(land_x - cam), LANE + 1.0), (t - land_t) / 0.5, 1, dust_col)
+		Fx.shockwave(front, Vector2(floorf(land_x - cam), LANE + 1.0), (t - land_t) / 0.5, 1, dust_col * _lit(land_x, dim))
 	if has_rover:
 		_draw_rover(cam, night, dim)
 	elif drilling > 0.0:
@@ -663,12 +837,14 @@ func _draw_front() -> void:
 		front.draw_line(Vector2(lx + 20, LANE - 40), bit, Color("c8ccd8"), 1.0)
 		Fx.sparkle(front, bit, fposmod(t * 3.0, 1.0), UI.YELLOW, 0)
 	for c: Dictionary in chips:
-		front.draw_texture(tex_chip, (Vector2(c["p"]) - Vector2(cam + 1.0, 1.0)).floor(), dim)
+		var cp: Vector2 = c["p"]
+		front.draw_texture(tex_chip, (cp - Vector2(cam + 1.0, 1.0)).floor(), _lit(cp.x, dim))
 	_decor(cam, true, dim)
 	for p: Dictionary in pops:
 		var a: float = float(p["age"])
-		Fx.sparkle(front, Vector2(floorf(float(p["x"]) - cam), float(p["y"]) + 8.0), clampf(a * 1.6, 0.0, 1.0), UI.CYAN, 2)
-		Pix.text_oc(front, floorf(float(p["x"]) - cam), floorf(float(p["y"]) - a * 22.0), String(p["s"]), 10, Color(UI.YELLOW, clampf(1.5 - a, 0.0, 1.0)))
+		if bool(p["spark"]):
+			Fx.sparkle(front, Vector2(floorf(float(p["x"]) - cam), float(p["y"]) + 8.0), clampf(a * 1.6, 0.0, 1.0), UI.CYAN, 2)
+		Pix.text_oc(front, floorf(float(p["x"]) - cam), floorf(float(p["y"]) - a * 14.0), String(p["s"]), 10, Color(UI.YELLOW, clampf(2.2 - a, 0.0, 1.0)))
 	_draw_guides(cam)
 	_draw_hud(night)
 
@@ -678,37 +854,37 @@ func _draw_samples(cam: float, dim: Color) -> void:
 		var sd: Dictionary = samples[i]
 		if sd["taken"]:
 			continue
-		var sx: float = floorf(float(sd["x"]) - cam)
+		var wx: float = float(sd["x"])
+		var sx: float = floorf(wx - cam)
 		if sx < -40.0 or sx > 680.0:
 			continue
-		var sy: float = floorf(ground(float(sd["x"])))
+		var sy: float = floorf(ground(wx))
 		var pulse: float = 0.5 + 0.5 * sin(t * 4.0 + i)
 		Fx.glow(front, Vector2(sx, sy), 12.0, Color(UI.CYAN, 0.25 + 0.2 * pulse))
 		_shadow(sx, sy + 1.0, 22.0, 0.3)
-		front.draw_texture(tex_sample, Vector2(sx - 10, sy - 11), dim)
+		front.draw_texture(tex_sample, Vector2(sx - 10, sy - 11), _lit(wx, dim).lightened(0.35 if _in_shadow(wx) else 0.0))
 		var gl: float = fposmod(t + i * 0.7, 2.0)
 		if gl < 0.5:
 			Fx.sparkle(front, Vector2(sx + 3, sy - 9), gl / 0.5, UI.CYAN, 0)
 		if i == drill_target and drilling > 0.0:
 			continue
-		# a bobbing marker; in reach it turns into the E prompt
+		# a bobbing marker over the next one, with its distance
 		var by: float = floorf(sy - 30.0 - absf(sin(t * 3.0)) * 4.0)
-		if absf(rx - float(sd["x"])) < _reach() and state == "explore" and Game.id_has("drill"):
-			var w: float = Pix.text_w("DRILL", 10) + 17.0
-			Pix.key_hint(front, Vector2(sx - floorf(w / 2.0), by - 6.0), "E", "DRILL", UI.YELLOW)
-		else:
+		if absf(rx - wx) >= _reach() or state != "explore":
 			front.draw_texture(tex_marker, Vector2(sx - 4, by), Color.WHITE if i == near_i else Color(1, 1, 1, 0.55))
 			if i == near_i:
-				Pix.text_oc(front, sx, by - 3.0, "%d m" % roundi(absf(float(sd["x"]) - rx) / PPM), 10, UI.TEXT)
+				Pix.text_oc(front, sx, by - 3.0, "%d m" % roundi(absf(wx - rx) / PPM), 10, UI.TEXT)
 
 func _draw_rover(cam: float, night: float, dim: Color) -> void:
 	var rp: Vector2 = Vector2(floorf(rx - cam), floorf(ry))
 	var lift: float = clampf((ground(rx) - ry) / 110.0, 0.0, 0.6)
+	var rc: Color = _lit(rx, dim)
+	var lamps: float = maxf(night, 1.0 if _in_shadow(rx) else 0.0)
 	_shadow(rp.x, ground(rx) + 1.0, 74.0 * (1.0 - lift), 0.42 * (1.0 - lift))
-	# headlights at night: a pool of light on the ground ahead and a beam
-	if night > 0.25:
-		Fx.glow(front, Vector2(rp.x + face * 72.0, LANE + 1.0), 48.0, Color(1.0, 0.9, 0.65, 0.5 * night))
-		Fx.beam(front, _rl(rp, 72, 34), Vector2(face, 0), 96.0, 33.0, t, Color(1.0, 0.92, 0.7, 0.55 * night))
+	# headlights in the dark: a pool of light on the ground ahead and a beam
+	if lamps > 0.25:
+		Fx.glow(front, Vector2(rp.x + face * 72.0, LANE + 1.0), 48.0, Color(1.0, 0.9, 0.65, 0.5 * lamps))
+		Fx.beam(front, _rl(rp, 72, 34), Vector2(face, 0), 96.0, 33.0, t, Color(1.0, 0.92, 0.7, 0.55 * lamps))
 	# scanner: sweeps the nearest rock while it is close
 	var ni: int = _nearest()
 	if ni >= 0 and drilling <= 0.0:
@@ -716,20 +892,22 @@ func _draw_rover(cam: float, night: float, dim: Color) -> void:
 		if absf(dx) < 110.0 and absf(dx) > 20.0 and signf(dx) == face:
 			Fx.beam(front, _rl(rp, 66, 44), Vector2(face, 0), absf(dx) - 26.0, 9.0, t)
 	var fr: int = (int(rx / 1.25) % 8) if moving else 0
-	# sprung body: bobs on the suspension when driving, squashes on landing
+	# sprung body: bobs on the suspension when driving, squashes on landing; a damaged wheel limps
 	var bob: float = 0.0
 	if moving and on_ground:
 		bob = 1.0 if fposmod(rx, 14.0) < 7.0 else 0.0
+		if wheel_k < 1.0 and fposmod(rx, 30.0) < 6.0:
+			bob = 2.0
 	if t - land_t < 0.15:
 		bob = 2.0
-	_rover_part(rp, Rect2(fr * 80, 0, 80, SPLIT), 0.0 + bob, dim)
-	_rover_part(rp, Rect2(fr * 80, SPLIT, 80, 60 - SPLIT), float(SPLIT), dim)
+	_rover_part(rp, Rect2(fr * 80, 0, 80, SPLIT), 0.0 + bob, rc)
+	_rover_part(rp, Rect2(fr * 80, SPLIT, 80, 60 - SPLIT), float(SPLIT), rc)
 	# blinking beacon on the mast, a lamp on the bumper
 	if fposmod(t, 1.0) < 0.2:
 		var bp: Vector2 = _rl(rp, 58, 8 + bob)
 		Fx.glow(front, bp, 4.0, Color(1.0, 0.3, 0.25, 0.8), true)
 		front.draw_rect(Rect2(bp.floor(), Vector2(1, 1)), Color("ffd0c8"))
-	if night > 0.25:
+	if lamps > 0.25:
 		var hp: Vector2 = _rl(rp, 71, 34 + bob)
 		Fx.glow(front, hp, 6.0, Color(1.0, 0.95, 0.75, 0.8), true)
 		front.draw_rect(Rect2(hp.floor() - Vector2(0, 1), Vector2(2, 2)), Color("fff6d8"))
@@ -763,36 +941,26 @@ func _draw_drill(rp: Vector2, cam: float, bob: float) -> void:
 		# progress gauge over the rover
 		Pix.gauge(front, Rect2(rp.x - 20.0, rp.y - 74.0, 40, 7), clampf((prog - 0.2) / 0.8, 0.0, 1.0), UI.CYAN)
 
-func _rover_part(rp: Vector2, src: Rect2, oy: float, dim: Color) -> void:
+func _rover_part(rp: Vector2, src: Rect2, oy: float, mod: Color) -> void:
 	var y: float = rp.y - 58.0 + oy
 	if face > 0.0:
-		front.draw_texture_rect_region(tex_rover, Rect2(rp.x - 37.0, y, src.size.x, src.size.y), src, dim)
+		front.draw_texture_rect_region(tex_rover, Rect2(rp.x - 37.0, y, src.size.x, src.size.y), src, mod)
 	else:
 		front.draw_set_transform(Vector2(rp.x, 0), 0.0, Vector2(-1, 1))
-		front.draw_texture_rect_region(tex_rover, Rect2(-37.0, y, src.size.x, src.size.y), src, dim)
+		front.draw_texture_rect_region(tex_rover, Rect2(-37.0, y, src.size.x, src.size.y), src, mod)
 		front.draw_set_transform(Vector2.ZERO)
 
 ## The way to go: an arrow at the screen edge to the nearest rock, or back to the lander when done.
 func _draw_guides(cam: float) -> void:
 	if state != "explore":
 		return
-	var tx: float = -1.0
-	var label: String = ""
 	var ni: int = _nearest()
-	var home: bool = got >= goal or ni < 0
-	if home:
-		tx = LANDER_X
-		label = "LANDER"
-	else:
-		tx = float(samples[ni]["x"])
-		label = "ROCK"
+	var home: bool = _go_home()
+	var tx: float = LANDER_X if home else float(samples[ni]["x"])
+	var label: String = "LANDER" if home else String(sk["noun"])
 	var sx: float = tx - cam
 	if home and sx > -20.0 and sx < 660.0:
-		# lander on screen: say what E does there
-		if _at_lander():
-			var w: float = Pix.text_w("FINISH", 10) + 17.0
-			Pix.key_hint(front, Vector2(floorf(sx - w / 2.0), LANE - 104.0 - floorf(absf(sin(t * 3.0)) * 3.0)), "E", "FINISH", UI.GREEN)
-		else:
+		if not _at_lander():
 			front.draw_texture(tex_marker, Vector2(floorf(sx - 4.0), LANE - 98.0 - floorf(absf(sin(t * 3.0)) * 4.0)), UI.GREEN)
 		return
 	if sx >= 0.0 and sx <= 640.0:
@@ -800,7 +968,6 @@ func _draw_guides(cam: float) -> void:
 	var right: bool = sx > 640.0
 	var y: float = LANE - 50.0
 	var nudge: float = floorf(fposmod(t * 2.0, 1.0) * 3.0)
-	var col: Color = UI.GREEN if home else UI.YELLOW
 	var acol: Color = Color(0.5, 1.4, 0.6) if home else Color.WHITE
 	var dist: String = "%s %d m" % [label, roundi(absf(tx - rx) / PPM)]
 	var w2: float = Pix.text_w(dist, 10) + 26.0
@@ -808,76 +975,197 @@ func _draw_guides(cam: float) -> void:
 	Pix.panel(front, Rect2(px - 4.0, y - 8.0, w2 + 8.0, 20), pan_accent, pan_body)
 	if right:
 		front.draw_texture(tex_arrow, Vector2(px + w2 - 10.0 + nudge, y - 2.0), acol)
-		_text(Vector2(px + 2.0, y + 6.0), dist, 10, col)
+		_text(Vector2(px + 2.0, y + 6.0), dist, 10, UI.TEXT)
 	else:
 		front.draw_set_transform(Vector2(px + 8.0 - nudge, 0), 0.0, Vector2(-1, 1))
 		front.draw_texture(tex_arrow, Vector2(0, y - 2.0), acol)
 		front.draw_set_transform(Vector2.ZERO)
-		_text(Vector2(px + 14.0, y + 6.0), dist, 10, col)
+		_text(Vector2(px + 14.0, y + 6.0), dist, 10, UI.TEXT)
 
-# ---------------------------------------------------------------- HUD
+# ---------------------------------------------------------------- directions and HUD
+
+## The one thing to do now: [key cap, words]. It changes only when the player has done it.
+func _direction() -> Array:
+	if state != "explore":
+		return ["", banner]
+	if drilling > 0.0:
+		return ["", "DRILLING: WAIT FOR THE SAMPLE"]
+	if t < confirm_t and _at_lander():
+		return ["E", "NO SAMPLES YET: PRESS E AGAIN TO LEAVE ANYWAY"]
+	var ni: int = _nearest()
+	if _go_home():
+		var why: String = ""
+		if _low() and got < goal:
+			why = "BATTERY LOW: "
+		elif not _drill_ok() and got < goal:
+			why = "NO WORKING DRILL: "
+		if _at_lander():
+			return ["E", why + "PRESS E TO FINISH"]
+		var lk: String = ">" if LANDER_X > rx else "<"
+		return [lk, why + "DRIVE BACK TO THE LANDER, PRESS E"]
+	var sx: float = float(samples[ni]["x"])
+	var noun: String = String(sk["noun"])
+	if absf(rx - sx) < _reach():
+		return ["E", "PRESS E TO DRILL THE GLOWING %s" % noun]
+	if not has_rover:
+		return ["", "NO ROVER: ONLY THE ROCK NEXT TO THE LANDER"]
+	var dir: float = signf(sx - rx)
+	if on_ground and ground(rx + dir * 40.0) < ry - 3.0:
+		return ["UP", "PRESS UP TO JUMP ONTO THE BOULDER"]
+	var side: String = "RIGHT" if dir > 0.0 else "LEFT"
+	if shadow_x >= 0.0 and rx < shadow_x and sx > shadow_x:
+		return [">" if dir > 0.0 else "<", "HOLD %s TO DRIVE INTO THE DARK CRATER" % side]
+	return [">" if dir > 0.0 else "<", "HOLD %s TO DRIVE TO THE GLOWING %s" % [side, noun]]
 
 func _draw_hud(night: float) -> void:
 	var pct: float = battery / wh
-	Pix.panel(front, Rect2(6, 6, 178, 58), pan_accent, pan_body)
-	# battery, with the 30% ascent mark on the Moon
+	var dim_c: Color = UI.DIM
+	# left: battery, samples and data, gravity
+	Pix.panel(front, Rect2(6, 6, 186, 62), pan_accent, pan_body)
 	var bcol: Color = UI.GREEN if pct > 0.3 else (UI.RED if fposmod(t, 0.6) < 0.3 or pct > 0.2 else UI.YELLOW)
-	Pix.icon(front, "battery", Vector2(12, 12), bcol)
-	Pix.gauge(front, Rect2(28, 14, 112, 8), pct, bcol, 0.3 if moon else -1.0)
-	_text(Vector2(146, 22), "%d%%" % roundi(pct * 100.0), 10, bcol)
-	# sample slots fill up; data collected
+	var ascent: float = ASCENT_MIN if bool(d["returns"]) else -1.0
+	Pix.icon(front, "battery", Vector2(12, 11), bcol)
+	_text(Vector2(28, 21), "BATTERY", 10, UI.YELLOW if crit == "battery" else dim_c)
+	Pix.gauge(front, Rect2(76, 13, 76, 8), pct, bcol, ascent)
+	_text(Vector2(156, 21), "%d %%" % roundi(pct * 100.0), 10, UI.TEXT)
 	for i: int in goal:
 		var on: bool = i < got
 		var pop: float = 1.0 if on and i == got - 1 and t - got_t < 0.25 else 0.0
-		front.draw_texture(tex_rock[1], Vector2(12 + i * 15, 29 - pop), Color.WHITE if on else Color(0.3, 0.33, 0.45, 0.9))
-	Pix.icon(front, "data", Vector2(16 + goal * 15, 27), UI.CYAN)
-	_text(Vector2(31 + goal * 15, 37), "%s Gb" % Game.fmt(data), 10, UI.CYAN)
-	# gravity: the jump height it gives here, next to Earth's
+		front.draw_texture(tex_rock[1], Vector2(12 + i * 15, 27 - pop), Color.WHITE if on else Color(0.3, 0.33, 0.45, 0.9))
+	var dx: float = 16.0 + goal * 15.0
+	_text(Vector2(dx, 36), "%d/%d" % [got, goal], 10, UI.TEXT)
+	Pix.icon(front, "data", Vector2(dx + 30.0, 25), UI.CYAN)
+	_text(Vector2(dx + 46.0, 36), "%s Gb" % Game.fmt(data), 10, UI.YELLOW if crit == "data" else UI.TEXT)
 	var jump_m: float = pow(JUMP_V, 2) / (2.0 * g)
-	Pix.icon(front, "gravity", Vector2(12, 45), UI.DIM)
-	_text(Vector2(28, 55), "%s m/s2  JUMP %.1f m" % [str(g), jump_m], 10, UI.TEXT)
-	_text(Vector2(28 + Pix.text_w("%s m/s2  JUMP %.1f m" % [str(g), jump_m], 10) + 4.0, 55), "(EARTH %.1f)" % (pow(JUMP_V, 2) / (2.0 * 9.81)), 10, UI.DIM)
-	if not moon:
-		# Mars clock: day or night decides whether the panels charge
-		Pix.panel(front, Rect2(536, 6, 98, 30), pan_accent, pan_body)
-		Pix.icon(front, "time", Vector2(542, 11), UI.ORANGE)
-		_text(Vector2(558, 20), "SOL %02d:%02d" % [int(hour), int(fposmod(hour, 1.0) * 60.0)], 10, UI.TEXT)
-		var nt: bool = night > 0.5
-		Pix.lamp(front, Vector2(542, 23), "warn" if nt else "ok")
-		_text(Vector2(558, 32), "NIGHT" if nt else "SOLAR ON", 10, UI.ORANGE if nt else UI.GREEN)
-	if not has_rover:
-		Pix.panel(front, Rect2(196, 6, 236, 18), pan_accent, pan_body)
-		_text(Vector2(202, 18), "NO ROVER: only rocks next to the lander.", 10, UI.RED)
-	# first seconds: the keys, as key caps
-	if state == "explore" and t < 9.0 and has_rover and not DisplayServer.is_touchscreen_available():
-		# bottom right, like the key strips of the landing and drone screens
-		var w: float = 15.0 + 17.0 + Pix.text_w("DRIVE", 10) + 10.0 + 23.0 + Pix.text_w("JUMP", 10) + 10.0 + 17.0 + Pix.text_w("DRILL / FINISH", 10) + 12.0
-		var x0: float = 634.0 - w
-		Pix.panel(front, Rect2(x0, 334, w, 20), pan_accent, pan_body)
-		var kx: float = x0 + 6.0
-		kx += Pix.keycap(front, Vector2(kx, 337), "<") + 2.0
-		kx += Pix.key_hint(front, Vector2(kx, 337), ">", "DRIVE") + 10.0
-		kx += Pix.key_hint(front, Vector2(kx, 337), "UP", "JUMP") + 10.0
-		kx += Pix.key_hint(front, Vector2(kx, 337), "E", "DRILL / FINISH")
-	if msg_t > 0.0 and msg != "":
-		var mw: float = Pix.text_w(msg, 10) + 20.0
-		var a: float = clampf(msg_t * 3.0, 0.0, 1.0)
-		Pix.panel(front, Rect2(floorf(320.0 - mw / 2.0), 92, mw, 20), pan_accent, Color(pan_body, pan_body.a * a))
-		Pix.text_oc(front, 320, 105, msg, 10, Color(UI.YELLOW, a))
-	if not driver:
-		var hs: String = "THE HOST IS DRIVING. YOU ARE WATCHING."
-		var hw: float = Pix.text_w(hs, 10) + 20.0
-		Pix.panel(front, Rect2(floorf(320.0 - hw / 2.0), 334, hw, 20), UI.YELLOW, pan_body)
-		Pix.text_c(front, 320, 348, hs, 10, UI.YELLOW)
+	Pix.icon(front, "gravity", Vector2(12, 43), dim_c)
+	_text(Vector2(28, 53), "%.2f m/s2: JUMP %.1f m" % [g, jump_m], 10, UI.TEXT)
+	_text(Vector2(28, 63), "ON EARTH: %.1f m" % (pow(JUMP_V, 2) / (2.0 * 9.81)), 10, dim_c)
+	var hl: Rect2 = Rect2(9, 9, 180, 15) if crit == "battery" else Rect2(dx + 26.0, 23, 186.0 - dx - 26.0, 16)
+	if crit != "heat":
+		front.draw_rect(hl, Color(UI.YELLOW, 0.8), false, 1.0)
+	# fact box under it: a verified fact for this world, one at a time
+	var facts: Array = d["facts"]
+	var fact: String = String(facts[int(t / 10.0) % facts.size()])
+	Pix.panel(front, Rect2(6, 70, 186, 36), pan_accent, pan_body)
+	Pix.para(front, Vector2(12, 81), fact, 176, dim_c)
+	# right: power, the day clock, the "?" key
+	var rows: int = 3 if float(d["night_hours"]) > 0.0 else 2
+	Pix.panel(front, Rect2(500, 6, 114, 8 + rows * 11), pan_accent, pan_body)
+	var y: float = 17.0
+	if rows == 3:
+		Pix.icon(front, "time", Vector2(505, y - 9), dim_c)
+		_text(Vector2(520, y), "SOL %02d:%02d" % [int(hour), int(fposmod(hour, 1.0) * 60.0)], 10, UI.TEXT)
+		y += 11.0
+	var dark: String = "SHADOW" if _in_shadow(rx) else ("NIGHT" if night > 0.5 else "")
+	var sol_txt: String = "SOLAR %d W" % roundi(gen_now - rtg)
+	if solar <= 0.0 and rtg <= 0.0:
+		sol_txt = "NO SUN: BATTERY"
+	elif dark != "":
+		sol_txt = "%s: SOLAR 0 W" % dark
+	Pix.lamp(front, Vector2(505, y - 9), "ok" if gen_now >= draw_now else "warn")
+	_text(Vector2(520, y), sol_txt, 10, UI.TEXT)
+	y += 11.0
+	Pix.icon(front, "power", Vector2(505, y - 9), dim_c)
+	_text(Vector2(520, y), "USING %d W" % roundi(draw_now), 10, dim_c)
+	Pix.panel(front, _help_rect(), pan_accent, pan_body)
+	_text(Vector2(623, 18), "?", 10, UI.YELLOW if help_on else UI.TEXT)
+	if life_min > 0.0:
+		_draw_heat()
+	# the one direction, at the bottom
+	var dr: Array = _direction()
+	var words: String = String(dr[1])
+	if words != "":
+		var kw: float = maxf(13.0, Pix.text_w(String(dr[0]), 10) + 7.0) + 6.0 if String(dr[0]) != "" else 0.0
+		var w: float = kw + Pix.text_w(words, 10) + 16.0
+		var x0: float = floorf(320.0 - w / 2.0)
+		Pix.panel(front, Rect2(x0, 334, w, 21), pan_accent, pan_body)
+		if kw > 0.0:
+			Pix.keycap(front, Vector2(x0 + 8.0, 338), String(dr[0]))
+		_text(Vector2(x0 + 8.0 + kw, 348), words, 10, UI.YELLOW)
+	if help_on:
+		_draw_help()
 
-# ---------------------------------------------------------------- debug hooks (screenshots only)
+## The heat clock: how much of the lander's life is gone. It only goes up.
+func _draw_heat() -> void:
+	var used: float = clampf(1.0 - _life_left() / maxf(1.0, life_min), 0.0, 1.0)
+	var col: Color = UI.YELLOW if used < 0.6 else (UI.ORANGE if used < 0.85 else (UI.RED if fposmod(t, 0.5) < 0.3 else UI.ORANGE))
+	var r: Rect2 = Rect2(206, 6, 228, 36)
+	Pix.panel(front, r, pan_accent, pan_body)
+	front.draw_rect(r.grow(-2), Color(UI.YELLOW, 0.8), false, 1.0)
+	Pix.icon(front, "hull", Vector2(212, 11), col)
+	_text(Vector2(228, 20), "HULL HEAT", 10, UI.YELLOW)
+	_text(Vector2(310, 20), "%d min LEFT OF %d min" % [maxi(0, roundi(_life_left())), roundi(life_min)], 10, UI.TEXT)
+	Pix.gauge(front, Rect2(212, 26, 216, 11), used, col)
+
+func _draw_help() -> void:
+	var lines: Array = [
+		["< >", "HOLD TO DRIVE (A, D)"],
+		["UP", "JUMP (W, SPACE)"],
+		["E", "DRILL A GLOWING %s / FINISH AT THE LANDER" % String(sk["noun"])],
+		["?", "SHOW OR HIDE THIS LIST (H)"],
+	]
+	var extra: String = ""
+	if bool(d["returns"]):
+		extra = "Game rule: the ascent needs %d%% battery. Stay above yellow." % roundi(ASCENT_MIN * 100.0)
+	elif life_min > 0.0:
+		extra = "The lander lives %d min here. Full HULL HEAT ends it." % roundi(life_min)
+	elif shadow_x >= 0.0:
+		extra = "No sun in the crater: the panels stop, the battery drains."
+	elif float(d["night_hours"]) > 0.0:
+		extra = "At night the panels stop: the battery must last till dawn."
+	var h: float = 26.0 + lines.size() * 17.0 + (14.0 if extra != "" else 0.0)
+	var r: Rect2 = Rect2(150, floorf(170.0 - h / 2.0), 340, h)
+	Pix.panel(front, r, pan_accent, Color(pan_body, 0.95))
+	_text(r.position + Vector2(10, 14), "CONTROLS", 10, UI.YELLOW)
+	var y: float = r.position.y + 22.0
+	for ln: Array in lines:
+		Pix.key_hint(front, Vector2(r.position.x + 10.0, y), String(ln[0]), String(ln[1]), UI.TEXT)
+		y += 17.0
+	if extra != "":
+		_text(Vector2(r.position.x + 10.0, y + 8.0), extra, 10, UI.DIM)
+
+# ---------------------------------------------------------------- autopilot (tests and demos)
+
+## Plays the site by itself: drives to each rock, jumps boulders, drills, answers cards, goes home.
+func _auto_step() -> void:
+	if EventCard.is_open():
+		if card == null or not is_instance_valid(card) or float(card.get("age")) < 0.6:
+			return
+		if (card.get("result") as Dictionary).is_empty():
+			var pick: int = 0
+			for i: int in (card_ev["choices"] as Array).size():
+				var info: Dictionary = Game.event_choice(card_ev, i)
+				if bool(info["can"]) and String(info["warn"]) == "":
+					pick = i
+					break
+			card.call("_choose", pick)
+		else:
+			card.call("_continue")
+		return
+	hold.erase("l")
+	hold.erase("r")
+	hold.erase("u")
+	if state != "explore" or drilling > 0.0:
+		return
+	var home: bool = _go_home()
+	var tx: float = LANDER_X if home else float(samples[_nearest()]["x"])
+	if (home and _at_lander()) or (not home and absf(tx - rx) < _reach() - 8.0):
+		if on_ground:
+			_use()
+			if home:
+				_use()   # a second press confirms leaving with no samples
+		return
+	var dir: float = signf(tx - rx)
+	hold["r" if dir > 0.0 else "l"] = true
+	if on_ground and ground(rx + dir * 40.0) < ry - 3.0:
+		hold["u"] = true
+
+# ---------------------------------------------------------------- debug hooks (screenshots and tests)
 
 ## Mars night: headlights on, driving right.
 func debug_night() -> void:
 	t = 45.0
-	hour = fposmod(8.0 + t * HOURS_PER_SEC * 3.0, 24.66)
-	told["night"] = true
-	told["ascent"] = true
+	hour = fposmod(8.0 + t * h_rate, 24.66)
 	hold["r"] = true
 
 func debug_drive() -> void:
@@ -891,20 +1179,49 @@ func debug_drill() -> void:
 	face = 1.0
 	drilling = 1.0
 	drill_target = i
-	told["ascent"] = true
 	t = 10.0
+	ev_cool = 99.0
 
 ## In the air over the first boulder.
 func debug_jump() -> void:
+	if boulders.is_empty():
+		return
 	var b: Rect2 = boulders[0]
 	rx = b.position.x + b.size.x * 0.5
-	ry = LANE - b.size.y - 34.0
-	vy = -JUMP_V * PPM * 0.4
+	ry = LANE - b.size.y - 20.0
+	vy = -JUMP_V * PPM * 0.3
 	on_ground = false
 	was_ground = false
 	face = 1.0
-	told["ascent"] = true
 	t = 10.0
+	ev_cool = 99.0
+
+## Inside the crater's permanent shadow (or far out on the plain), driving on to the second sample.
+func debug_crater() -> void:
+	rx = float(samples[0]["x"]) + 60.0
+	ry = ground(rx)
+	samples[0]["taken"] = true
+	got = 1
+	data = gb_sample
+	battery = wh * 0.62
+	t = 20.0
+	ev_cool = 99.0
+	hold["r"] = true
+
+## The heat clock nearly out.
+func debug_hot() -> void:
+	debug_crater()
+	minutes = maxf(0.0, life_min - float(Game.run.get("minutes_lost", 0.0)) - 9.0)
+
+## A site event card open, through the real path (sync, card, read back).
+func debug_event() -> void:
+	debug_crater()
+	hold.clear()
+	var ev: Dictionary = Game.next_event("site")
+	if ev.is_empty():
+		ev = Game.event_by_id("reboot")
+	fired += 1
+	_open_event(ev)
 
 ## Every sample on board, driving home: the arrow points back to the lander.
 func debug_done() -> void:
@@ -915,10 +1232,10 @@ func debug_done() -> void:
 	rx = 1400.0
 	ry = ground(rx)
 	face = -1.0
-	told["ascent"] = true
 	t = 10.0
+	ev_cool = 99.0
 
-## At the lander with the samples: the E prompt says FINISH.
+## At the lander with the samples: the direction says PRESS E TO FINISH.
 func debug_home() -> void:
 	debug_done()
 	rx = LANDER_X + 40.0
@@ -926,3 +1243,17 @@ func debug_home() -> void:
 
 func debug_lowbatt() -> void:
 	battery = wh * 0.18
+
+func debug_help() -> void:
+	help_on = true
+
+## The autopilot plays the whole site at 3x speed, then the game moves on to the next screen.
+func debug_auto() -> void:
+	auto = true
+	Engine.time_scale = 3.0
+
+## What a bad stuck-wheel call looks like out in the world: the rover limps on at reduced speed.
+func debug_outcome() -> void:
+	debug_crater()
+	card_ev = Game.event_by_id("stuck_wheel")
+	_after_event({"ok": false, "chips": [["battery", "-40% battery", true]], "applied": {}})
