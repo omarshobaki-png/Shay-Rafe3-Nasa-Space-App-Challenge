@@ -19,6 +19,14 @@ const Preflight = preload("res://scripts/preflight.gd")
 const TABS: Array[String] = ["launcher", "power", "comms", "science", "landing", "robot", "return", "fuel", "protect"]
 const TAB_ICON: Dictionary = {"launcher": "launcher", "power": "power", "comms": "comms", "science": "science",
 	"landing": "landing", "robot": "robot", "return": "return", "fuel": "fuel", "protect": "shield"}
+## The tab column: a 26 x 26 picture per category (art/vab/tabs.png, in TABS order, from tools/art/gen_vab.py),
+## its word under it (6 letters at most) and its accent colour.
+const TAB_LABEL: Dictionary = {"launcher": "ROCKET", "power": "POWER", "comms": "COMMS", "science": "SCI",
+	"landing": "LAND", "robot": "ROVER", "return": "RETURN", "fuel": "FUEL", "protect": "SHIELD"}
+const TAB_ACCENT: Dictionary = {"launcher": Color("f0503c"), "power": Color("ffd75e"), "comms": Color("4fd6ff"),
+	"science": Color("6dff8a"), "landing": Color("ff9f43"), "robot": Color("b48cff"), "return": Color("e8ecff"),
+	"fuel": Color("ff7ad9"), "protect": Color("5a8cff")}
+const TAB_ICON_PX: float = 26.0
 const ROLE_SHORT: Dictionary = {"planner": "PLAN", "engineer": "ENGR", "science": "SCI", "comms": "COMM"}
 const WORD: Dictionary = {"ok": "GO", "warn": "GO, AT RISK", "bad": "NO-GO"}
 const NEED_RANK: Dictionary = {"required": 0, "recommended": 1, "optional": 2, "not_needed": 3}
@@ -36,10 +44,10 @@ const CAT_COL: Dictionary = {"core": Color("c9a227"), "power": Color("2b6fd6"), 
 	"landing": Color("a0a8c0"), "robot": Color("ff9f43"), "return": Color("d8dce8"), "fuel": Color("8a94b8"), "protect": Color("4fd6ff")}
 const LV_SIZE: Dictionary = {"electron": Vector2(12, 70), "falcon9": Vector2(22, 190), "vulcan": Vector2(34, 165), "heavy": Vector2(50, 195)}
 
-const HALL: Rect2 = Rect2(150, 24, 320, 336)
-const BIN: Rect2 = Rect2(0, 24, 150, 336)
+const HALL: Rect2 = Rect2(160, 24, 310, 336)
+const BIN: Rect2 = Rect2(0, 24, 160, 336)
 const BOARD: Rect2 = Rect2(470, 24, 170, 336)
-const GRID: Vector2 = Vector2(28, 41)
+const GRID: Vector2 = Vector2(43, 41)
 const TILE: float = 36.0           # bin tiles: three a row, TILE + 3 apart
 const ROW_H: float = 14.0          # one Mission Control lamp row
 const VIEW_TOP: float = 80.0       # the guide talks above this line; a tall craft pans below it
@@ -49,9 +57,10 @@ const CAT_LABEL: Dictionary = {"robot": "EXPLORE", "launcher": "LAUNCHER"}
 const INTRO: Dictionary = {"power": "First, power!", "radio": "Now a radio.", "science": "Now the science tools.",
 	"down": "Now the safe landing.", "fuel": "Time to fuel up.", "rocket": "Last, the rocket.", "crew": "Now the crew cabin."}
 const CHEER: Array[String] = ["Nice!", "Great job!", "Perfect!"]
-const GUIDE_BOX: Rect2 = Rect2(153, 27, 38, 42)    # the guide's portrait
-const BUBBLE_X: float = 196.0
-const BUBBLE_W: float = 268.0
+const GUIDE_BOX: Rect2 = Rect2(163, 27, 38, 42)    # the guide's portrait
+const BUBBLE_X: float = 206.0
+const BUBBLE_W: float = 258.0
+const DELTA_T: float = 1.8         # how long a lamp shows what the last change did to it ("+12%", "-40 kg")
 const SAY_CPS: float = 55.0        # how fast the guide's line types on, characters per second
 const GHOST_LOOP: float = 3.2      # the ghost cursor shows the move again every this many seconds
 const POLL_STEP: float = 0.22
@@ -139,6 +148,9 @@ var tex_fork: Texture2D = null
 var tex_redo: ImageTexture = null
 var tex_guide: Texture2D = null    # 4 frames of 32 x 36: idle, blink, talk, happy
 var tex_cursor: Texture2D = null   # 2 frames of 12 x 15: up, pressed
+var tex_tabs: Texture2D = null     # the bin tab pictures, 26 x 26 each, in TABS order
+var deltas: Dictionary = {}        # station id -> {"text", "col", "age"}: what the last change did to that lamp
+var has_missing_line: bool = false # preflight.gd has the v7 short "what is missing" line for NORMAL
 var tex_cache: Dictionary = {}     # icons and launch vehicles, kept so they are never freed
 var para_font: FontVariation = null
 var extras: Dictionary = {}
@@ -182,6 +194,9 @@ func _ready() -> void:
 	tex_fork = _load(String(extras.get("FORKLIFT", "")))
 	tex_guide = _load("res://art/vab/guide.png")
 	tex_cursor = _load("res://art/vab/cursor.png")
+	tex_tabs = _load("res://art/vab/tabs.png")
+	for m: Dictionary in (Preflight as GDScript).get_script_method_list():
+		has_missing_line = has_missing_line or String(m["name"]) == "missing_line"
 	para_font = FontVariation.new()
 	para_font.base_font = Pix.font()
 	para_font.spacing_bottom = 1
@@ -204,6 +219,10 @@ func _ready() -> void:
 		b_redo.icon = tex_redo
 	_place(self, b_redo, Rect2(456, 3, 21, 17))
 	b_auto = _btn(self, "AUTO-BUILD", _auto_build, Rect2(480, 3, 70, 17))
+	b_auto.visible = _hints() >= 2
+	if not b_auto.visible:   # the undo pair moves up to the help button
+		b_undo.position.x += 70.0
+		b_redo.position.x += 70.0
 	var hb: Button = UI.icon_button("help", "", _toggle_help)
 	_place(self, hb, Rect2(552, 3, 22, 17))
 	b_launch = _btn(self, "LAUNCH", _start_poll, Rect2(576, 1, 62, 22))
@@ -223,14 +242,14 @@ func _ready() -> void:
 	b_x10 = _btn(self, "x10", _toggle_x10, Rect2(GRID.x + 78, 104, 36, 17))
 	b_x10.toggle_mode = true
 	b_fill = _btn(self, "FILL TO NEED", _fill, Rect2(GRID.x, 123, 114, 17))
-	b_info = _btn(self, "i", _toggle_info, Rect2(130, 340, 16, 17))
+	b_info = _btn(self, "i", _toggle_info, Rect2(BIN.end.x - 20.0, 340, 16, 17))
 	b_guide = _btn(self, "HIDE", _toggle_guide, Rect2(GUIDE_BOX.position.x, GUIDE_BOX.end.y + 2, GUIDE_BOX.size.x, 14))
 	b_show = _btn(self, "SHOW ME", _show_me, Rect2(580, 300, 56, 17))
 	b_go = UI.go_button("LAUNCH", _start_poll, 10, 150)
 	_place(self, b_go, Rect2(BOARD.position.x + 8, 334, BOARD.size.x - 16, 20))
 	over = _layer(_paint_over)
 	over.gui_input.connect(_over_input)
-	b_fix = UI.go_button("FIX IT", _poll_fix, 10, 90)
+	b_fix = UI.go_button("FIX IT" if _hints() >= 2 else "BACK", _poll_fix, 10, 90)
 	_place(over, b_fix, Rect2(0, 0, 90, 17))
 	b_anyway = UI.danger_button("LAUNCH ANYWAY", _launch, 10, 100)
 	_place(over, b_anyway, Rect2(0, 0, 100, 17))
@@ -240,6 +259,8 @@ func _ready() -> void:
 		add_child(team)
 		seen_snap = Game.snap()
 	guide = 1 if Game.build.size() <= 1 else 3
+	guide_on = _hints() >= 1
+	b_guide.visible = guide_on
 	refresh()
 	lv_shift = _lv_shift()
 
@@ -314,10 +335,15 @@ func _tile_pos(tile: String) -> Vector2:
 	return _tile_rect(maxi(_tiles(tab).find(tile), 0)).get_center()
 
 func _tab_rect(i: int) -> Rect2:
-	return Rect2(2, 28 + i * 21, 22, 20)
+	return Rect2(3, 26 + i * 37, 36, 36)
 
 func _tile_rect(i: int) -> Rect2:
 	return Rect2(GRID.x + (i % 3) * (TILE + 3.0), GRID.y + floorf(i / 3.0) * (TILE + 3.0), TILE, TILE)
+
+## How much the builder helps (Data.DIFFICULTY "hints"): 2 EASY, everything; 1 NORMAL, the guide names what is
+## missing and nothing glows; 0 HARD, only the lamps and their numbers.
+func _hints() -> int:
+	return int(Game.diff("hints"))
 
 ## The y just under the last row of tiles of the open category.
 func _tiles_end() -> float:
@@ -681,7 +707,7 @@ func _light() -> void:
 	var key: String = "%s %s" % [lit.get("id", ""), " ".join(PackedStringArray(lit_fix.keys()))]
 	if key != lit_key:
 		lit_key = key
-		if not auto and not keep_hand:
+		if not auto and not keep_hand and _hints() >= 2:   # NORMAL and HARD: the player finds the part
 			_open_lit()
 
 func _open_lit() -> void:
@@ -693,7 +719,10 @@ func _open_lit() -> void:
 		break
 
 ## The tiles to highlight: what SHOW ME is flashing, else what the lit step asks for.
+## Nothing glows above EASY.
 func _hot() -> Dictionary:
+	if _hints() < 2:
+		return {}
 	return pulse if not pulse.is_empty() else lit_fix
 
 ## The one outline in the hall: where the first highlighted part goes, the part to take off, or the rocket
@@ -798,6 +827,8 @@ func _fix_tiles(s: Dictionary) -> Dictionary:
 
 ## SHOW ME: opens the bin on what fixes the station being looked at, or on the lit step, and flashes it.
 func _show_me() -> void:
+	if _hints() < 2:
+		return
 	var s: Dictionary = _shown()
 	pulse = (_fix_tiles(s) if not s.is_empty() else lit_fix).duplicate()
 	if pulse.is_empty():
@@ -915,6 +946,7 @@ func refresh() -> void:
 	for s: Dictionary in stations:
 		before[s["id"]] = [s["status"], s["value"]]
 	var was_go: bool = top.is_empty()
+	var prev_use: Dictionary = calc.get("use", {})
 	calc = Game.calc()
 	stations = Preflight.stations()
 	top = Preflight.top(stations)
@@ -937,6 +969,9 @@ func refresh() -> void:
 		var b: Array = before[s["id"]]
 		if b[0] != s["status"] or b[1] != s["value"]:
 			blink[s["id"]] = 0.5
+			var dl: Dictionary = _delta(s, prev_use, calc["use"]) if not auto and poll.is_empty() else {}
+			if not dl.is_empty():
+				deltas[s["id"]] = dl
 		var d: int = int(Preflight.RANK[s["status"]]) - int(Preflight.RANK[b[0]])
 		better = better or d < 0
 		worse = worse or d > 0
@@ -987,6 +1022,54 @@ func refresh() -> void:
 	over.mouse_filter = Control.MOUSE_FILTER_STOP if auto or not poll.is_empty() else Control.MOUSE_FILTER_IGNORE
 	_layout_hint()
 
+## What one change did to a lamp, as a short chip beside its gauge: the margin of what the ship carries in
+## percentage points ("+12%"), or the change of a fixed limit's use ("-40 kg", "+$5M", "+3 days").
+## Green when it moves the resource toward its green band, red when away, yellow when the lamp is now at risk.
+func _delta(s: Dictionary, old: Dictionary, now: Dictionary) -> Dictionary:
+	var key: String = _use_key(s)
+	if key == "" or not old.has(key) or not now.has(key):
+		return {}
+	var a: Dictionary = old[key]
+	var b: Dictionary = now[key]
+	var on_have: bool = String(b["band_on"]) == "have"
+	var text: String = ""
+	var up: bool = false   # the change helps when nothing else decides
+	if on_have:
+		var m0: float = float(a["have"]) / float(a["need"]) * 100.0 if float(a["need"]) > 0.0 else float(a["have"])
+		var m1: float = float(b["have"]) / float(b["need"]) * 100.0 if float(b["need"]) > 0.0 else float(b["have"])
+		var pts: int = roundi(m1 - m0)
+		if pts == 0:
+			return {}
+		text = "%+d%%" % pts if float(b["need"]) > 0.0 else "%+d %s" % [pts, String(b["unit"])]
+		up = pts > 0
+	else:
+		var dv: float = float(b["need"]) - float(a["need"])
+		if absf(dv) < 0.5 and key != "budget":
+			return {}
+		if absf(dv) < 0.05:
+			return {}
+		var sgn: String = "+" if dv > 0.0 else "-"
+		text = sgn + Preflight.money(absf(dv)) if key == "budget" else "%s%s %s" % [sgn, Game.fmt(absf(dv)), String(b["unit"])]
+		up = dv < 0.0
+	var d0: float = _band_dist(a)
+	var d1: float = _band_dist(b)
+	var good: bool = d1 < d0 - 0.001 or (absf(d1 - d0) <= 0.001 and up)
+	var col: Color = UI.GOOD if good else UI.BAD
+	if s["status"] == "warn":
+		col = UI.RISK
+	return {"text": text, "col": col, "age": 0.0}
+
+## How far a resource row sits outside its green band, as a share of the band edge (0 inside it).
+func _band_dist(u: Dictionary) -> float:
+	var v: float = float(u["have"] if String(u["band_on"]) == "have" else u["need"])
+	var lo: float = float(u["lo"])
+	var hi: float = float(u["hi"])
+	if v < lo:
+		return (lo - v) / maxf(lo, 0.001)
+	if v > hi:
+		return (v - hi) / maxf(hi, 0.001)
+	return 0.0
+
 ## The station the pop-up talks about: the pinned one (clicked), else the hovered one; {} = none.
 ## A pinned pop-up stays put while the pointer travels over other lamps to its SHOW ME button.
 func _shown() -> Dictionary:
@@ -1023,12 +1106,20 @@ func _layout_hint() -> void:
 		h["col"] = UI.status_color(s["status"])
 		h["body"] = ("%s %s" % [s["headline"], s["explain"]]).strip_edges()
 		h["fact"] = s["fact"]
-		h["show"] = not _fix_tiles(s).is_empty()
+		h["show"] = _hints() >= 2 and not _fix_tiles(s).is_empty()
+		if _hints() == 0:   # HARD: the numbers and the problem, no advice
+			h["body"] = s["headline"]
+			h["fact"] = ""
 	elif not lit.is_empty() and guide_on:
 		h["title"] = ""
 		h["body"] = "Point at a lamp to see its numbers. Click it to keep them open."
 		h["col"] = UI.DIM
-	elif not lit.is_empty():
+	elif _hints() < 2 and not top.is_empty():   # no guide: only what the lamps say
+		var bad: int = Preflight.count(stations, "bad")
+		h["title"] = "%d NO-GO" % bad
+		h["col"] = UI.BAD
+		h["body"] = "Point at a lamp to see its numbers."
+	elif not lit.is_empty() and _hints() >= 2:
 		h["body"] = lit["hint"]
 		h["show"] = not lit_fix.is_empty()
 		h["step"] = not lit.has("station")
@@ -1043,7 +1134,7 @@ func _layout_hint() -> void:
 	hint = h
 	var quiet: bool = poll.is_empty() and not auto
 	b_show.visible = bool(h["show"]) and quiet
-	b_go.visible = s.is_empty() and lit.is_empty() and quiet
+	b_go.visible = s.is_empty() and (lit.is_empty() if _hints() >= 2 else top.is_empty()) and quiet
 	var room: float = 354.0 - (22.0 if b_show.visible or b_go.visible else 0.0)
 	var by: float = _hint_flow(null)
 	if by > room and h["fact"] != "":
@@ -1224,6 +1315,10 @@ func _process(delta: float) -> void:
 		blink[id] = float(blink[id]) - delta
 		if float(blink[id]) <= 0.0:
 			blink.erase(id)
+	for id: String in deltas.keys():
+		deltas[id]["age"] = float(deltas[id]["age"]) + delta
+		if float(deltas[id]["age"]) > DELTA_T:
+			deltas.erase(id)
 	if pulse_t > 0.0:
 		pulse_t -= delta
 		if pulse_t <= 0.0:
@@ -1703,11 +1798,25 @@ func _draw_bin(ci: Control) -> void:
 	var hot_tabs: Dictionary = {}
 	for tile: String in _hot():
 		hot_tabs[_tab_of(tile)] = true
+	# the tab column: a big picture and its word; the open one is lit in its accent colour and joins the tiles
 	for i: int in TABS.size():
 		var r: Rect2 = _tab_rect(i)
 		var on: bool = TABS[i] == tab
-		Pix.frame(ci, r, "tile_sel" if on else "tile_normal")
-		Pix.icon(ci, TAB_ICON[TABS[i]], r.position + Vector2(5, 4), Color.WHITE if on else Color(1, 1, 1, 0.75))
+		var acc: Color = TAB_ACCENT[TABS[i]]
+		if on:
+			ci.draw_rect(Rect2(r.position, r.size + Vector2(2, 0)), Color(acc.darkened(0.55), 0.95))
+			ci.draw_rect(Rect2(r.position.x, r.position.y, 2, r.size.y), acc)
+			ci.draw_rect(Rect2(r.position.x, r.position.y, r.size.x + 2.0, 1), Color(acc, 0.8))
+			ci.draw_rect(Rect2(r.position.x, r.end.y - 1.0, r.size.x + 2.0, 1), Color(acc, 0.8))
+		else:
+			ci.draw_rect(r, Color(1, 1, 1, 0.1) if r.has_point(mouse) else Color(0.08, 0.1, 0.18, 0.85))
+		var ip: Vector2 = r.position + Vector2(floorf((r.size.x - TAB_ICON_PX) / 2.0) + 1.0, 1)
+		if tex_tabs != null:
+			ci.draw_texture_rect_region(tex_tabs, Rect2(ip, Vector2(TAB_ICON_PX, TAB_ICON_PX)), Rect2(i * TAB_ICON_PX, 0, TAB_ICON_PX, TAB_ICON_PX),
+				Color.WHITE if on else Color(0.72, 0.74, 0.82))
+		else:
+			Pix.icon(ci, TAB_ICON[TABS[i]], ip + Vector2(7, 7))
+		Pix.text_c(ci, r.get_center().x + 1.0, r.end.y - 2.0, TAB_LABEL[TABS[i]], 10, acc if on else UI.DIM)
 		if hot_tabs.has(TABS[i]) and not on:   # the lit part is in this category
 			Pix.frame(ci, r.grow(1), "btn_focus", Color(1, 1, 1, 0.55 + 0.45 * _beat()))
 	Pix.title(ci, Vector2(GRID.x, 38), _cat_name(tab), UI.DIM)
@@ -1720,7 +1829,7 @@ func _draw_bin(ci: Control) -> void:
 
 func _draw_tile(ci: Control, tile: String, r: Rect2) -> void:
 	var st: String = _state(tile)
-	var level: String = String(_need(tile)["level"]) if _is_part(tile) else ""
+	var level: String = String(_need(tile)["level"]) if _is_part(tile) and _hints() > 0 else ""
 	var off: bool = st == "lock" or st == "off" or level == "not_needed"
 	var chosen: bool = tile == hand or tile == "rocket:" + Game.rocket_id or tile == "path:%d" % Game.traj_idx
 	Pix.frame(ci, r, "tile_off" if off else ("tile_sel" if chosen else ("tile_hover" if tile == hover_tile or tile == sel else "tile_normal")))
@@ -1808,9 +1917,10 @@ func _card(tile: String) -> Dictionary:
 		var p: Dictionary = Data.PARTS[tile]
 		var need: Dictionary = _need(tile)
 		c["name"] = p["name"]
-		c["tag"] = need["label"]
-		c["level"] = need["level"]
-		c["why"] = need["why"]
+		if _hints() > 0:   # HARD: no "REQUIRED" plates or reasons, only the part and its numbers
+			c["tag"] = need["label"]
+			c["level"] = need["level"]
+			c["why"] = need["why"]
 		c["body"] = "" if c["why"] != "" else _first(p["desc"])
 		c["src"] = "%s Source: %s" % [String(p["desc"]).substr(String(c["body"]).length()).strip_edges(), p["src"]]
 		if _state(tile) == "lock":
@@ -1847,7 +1957,7 @@ func _card_tile() -> String:
 func _draw_card(ci: Control, tile: String) -> float:
 	var x: float = GRID.x
 	var y: float = card_y + 5.0
-	var w: float = 118.0
+	var w: float = BIN.end.x - x - 5.0
 	if ci != null:
 		ci.draw_rect(Rect2(x, card_y, w, 1), Color(UI.BORDER, 0.9))
 	var c: Dictionary = _card(tile)
@@ -1943,6 +2053,13 @@ func _draw_board(ci: Control) -> void:
 				v = s["short"]
 			if Pix.text_w(v, 10) <= r.end.x - 2.0 - nx:
 				_text_r(ci, r.end.x - 2, r.position.y + 11, v, UI.DIM)   # the lamp carries the colour
+		if deltas.has(s["id"]):   # what the last change did: over the gauge, outlined, fading out
+			var dl: Dictionary = deltas[s["id"]]
+			var a: float = clampf((DELTA_T - float(dl["age"])) / 0.4, 0.0, 1.0)
+			var dw: float = Pix.text_w(dl["text"], 10)
+			var rise: float = floorf(2.0 * clampf(1.0 - float(dl["age"]) / 0.15, 0.0, 1.0))
+			ci.draw_rect(Rect2(r.end.x - dw - 6.0, r.position.y + 1.0 + rise, dw + 5.0, r.size.y - 2.0), Color(Pix.INK, 0.85 * a))
+			Pix.text(ci, Vector2(r.end.x - dw - 3.0, r.position.y + 11.0 + rise), dl["text"], 10, Color(Color(dl["col"]), a))
 	# the hint: the lit step, or the station that is pointed at
 	var hr: Rect2 = hint["rect"]
 	var hc: Color = hint["col"]
@@ -2025,6 +2142,9 @@ func _guide_now() -> Array:
 		if top.is_empty():
 			return ["go", "go", "Every lamp is green. Press LAUNCH!"]
 		return ["stuck", "stuck", "A lamp is red. Point at it to see why."]
+	if _hints() < 2:   # NORMAL: one short line, what is still missing
+		var miss: String = _missing_line()
+		return ["fix:" + String(lit["station"]["id"]) if lit.has("station") else String(lit["id"]), miss, miss]
 	var step: String = String(lit["id"])
 	var say: String = String(lit["hint"])
 	if lit.has("station"):
@@ -2037,6 +2157,25 @@ func _guide_now() -> Array:
 	if hand != "" and lit_fix.has(hand) and int(lit_fix[hand]) > 0:
 		return [step, step + "|hand", "Now click the ship where it glows."]
 	return [step, step, say]
+
+## NORMAL's guide line: what is still missing, by name only (preflight.gd's own line when it has one).
+func _missing_line() -> String:
+	if has_missing_line:
+		var line: String = String((Preflight as GDScript).call("missing_line"))
+		if line != "":
+			return line
+	var miss: PackedStringArray = []
+	for st: Dictionary in steps:
+		if not bool(st["done"]):
+			miss.append(_cap(String(st["title"])))
+	if not miss.is_empty():
+		return "Still missing: %s." % ", ".join(miss)
+	if not top.is_empty():
+		return "%s is red." % _cap(String(top["name"]))
+	for st: Dictionary in stations:
+		if st["status"] == "warn":
+			return "%s is at risk." % _cap(String(st["name"]))
+	return "Every lamp is green. Press LAUNCH!"
 
 func _guide_tick(delta: float) -> void:
 	g_t += delta
@@ -2117,7 +2256,7 @@ func _draw_guide(ci: Control) -> void:
 ## Where the ghost cursor shows the move: [from, to, carried slot or {}, tile]; [] when there is nothing to show.
 ## It only demonstrates: nothing is placed.
 func _ghost_path() -> Array:
-	if not guide_on or hand != "" or auto or not poll.is_empty() or help or g_happy > 0.0:
+	if not guide_on or _hints() < 2 or hand != "" or auto or not poll.is_empty() or help or g_happy > 0.0:
 		return []
 	if lit.is_empty():
 		if top.is_empty() and b_go.visible:
@@ -2248,6 +2387,7 @@ func debug_bare() -> void:
 	guide = 1
 	lit_key = ""
 	refresh()
+	deltas.clear()
 
 ## The lit part in the hand, away from the ship (direction 2).
 func debug_hold() -> void:
@@ -2378,6 +2518,14 @@ func debug_attach() -> void:
 	blink.clear()
 	for e: Dictionary in flashes:
 		e["age"] = -0.8
+
+## Two parts added to a bare ship: the lamps they moved show their delta chips (held on screen).
+func debug_delta() -> void:
+	debug_bare()
+	_attach("solar", 1)
+	_attach("battery", 1)
+	for id: String in deltas:
+		deltas[id]["age"] = -2.0
 
 ## A craft taller than the view, panned up by the mouse wheel.
 func debug_pan() -> void:

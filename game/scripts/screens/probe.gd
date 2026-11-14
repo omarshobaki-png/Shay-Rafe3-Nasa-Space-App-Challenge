@@ -55,6 +55,9 @@ var end_t: float = 0.0
 var end_at: float = 0.0
 var end_kind: String = ""
 var end_title: String = ""
+var kept: int = 0               # what counts once the run is over
+var kept_data: float = 0.0
+var msg_col: Color = UI.DIM
 var pos: Vector2 = Vector2(150, 145)
 var vel: Vector2 = Vector2.ZERO
 var gpx: float = G_REF_PX       # pull, px/s2
@@ -210,7 +213,7 @@ func _ready() -> void:
 	var g: float = float(d["gravity"])
 	gpx = G_REF_PX * pow(g / G_REF, 0.6)
 	thr = gpx * (1.0 + 1.2 * sqrt(G_REF / g))
-	fuel_max = FUEL_BASE * pow(g / G_REF, 0.3) * Game.diff("landing_forgive")
+	fuel_max = FUEL_BASE * pow(g / G_REF, 0.3) * Game.diff("landing_forgive") * _ship_fuel()
 	fuel = fuel_max
 	rock_w = 0.6 * (0.6 + 0.4 * Game.diff("drone_rocks"))
 	hp_max = 4 if Game.tech.has("armor") else 2
@@ -256,6 +259,41 @@ func _ready() -> void:
 
 func _exit_tree() -> void:
 	Engine.time_scale = 1.0
+
+## Drone fuel follows the propellant the ship still carries (game rule: x0.9 empty .. x1.2 full; EASY never below x1).
+func _ship_fuel() -> float:
+	var c: Dictionary = Game.run.get("calc", {})
+	var ok: float = float(c.get("prop_ok", 0.0))
+	if ok <= 0.0:
+		return 1.0
+	var m: float = clampf(0.8 + 0.3 * float(Game.run.get("prop", ok)) / ok, 0.9, 1.2)
+	return maxf(m, 1.0) if Game.diff("assist") >= 2.0 else m
+
+## A hit knocks the last sample or photo loose: it floats back where it was and must be taken again.
+func _loosen() -> void:
+	for i: int in range(ice.size() - 1, -1, -1):
+		if ice[i]["taken"]:
+			ice[i]["taken"] = false
+			got -= 1
+			data = maxf(0.0, data - gb_sample)
+			goal_t = -1.0
+			floaters.append({"p": pos - Vector2(0, 40), "age": 0.0, "s": "-1 %s LOOSE" % ("PHOTO" if job == "photo" else "SAMPLE"), "bad": true})
+			return
+
+## What the player keeps when the drone is destroyed, by the fail level.
+func _loss_text(kind: String, text: String) -> String:
+	if bool(Game.run.get("dead", false)):
+		return text
+	var f: int = int(Game.diff("fail"))
+	var noun: String = "PHOTOS" if job == "photo" else "SAMPLES"
+	var cause: String = {"smash": "HIT BY A BOULDER", "fry": "RADIATION FRIED IT", "burn": "OUT OF FUEL" if fuel <= 0.0 else "FELL INTO THE AIR"}.get(kind, "LOST")
+	var fix: String = {"smash": "fly slower, steer round big rocks", "fry": "fit a radiation shield",
+		"burn": "thrust in short bursts and dock sooner" if fuel <= 0.0 else "keep thrust on over the haze"}.get(kind, "fly cleaner")
+	if f >= 2:
+		return "%s. ALL %d %s LOST. FIX: %s." % [cause, got, noun, fix] if got > 0 else "%s. FIX: %s." % [cause, fix]
+	if f == 1:
+		return "%s. HALF LOST: %d %s KEPT. FIX: %s." % [cause, kept, noun, fix]
+	return "%s. IT LIMPS HOME WITH %d %s." % [cause, got, noun]
 
 ## What the instruments make per sample: only the ones that still work.
 func _reload_instruments() -> void:
@@ -334,14 +372,29 @@ func _end(ok_dock: bool, title: String, text: String, kind: String) -> void:
 	if state != "fly":
 		return
 	state = "done"
+	kept = got
+	kept_data = data
+	msg_col = UI.GOOD
+	var text2: String = text
+	if not ok_dock:
+		var f: int = int(Game.diff("fail"))
+		if f >= 2:
+			kept = 0
+		elif f == 1:
+			kept = got - got / 2
+		kept_data = data * float(kept) / float(maxi(1, got))
+		text2 = _loss_text(kind, text)
+		msg_col = UI.BAD if f >= 1 else UI.RISK
+		if kind == "burn" and fuel <= 0.0:
+			title = "OUT OF FUEL"
 	if auto:
 		print("DRONE_AUTO %s %s: got %d of %d, hull %d of %d, fuel %.1f of %.1f s, radiation %.2f, cards %d, t %.1f s" % [skin, title, got, goal, hp, hp_max, fuel, fuel_max, rad, ev_shown, t])
 	docked = ok_dock
 	end_kind = kind
 	end_title = title
 	end_at = t
-	end_t = t + (3.6 if kind == "fry" else 3.0)
-	_say(text)
+	end_t = t + (3.6 if kind == "fry" else 3.0) + (1.5 if not ok_dock else 0.0)
+	_say(text2)
 	thrusting = false
 	steer = 0
 	warn.clear()
@@ -400,7 +453,12 @@ func _physics_process(delta: float) -> void:
 				return
 			set_physics_process(false)
 			Engine.time_scale = 1.0
-			Game.probe_result(got, docked, data)
+			Game.probe_result(kept, docked, kept_data)
+			if not docked and state == "done" and not Game.run.is_empty():
+				if int(Game.diff("fail")) < 2:
+					Game.run["data"] = kept_data   # the drone limped home: what it kept counts
+					(Game.run["log"] as Array).pop_back()
+				Game.note(false, msg)
 			if dl_done:
 				var pts: int = _dl_pts()
 				Game.run["downlink_pts"] = pts
@@ -421,21 +479,22 @@ func _physics_process(delta: float) -> void:
 		lft = false
 		rgt = false
 	thrusting = up and fuel > 0.0
+	var drain: float = Game.diff("drain")
 	Audio.loop("thrust", thrusting, -9.0)
 	var acc: Vector2 = Vector2(0, gpx)
 	steer = 0
 	if thrusting:
 		acc.y -= thr * (float(Data.DRONE_THROTTLE[throttle]["thrust"]) if jobs else 1.0)
-		fuel -= delta * (float(Data.DRONE_THROTTLE[throttle]["burn"]) if jobs else 1.0)
+		fuel -= delta * drain * (float(Data.DRONE_THROTTLE[throttle]["burn"]) if jobs else 1.0)
 		thrust_time += delta
 	if fuel > 0.0:
 		if lft:
 			acc.x -= 55.0
-			fuel -= delta * 0.3
+			fuel -= delta * 0.3 * drain
 			steer -= 1
 		if rgt:
 			acc.x += 55.0
-			fuel -= delta * 0.3
+			fuel -= delta * 0.3 * drain
 			steer += 1
 	fuel = maxf(fuel, 0.0)
 	if pos.y > 285.0:
@@ -474,7 +533,7 @@ func _physics_process(delta: float) -> void:
 			break
 		# collision course: where will the two be at their closest in the next second?
 		var dd: Vector2 = rp - pos
-		if invuln <= 0.0 and dd.length() < 170.0:
+		if invuln <= 0.0 and dd.length() < 170.0 and Game.diff("assist") >= 1.0:
 			var v: Vector2 = Vector2(cos(t * rock_w + float(r["ph"])) * 14.0 * rock_w, 0) - vel
 			var vv: float = v.length_squared()
 			if vv > 400.0:
@@ -581,6 +640,8 @@ func _hurt(n: int, from: Vector2, radius: float) -> void:
 		_end(false, "DRONE SMASHED", "by a ring boulder.", "smash")
 	else:
 		floaters.append({"p": pos - Vector2(0, 26), "age": 0.0, "s": "HULL %d OF %d" % [hp, hp_max], "bad": true})
+		if got > 0 and int(Game.diff("fail")) >= 1 and fxr.randf() < minf(0.9, 0.5 * Game.diff("bite")):
+			_loosen()
 
 ## The belts fill the meter while the drone is out: slowly with the shield, fast without it (then the controls drop out, then it fails).
 func _tick_radiation(delta: float) -> void:
@@ -842,7 +903,7 @@ func _draw_ice(cam: float) -> void:
 		Fx.glow(self, sp, 10.0 + 3.0 * pulse, Color(gc.r, gc.g, gc.b, 0.3 + 0.25 * pulse + 0.2 * _shade(p.x)), true)
 		var cyc: float = fposmod(t * 0.8 + ph, 1.0)
 		_cell(tex_crystal, sp, 1 + int((cyc - 0.82) / 0.06) if cyc > 0.82 else 0, int(sd["v"]), Vector2(15, 15))
-		if job == "photo" and int(t * 2.0) % 2 == 0:
+		if job == "photo" and int(t * 2.0) % 2 == 0 and Game.diff("assist") >= 1.0:
 			_corners(Rect2(sp - Vector2(13, 13), Vector2(26, 26)), UI.YELLOW, 4)
 
 func _draw_rocks(cam: float) -> void:
@@ -882,7 +943,7 @@ func _draw_orbiter(cam: float) -> void:
 		if on:
 			Fx.glow(self, lp, 6.0, Color(0.4, 1.0, 0.55, 0.4) if lamp == 1 else Color(1.0, 0.35, 0.3, 0.4), true)
 		_cell(tex_lamps, lp, lamp if on else 0, 0, Vector2(5, 5))
-	if state != "fly" or t < 3.0:
+	if state != "fly" or t < 3.0 or Game.diff("assist") < 1.0:
 		return
 	# guide lane under the port: dashes on both sides and chevrons climbing into the cone
 	var z: Vector2 = (DOCK + Vector2(-cam, 46)).floor()
@@ -939,9 +1000,9 @@ func _draw_drone(cam: float) -> void:
 		var fp: Vector2 = e["p"]
 		var age: float = float(e["age"])
 		Pix.text_o(self, Vector2(floorf(fp.x - cam - Pix.text_w(String(e["s"]), 10) / 2.0), floorf(fp.y - 14.0 - age * 22.0)), String(e["s"]), 10,
-			Color(UI.YELLOW if bool(e["bad"]) else UI.TEXT, clampf(2.0 - age * 2.2, 0.0, 1.0)))
+			Color(UI.BAD if bool(e["bad"]) else UI.GOOD, clampf(2.0 - age * 2.2, 0.0, 1.0)))
 	if state == "fly" and pos.y > 285.0 and int(t * 5.0) % 2 == 0:
-		Pix.text_c(self, dp.x, dp.y - 32.0, "PULL UP", 10, UI.YELLOW)
+		Pix.text_c(self, dp.x, dp.y - 32.0, "PULL UP", 10, UI.RISK)
 	if not warn.is_empty() and int(t * 8.0) % 2 == 0:
 		_cell(tex_icons, dp + Vector2(0, -34), 5, 0, Vector2(11, 11))
 
@@ -1026,12 +1087,16 @@ func _draw_hud(cam: float) -> void:
 	var w: float = gx + 74.0
 	Pix.panel(self, Rect2(6, 6, w, 20))
 	_cell(tex_icons, Vector2(17, 16), 0, 0, Vector2(11, 11))
-	var cells: int = ceili(20.0 * fuel / fuel_max)
-	var low: bool = fuel < fuel_max * 0.25
+	var frac: float = fuel / fuel_max
+	var cells: int = ceili(20.0 * frac)
+	var low: bool = frac < 0.25
+	var fc: Color = UI.GOOD if frac > 0.5 else (UI.RISK if not low else UI.BAD)
 	for i: int in 20:
-		var col: int = 2 if i >= cells or (low and int(t * 4.0) % 2 == 0) else (1 if low else 0)
-		draw_texture_rect_region(tex_gauge, Rect2(26 + i * 4, 13, 4, 6), Rect2(col * 4, 0, 4, 6))
-	Pix.text(self, Vector2(109, 20), "%d s" % ceili(fuel), 10, UI.TEXT)
+		var on: bool = i < cells and not (low and int(t * 4.0) % 2 == 0)
+		draw_rect(Rect2(26 + i * 4, 12, 3, 8), fc if on else Color("1a2038"))
+	Pix.text(self, Vector2(109, 20), "%d s" % ceili(fuel), 10, fc)
+	if state == "fly" and frac < 0.3 and int(t * 3.0) % 3 != 0:
+		Pix.text_o(self, Vector2(26, 38), "OUT OF FUEL" if fuel <= 0.0 else "LOW FUEL", 10, UI.BAD if fuel <= 0.0 else UI.RISK)
 	_groove(136)
 	for i: int in hp_max:
 		var lost_now: bool = i == hp and hull_flash > 0.0 and int(t * 12.0) % 2 == 0
@@ -1072,15 +1137,15 @@ func _draw_hud(cam: float) -> void:
 	_draw_fact()
 	# the dock, when it is off screen
 	var dk: float = DOCK.x - cam
-	if state == "fly" and dk < -12.0:
+	if state == "fly" and dk < -12.0 and Game.diff("assist") >= 1.0:
 		var bob: float = floorf(absf(sin(t * (6.0 if got >= goal else 3.0))) * 4.0)
 		draw_texture_rect_region(tex_arrow, Rect2(8.0 - bob, 150, 19, 15), Rect2(19, 0, 19, 15), UI.GREEN)
 		Pix.text(self, Vector2(8, 176), "DOCK", 10, UI.TEXT)
 	# what to do: one direction, until it is done
-	if state == "fly" and not confirm and not EventCard.is_open():
+	if state == "fly" and not confirm and not EventCard.is_open() and Game.diff("assist") >= 1.0:
 		var dir: Array = _direction(dk)
 		if not dir.is_empty():
-			_hint(320.0, String(dir[0]), int(dir[1]), UI.YELLOW)
+			_hint(320.0, String(dir[0]), int(dir[1]), UI.RISK if String(dir[0]).begins_with("LOW") else UI.TEXT)
 	if help_open:
 		_draw_help()
 	if confirm:
@@ -1089,8 +1154,8 @@ func _draw_hud(cam: float) -> void:
 	if state != "fly":
 		var tw: float = maxf(Pix.text_w(end_title, 20), Pix.text_w(msg, 10)) + 28.0
 		Pix.panel(self, Rect2(floorf(320.0 - tw / 2.0), 58, tw, 46), UI.GREEN if docked else UI.RED)
-		Pix.text_c(self, 320, 82, end_title, 20, UI.TEXT)
-		Pix.text_c(self, 320, 96, msg, 10, UI.DIM)
+		Pix.text_c(self, 320, 82, end_title, 20, UI.GOOD if docked else UI.BAD)
+		Pix.text_c(self, 320, 96, msg, 10, msg_col)
 
 ## The question before docking. The two buttons are real Buttons placed over the bottom of the box.
 func _draw_confirm() -> void:
@@ -1098,11 +1163,11 @@ func _draw_confirm() -> void:
 	Pix.panel(self, Rect2(110, 92, 420, 138), UI.CYAN)
 	Pix.text_c(self, 320, 120, "RETURN TO THE SHIP?", 20, UI.TEXT)
 	var noun: String = "PHOTOS" if job == "photo" else "SAMPLES"
-	Pix.text_c(self, 320, 150, "THE DRONE HAS %d OF %d %s" % [got, goal, noun], 20, UI.YELLOW if got < goal else UI.GREEN)
+	Pix.text_c(self, 320, 150, "THE DRONE HAS %d OF %d %s" % [got, goal, noun], 20, UI.RISK if got < goal else UI.GOOD)
 	if got < goal:
-		Pix.text_c(self, 320, 172, "NOT ENOUGH YET: %d MORE %s NEEDED" % [goal - got, noun], 10, UI.YELLOW)
+		Pix.text_c(self, 320, 172, "NOT ENOUGH YET: %d MORE %s NEEDED" % [goal - got, noun], 10, UI.RISK)
 	else:
-		Pix.text_c(self, 320, 172, "THE GOAL IS DONE. READY TO DOCK.", 10, UI.DIM)
+		Pix.text_c(self, 320, 172, "THE GOAL IS DONE. READY TO DOCK.", 10, UI.GOOD)
 
 func _draw_rad_meter() -> void:
 	Pix.panel(self, Rect2(6, 29, 238, 16))
@@ -1113,7 +1178,7 @@ func _draw_rad_meter() -> void:
 		var col: int = 2 if i >= cells else (1 if rad > 0.5 and not rad_shield else 0)
 		draw_texture_rect_region(tex_gauge, Rect2(88 + i * 4, 34, 4, 6), Rect2(col * 4, 0, 4, 6))
 	Pix.text(self, Vector2(148, 40), "%d %%" % roundi(rad * 100.0), 10, UI.TEXT)
-	Pix.text(self, Vector2(180, 40), "SHIELD ON" if rad_shield else "NO SHIELD", 10, UI.DIM if rad_shield else UI.YELLOW)
+	Pix.text(self, Vector2(180, 40), "SHIELD ON" if rad_shield else "NO SHIELD", 10, UI.GOOD if rad_shield else UI.RISK)
 
 ## A verified fact about this world (Data), bottom left. The keys sit on the "?" panel.
 func _draw_fact() -> void:

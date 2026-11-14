@@ -2,9 +2,9 @@
 # Import new or changed assets (PNG, WAV, shaders) into the project.
 # Several agents share this project: the lock makes sure only one import runs at a time.
 #   bash tools/dev/godot_import.sh
-GODOT="${GODOT:-godot}"
-PROJ="$(cd "$(dirname "$0")/../.." && pwd)"
-LOCK="$PROJ/../.import.lock"
+GODOT="godot"
+PROJ="<local path>Games/space-apps-2026/game"
+LOCK="<local path>Games/space-apps-2026/.import.lock"
 for i in $(seq 1 240); do
   if mkdir "$LOCK" 2>/dev/null; then break; fi
   # a lock older than 4 minutes is stale (its owner died)

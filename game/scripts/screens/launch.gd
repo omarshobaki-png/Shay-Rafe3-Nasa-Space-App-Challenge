@@ -254,6 +254,14 @@ var p2_clean: float = 1.0
 var reserve: float = 0.08
 var band: float = 1.0
 var dmg_mult: float = 1.0
+var assist: int = 2               # Game.diff("assist"): 2 the computer throttles and cuts, 1 cued, 0 readouts only
+var fail_lvl: int = 0             # Game.diff("fail"): 2 a bad miss ends the mission
+var bite: float = 1.0
+var margin: float = 1.0           # 1 - ship mass / rocket limit
+var tight: float = 0.0            # how close to the limit, times bite (NORMAL and HARD only)
+var ballast: float = 0.0          # game rule: a ship near the limit flies as if this much heavier (kg)
+var cut_due: bool = false         # NORMAL / HARD: the engine cut is the player's job
+var flash_col: Color = Color.WHITE
 var ship_dv: float = 0.0         # m/s the spacecraft must make up
 var notes: Array[Array] = []      # [ok, text] for the log at the end
 var flash_msg: String = ""       # a status line from an event (boosters dropped, engine cut, not yet)
@@ -360,8 +368,19 @@ func _setup() -> void:
 	for v: Vector2 in NOZZLES[lv_id]:
 		nozzles.append(v)
 	band = Game.diff("burn_band")           # 1.5 EASY, 1.0 NORMAL, 0.7 HARD: how wide every window is
-	dmg_mult = Game.diff("surface_hazards") # 0.6 / 1.0 / 1.4: how much a mistake hurts
+	bite = Game.diff("bite")
+	dmg_mult = bite                         # 0.5 / 1.0 / 1.6: how much a mistake hurts
+	assist = int(Game.diff("assist"))
+	fail_lvl = int(Game.diff("fail"))
 	reserve = 0.08 * band * band  # 18% EASY, 8% NORMAL, 3.9% HARD
+	var c: Dictionary = Game.run.get("calc", {})
+	margin = 1.0 - float(c.get("mass", 0.0)) / maxf(1.0, float(c.get("cap", 1.0)))
+	tight = 0.0 if assist >= 2 else clampf((0.25 - margin) / 0.25, 0.0, 1.0) * bite  # EASY: as v6
+	band *= 1.0 - 0.2 * minf(tight, 1.0)     # tighter windows and red line
+	reserve *= maxf(0.2, 1.0 - 0.5 * tight)  # less spare fuel in the upper stage
+	ballast = tight * 0.01 * (float(lv["s1_dry"]) + float(lv["s1_prop"]) + float(lv["s2_dry"]) + float(lv["s2_prop"]))
+	maxq_task = 0
+	cut_due = false
 	_presim()
 	a = Ascent.new(lv, _pay(), float(lv["s2_prop"]))
 	_ascent_fuel(p2_clean * (1.0 + reserve))
@@ -382,7 +401,7 @@ func _ascent_fuel(usable: float) -> void:
 ## by phase_launch anyway).
 func _pay() -> float:
 	var m0: float = float(lv["s1_dry"]) + float(lv["s1_prop"]) + float(lv["s2_dry"]) + float(lv["s2_prop"])
-	return clampf(float(Game.run.get("mass", 1000.0)), 10.0, 0.03 * m0)
+	return clampf(float(Game.run.get("mass", 1000.0)), 10.0, 0.03 * m0) + ballast
 
 ## Two flights ahead of time: full throttle (where max-Q peaks sets the red line) and a clean ascent
 ## (sets the upper stage's propellant and where staging shows on the ladder).
@@ -549,7 +568,10 @@ func _warp() -> float:
 		return clampf(1.5 + (a.t - 4.0) * 0.36, 1.5, 30.0)
 	if s2_t < 0.0:
 		return 2.0  # separation and ignition stay visible
-	return clampf(4.0 + s2_t * 30.0, 4.0, 34.0)
+	var w: float = clampf(4.0 + s2_t * 30.0, 4.0, 34.0)
+	if assist < 2:  # the player cuts the engine: the clock slows as orbit speed nears
+		w = minf(w, clampf((ORBIT_V - a.speed()) / 25.0, 1.0, 34.0))
+	return w
 
 func _step_fly(dt: float) -> void:
 	var sim: float = dt * _warp()
@@ -594,25 +616,38 @@ func _after_step(dt: float) -> void:
 		q_seen_alt = a.alt
 	if a.q > q_red and a.s1_on:
 		dmg += (a.q / q_red - 1.0) * 40.0 * dmg_mult * dt
-		if band > 1.2:
-			dmg = minf(dmg, 95.0)  # EASY: the rocket complains but never breaks up
+		if fail_lvl < 2:
+			dmg = minf(dmg, 95.0)  # EASY and NORMAL: the rocket complains but never breaks up
 		if dmg >= 100.0:
 			_breakup()
 			return
 	if a.s1_on and mode == "fly":
 		if maxq_task == 0 and a.q > Q_ASK * q_red:
 			maxq_task = 1
-			if not auto_noq:
+			if not auto_noq and assist >= 2:
 				a.thr = THR_BUCKET
 		if maxq_task == 1 and a.alt > q_peak_alt + 3000.0 and a.q < 0.6 * q_red:
 			maxq_task = 3
 			maxq_missed = a.thr > THR_BUCKET + 0.01
 			a.thr = 1.0
-			_say("PAST MAX-Q: BACK TO FULL THRUST")
+			_say("PAST MAX-Q: BACK TO FULL THRUST", UI.GOOD if not maxq_missed else UI.TEXT)
+		if maxq_task == 1 and assist < 2 and fail_lvl < 2 and dmg >= 45.0 and a.thr > THR_BUCKET + 0.01:
+			a.thr = THR_BUCKET  # NORMAL: the computer saves the rocket, the ship pays with its own fuel
+			var pay: float = 150.0 * bite
+			ship_dv += pay
+			notes.append([false, "Max-Q missed: the flight computer had to throttle down for you. The ship pays %d m/s of its own fuel." % roundi(pay)])
+			_flash("COMPUTER THROTTLED DOWN: SHIP PAYS FUEL", UI.BAD)
 		if a.boost_on and a.pb <= 0.0:
 			_drop_boosters()
-	if mode == "fly" and a.s2_burning() and a.speed() >= ORBIT_V:
-		_cutoff()
+	if mode == "fly" and a.s2_burning():
+		if assist >= 2 and a.speed() >= ORBIT_V:
+			_cutoff()
+		elif assist < 2:
+			cut_due = ORBIT_V - a.speed() < 250.0
+			if a.speed() >= ORBIT_V + 3.0 * _tol():  # nobody cut the engine
+				_cutoff()
+				if mode == "fail":
+					return
 	if _due(_next()):
 		if due_since < 0.0:
 			due_since = a.t
@@ -641,12 +676,13 @@ func _tol() -> float:
 	return 40.0 * band
 
 ## A status line from an event; it stays SAY_HOLD seconds unless a player prompt needs the box.
-func _say(s: String) -> void:
+func _say(s: String, col: Color = UI.TEXT) -> void:
 	flash_msg = s
+	flash_col = col
 	flash_t = 0.0
 
-func _flash(s: String) -> void:
-	_say(s)
+func _flash(s: String, col: Color = UI.RISK) -> void:
+	_say(s, col)
 	Audio.play("error", -8.0)
 
 ## SPACE, ENTER or the big prompt box: the one thing the prompt asks for.
@@ -674,16 +710,40 @@ func _act() -> void:
 			return
 	if mode != "fly":
 		return
+	if assist < 2 and a.s1_on and maxq_task <= 1 and a.thr > THR_BUCKET + 0.01:
+		_throttle()
+		return
+	if assist < 2 and a.s2_burning() and s2_t > 0.8:
+		_cutoff()
+		return
 	if _next() != "stage":
 		return
 	if not _due("stage"):
-		_flash("WAIT: STAGE 1 STILL HAS FUEL")
+		_flash("WAIT: STAGE 1 STILL HAS FUEL", UI.RISK)
 		return
 	# a late press costs a little: the empty stage coasts while gravity slows it (paid by the ship's tank)
 	var lat: float = a.t - due_since if due_since >= 0.0 else 0.0
 	if lat > 3.0:
 		notes.append([false, "Stage 1 separated %d s late: coasting let gravity take about %d m/s." % [roundi(lat), roundi(lat * G0)]])
 	_drop_stage()
+
+## NORMAL / HARD: the player throttles down for max-Q.
+func _throttle() -> void:
+	if maxq_task == 0:
+		if assist >= 1:
+			_flash("WAIT: AIR PRESSURE IS NOT IN THE YELLOW ZONE YET")
+			return
+		maxq_task = 1  # HARD: too early is allowed, and the slower climb costs fuel later
+		notes.append([false, "Throttled down early, at %d kPa: a slower climb loses speed to gravity." % roundi(a.q / 1000.0)])
+		_say("THROTTLE 80%: EARLY, THE CLIMB IS SLOWER", UI.RISK)
+	elif a.q > q_red:
+		notes.append([false, "Throttled down late, at %d kPa: past the %d kPa red line." % [roundi(a.q / 1000.0), roundi(q_red / 1000.0)]])
+		_say("THROTTLE 80%: LATE, THE ROCKET WAS OVERSTRESSED", UI.BAD)
+	else:
+		notes.append([true, "You throttled down for max-Q at %d kPa, as real rockets do." % roundi(a.q / 1000.0)])
+		_say("THROTTLE 80%: GOOD, IN THE ZONE", UI.GOOD)
+	a.thr = THR_BUCKET
+	Audio.play("radio_blip", -6.0, 0.8)
 
 func _advance() -> void:
 	ev_i += 1
@@ -743,7 +803,22 @@ func _cutoff() -> void:
 	a.cut = true
 	cut_v = a.speed()
 	var err: float = absf(cut_v - ORBIT_V) - _tol()
+	cut_due = false
+	if err > _tol() and fail_lvl >= 2:  # HARD: a bad miss ends the mission
+		if cut_v < ORBIT_V:
+			_fail("CUT TOO EARLY", "The engine stopped at %s m/s, %d m/s short of orbit speed, and the ship fell back toward Earth." % [_n(cut_v), roundi(ORBIT_V - cut_v)],
+				"Cut the engine (SPACE) when SPEED reaches the ORBIT mark, %s m/s." % _n(ORBIT_V), true)
+		else:
+			_fail("MISSED ORBIT", "The engine burned on to %s m/s and flung the ship onto the wrong path." % _n(cut_v),
+				"Cut the engine (SPACE) when SPEED reaches the ORBIT mark, %s m/s." % _n(ORBIT_V), true)
+		return
+	if assist < 2:
+		if err > 0.0:
+			_flash("ENGINE CUT %d m/s OFF: SHIP PAYS FUEL" % roundi(absf(cut_v - ORBIT_V)), UI.BAD)
+		else:
+			_say("ENGINE CUT AT ORBIT SPEED: GOOD", UI.GOOD)
 	if err > 0.0:
+		err *= bite if assist < 2 else 1.0
 		ship_dv += err
 		if cut_v < ORBIT_V:
 			notes.append([false, "Engine cut early at %s m/s: %d m/s short of orbit speed." % [_n(cut_v), roundi(ORBIT_V - cut_v)]])
@@ -771,7 +846,7 @@ func _stage2_dry() -> void:
 	elif cut_v > ORBIT_V + _tol():
 		ship_dv += cut_v - ORBIT_V - _tol()
 		notes.append([false, "The engine was never cut: the orbit came out %d m/s too fast." % roundi(cut_v - ORBIT_V)])
-	_flash("STAGE 2 RAN DRY")
+	_flash("STAGE 2 RAN DRY", UI.BAD)
 	_set_mode("coast")
 
 func _breakup() -> void:
@@ -786,6 +861,10 @@ func _breakup() -> void:
 		_spark(Vector2(RX, top.y + rh * randf()), Vector2(cos(ang), sin(ang)) * randf_range(40, 200), randf_range(0.5, 1.3), Color("ff9f43"), 160.0)
 	for i: int in 22:
 		_puff(Vector2(RX + randf_range(-20, 20), top.y + rh * randf()), Vector2(randf_range(-50, 50), randf_range(-40, 10)), randf_range(1.6, 3.0), 2, Color(0.45, 0.4, 0.5), 14.0)
+	if assist < 2:
+		_fail("BROKE UP AT MAX-Q", "The engines stayed at full power in the thickest air: past the %d kPa red line at %d km up." % [roundi(q_red / 1000.0), roundi(a.alt / 1000.0)],
+			"Throttle down (SPACE) when AIR PRESSURE enters the yellow zone. Real rockets do this to protect the structure.", true)
+		return
 	_fail("BROKE UP AT MAX-Q", "The air pushed on the rocket past its %d kPa red line for too long, at %d km up." % [roundi(q_red / 1000.0), roundi(a.alt / 1000.0)],
 		"Max-Q is the moment of greatest air pressure on a rocket. Real rockets throttle down through it so the structure is never pushed past its limit.", true)
 
@@ -837,7 +916,7 @@ func _finish_notes() -> void:
 	notes.push_front([dmg < 20.0, "Ascent on %s: max-Q %d kPa at %d km (red line %d kPa)." % [rk, roundi(q_seen / 1000.0), roundi(q_seen_alt / 1000.0), roundi(q_red / 1000.0)]])
 	if maxq_missed:
 		notes.append([false, "No throttle-back through max-Q. Real rockets throttle down there to protect the structure."])
-	elif maxq_task >= 1:
+	elif maxq_task >= 1 and assist >= 2:
 		notes.append([true, "Through max-Q the flight computer throttled down to %d%%, as real rockets do." % roundi(THR_BUCKET * 100.0)])
 	if dmg >= 50.0:
 		var hit: String = _break_part()
@@ -845,6 +924,8 @@ func _finish_notes() -> void:
 			notes.append([false, "The shaking at max-Q cracked the %s (%d%% of the breakup limit)." % [hit, roundi(dmg)]])
 	elif dmg >= 20.0:
 		notes.append([true, "The rocket shook hard (%d%% of the breakup limit) but nothing broke." % roundi(dmg)])
+	if tight > 0.0:
+		notes.append([false, "The ship used %d%% of the rocket's limit: it climbed as if %s kg heavier and kept less spare fuel." % [roundi(100.0 * (1.0 - margin)), _n(ballast)]])
 	for n: Array in notes:
 		Game.note(bool(n[0]), String(n[1]))
 	notes.clear()
@@ -922,6 +1003,13 @@ func _autopilot() -> void:
 		"pad":
 			_act()
 		"fly", "coast":
+			if mode == "fly" and assist < 2:
+				if a.s1_on and maxq_task == 1 and a.thr > THR_BUCKET + 0.01 and not auto_noq:
+					_act()
+					return
+				if a.s2_burning() and a.speed() >= ORBIT_V - 0.3 * _tol():
+					_act()
+					return
 			var nx: String = _next()
 			if _due(nx) and nx != hold_ev and mode_t > 0.4:
 				_act()
@@ -1243,28 +1331,41 @@ func _draw_gauges() -> void:
 	Pix.panel(self, Rect2(6, 6, 150, 142 if stress else 128))
 	var km: float = a.alt / 1000.0
 	_txt(Vector2(13, 18), "ALTITUDE", 10, UI.DIM)
+	if assist < 2 and a.burning():
+		_txt_r(149, 18, "THRUST %d%%" % roundi(a.thr * 100.0), 10, UI.RISK if a.thr < 0.99 else UI.DIM)
 	_txt(Vector2(13, 38), ("%.1f km" % km) if km < 100.0 else ("%d km" % roundi(km)), 20, UI.YELLOW)
 	var v: float = a.speed()
 	_txt(Vector2(13, 56), "SPEED", 10, UI.DIM)
 	_txt_r(149, 56, "ORBIT %s" % _n(ORBIT_V), 10, UI.DIM)
 	_txt(Vector2(13, 76), "%s m/s" % _n(v), 20, UI.TEXT)
 	Pix.gauge(self, Rect2(13, 80, 136, 7), v / (ORBIT_V * 1.06), UI.CYAN, 1.0 / 1.06)
-	var qc: Color = UI.RED if a.q > q_red else (UI.YELLOW if a.q > 0.75 * q_red else UI.GREEN)
+	var qc: Color = UI.BAD if a.q > q_red else (UI.RISK if a.q > 0.75 * q_red else UI.GOOD)
 	_txt(Vector2(13, 100), "AIR PRESSURE", 10, UI.DIM)
-	_txt_r(149, 100, "LIMIT %d" % roundi(q_red / 1000.0), 10, UI.RED if a.q > q_red else UI.DIM)
+	_txt_r(149, 100, "LIMIT %d" % roundi(q_red / 1000.0), 10, UI.BAD if a.q > q_red else UI.DIM)
 	_txt(Vector2(13, 120), "%d kPa" % roundi(a.q / 1000.0), 20, qc if a.q > 0.75 * q_red else UI.TEXT)
 	var red_x: float = 15.0 + floorf(131.0 / 1.35)
 	Pix.gauge(self, Rect2(13, 124, 136, 7), a.q / (q_red * 1.35), qc, 1.0 / 1.35)
 	draw_rect(Rect2(red_x + 1.0, 126, 146.0 - red_x, 3), Color(0.85, 0.15, 0.15, 0.55))  # the red zone
+	if assist < 2:  # the throttle-down zone: from where the computer would ask, up to the red line
+		var yx: float = 15.0 + floorf(131.0 * Q_ASK / 1.35)
+		draw_rect(Rect2(yx, 126, red_x + 1.0 - yx, 3), Color(1.0, 0.84, 0.37, 0.6))
+		var sx: float = 13.0 + floorf(136.0 / 1.06)  # the cut window on the speed bar
+		var tw: float = maxf(1.0, floorf(136.0 * _tol() / (ORBIT_V * 1.06)))
+		draw_rect(Rect2(sx - tw, 82, 2.0 * tw + 1.0, 3), Color(0.43, 1.0, 0.54, 0.6))
 	if stress:
-		_txt(Vector2(13, 143), "STRESS %d%%" % roundi(dmg), 10, UI.RED if dmg > 50.0 else UI.ORANGE)
+		_txt(Vector2(13, 143), "STRESS %d%%" % roundi(dmg), 10, UI.BAD if dmg > 50.0 else UI.RISK)
+	if tight > 0.0 and (mode == "pad" or mode == "count" or a.s1_on):
+		var y: float = 156.0 if stress else 142.0
+		Pix.panel(self, Rect2(6, y, 150, 30))
+		_txt(Vector2(13, y + 13.0), "LOAD %d%% OF ROCKET LIMIT" % roundi(100.0 * (1.0 - margin)), 10, UI.BAD if tight >= 1.0 else UI.RISK)
+		_txt(Vector2(13, y + 25.0), "SLOWER CLIMB, LESS SPARE", 10, UI.DIM)
 
 ## The one thing on screen to read: [key, big text, small line]. A key means the player must act; the
 ## prompt stays until they do. Without a key it is a status line saying what the rocket does by itself.
 func _direction() -> Array:
 	match mode:
 		"pad":
-			return ["SPACE", "LIFT OFF", "READY ON THE PAD"]
+			return ["SPACE", "LIFT OFF", "READY ON THE PAD" if assist >= 2 else "YOU THROTTLE AND CUT THE ENGINE"]
 		"count":
 			return ["", "", "COUNTDOWN. THE ENGINES START AT ZERO."]
 		"coast":
@@ -1277,14 +1378,22 @@ func _direction() -> Array:
 			return ["SPACE", "SEE THE REPORT", "LAUNCH FAILED"] if mode_t > 1.2 else ["", "", ""]
 	if _next() == "stage" and _due("stage"):
 		return ["SPACE", "STAGE SEPARATION", "STAGE 1 IS EMPTY"]
+	if assist == 1 and a.s1_on and maxq_task == 1 and a.thr > THR_BUCKET + 0.01:
+		return ["SPACE", "THROTTLE DOWN", "AIR PRESSURE IN THE YELLOW ZONE"]
+	if assist == 1 and cut_due:
+		return ["SPACE", "CUT ENGINE", "AT ORBIT SPEED %s m/s" % _n(ORBIT_V)]
 	if flash_t < SAY_HOLD and flash_msg != "":
 		return ["", "", flash_msg]
-	if maxq_task == 1:
+	if assist == 0:
+		return ["", "", "STAGE 1 CLIMBS." if a.s1_on else ("STAGE 2 LIGHTS UP." if not a.s2_lit else "STAGE 2 BURNS.")]
+	if maxq_task == 1 and assist >= 2:
 		return ["", "", "MAX-Q: THE AIR PUSHES HARDEST HERE. THE ROCKET THROTTLES DOWN TO %d%%." % roundi(THR_BUCKET * 100.0)]
 	if a.s1_on:
 		return ["", "", "LIFTOFF! THE ROCKET CLEARS THE TOWER." if a.t < 12.0 else "STAGE 1 CLIMBS AND TILTS TOWARD ORBIT."]
 	if not a.s2_lit:
 		return ["", "", "STAGE 1 FALLS AWAY. STAGE 2 LIGHTS UP."]
+	if assist < 2:
+		return ["", "", "STAGE 2 SPEEDS UP. YOU CUT THE ENGINE AT ORBIT SPEED (THE GREEN MARK)."]
 	return ["", "", "STAGE 2 SPEEDS UP TO ORBIT SPEED. ITS ENGINE STOPS BY ITSELF."]
 
 func _draw_direction() -> void:
@@ -1309,19 +1418,20 @@ func _draw_direction() -> void:
 	var h: float = 12.0 * ls.size() + 12.0
 	var box: Rect2 = Rect2(r.position.x, r.end.y - h, r.size.x, h)
 	Pix.panel(self, box)
+	var col: Color = flash_col if small == flash_msg else UI.TEXT
 	for i: int in ls.size():
-		_txt(Vector2(box.position.x + 8.0, box.position.y + 15.0 + 12.0 * i), ls[i], 10, UI.TEXT)
+		_txt(Vector2(box.position.x + 8.0, box.position.y + 15.0 + 12.0 * i), ls[i], 10, col)
 
 func _draw_fail() -> void:
 	var r: Rect2 = Rect2(160, 56, 320, 160)
 	Pix.panel(self, r, UI.RED, Color(0.08, 0.02, 0.03, 0.94))
-	Pix.title_c(self, 320.0, r.position.y + 22.0, fail_title, UI.RED)
+	Pix.title_c(self, 320.0, r.position.y + 22.0, fail_title, UI.BAD)
 	Pix.para(self, Vector2(r.position.x + 12.0, r.position.y + 42.0), fail_why, r.size.x - 24.0, UI.TEXT)
-	_txt(Vector2(r.position.x + 12.0, r.position.y + 106.0), "WHY IT MATTERS", 10, UI.YELLOW)
+	_txt(Vector2(r.position.x + 12.0, r.position.y + 106.0), "HOW TO FIX IT" if assist < 2 else "WHY IT MATTERS", 10, UI.YELLOW)
 	Pix.para(self, Vector2(r.position.x + 12.0, r.position.y + 118.0), fail_real, r.size.x - 24.0, UI.DIM)
 
 func _draw_help() -> void:
-	var r: Rect2 = Rect2(160, 56, 320, 170)
+	var r: Rect2 = Rect2(160, 46, 320, 196 if assist < 2 else 170)
 	Pix.panel(self, r, UI.CYAN, Color(0.02, 0.03, 0.07, 0.95))
 	Pix.title_c(self, 320.0, r.position.y + 20.0, "HOW TO LAUNCH", UI.CYAN)
 	var y: float = r.position.y + 32.0
@@ -1335,6 +1445,13 @@ func _draw_help() -> void:
 		_txt(Vector2(r.position.x + 18.0, y + 14.0), "DONE" if done else ("NEXT" if i == ev_i else ""), 10, UI.GREEN if done else UI.YELLOW)
 		_txt(Vector2(r.position.x + 52.0, y + 14.0), String(names[seq[i]]), 10, UI.GREEN if done else (UI.TEXT if i == ev_i else UI.DIM))
 		y += 13.0
+	if assist < 2:
+		_txt(Vector2(r.position.x + 18.0, y + 14.0), "AND: THROTTLE DOWN when AIR PRESSURE is yellow", 10, UI.TEXT)
+		_txt(Vector2(r.position.x + 18.0, y + 27.0), "AND: CUT THE ENGINE at the green ORBIT mark", 10, UI.TEXT)
+		y += 26.0
+		_txt(Vector2(r.position.x + 14.0, y + 22.0), "The flight computer steers and drops the", 10, UI.DIM)
+		_txt(Vector2(r.position.x + 14.0, y + 34.0), "boosters. Misses cost fuel%s." % (" or the mission" if fail_lvl >= 2 else ""), 10, UI.RISK)
+		return
 	_txt(Vector2(r.position.x + 14.0, y + 22.0), "The flight computer steers, throttles and drops", 10, UI.DIM)
 	_txt(Vector2(r.position.x + 14.0, y + 34.0), "the boosters. The clock runs sped up.", 10, UI.DIM)
 
@@ -1365,7 +1482,7 @@ func _teach() -> String:
 			return "Springs push the ship free of the stage, then it unfolds."
 		"fail":
 			return "The report shows what to change next time."
-	if maxq_task == 1:
+	if maxq_task == 1 and assist >= 1:
 		return "Max-Q is the moment the air pushes hardest on the rocket: about %d km up." % roundi(q_peak_alt / 1000.0)
 	if a.s1_on:
 		return "Boosters burn out first; empty tanks are dead weight, so they drop off." if a.boost_on else "The rocket tilts over to build up sideways speed: that is what orbit needs."
@@ -1426,6 +1543,9 @@ func debug_liftoff() -> void:
 
 func debug_maxq() -> void:  # full throttle into max-Q: the red gauge and the throttle-back direction
 	_skip(func() -> bool: return mode == "fly" and a.q > q_red * 1.02, true)
+
+func debug_zone() -> void:  # NORMAL / HARD: air pressure just entered the throttle zone, nobody has pressed
+	_skip(func() -> bool: return mode == "fly" and maxq_task == 1 and a.q > 0.8 * q_red, true)
 
 func debug_bucket() -> void:  # flying the max-Q throttle-back correctly
 	_skip(func() -> bool: return mode == "fly" and a.alt > q_peak_alt)

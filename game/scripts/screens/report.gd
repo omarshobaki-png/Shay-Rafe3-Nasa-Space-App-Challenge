@@ -14,9 +14,11 @@ const BG_TEX: Texture2D = preload("res://art/bg_space.png")
 const FRAME_M: Array = [6, 6, 6, 8]
 const BTN_M: Array = [4, 5, 4, 6]
 const LINE: Color = Color("2a3558")
-const COL_WELL: Color = UI.GREEN
-const COL_RISK: Color = UI.RED
-const COL_WASTE: Color = UI.YELLOW
+const COL_WELL: Color = UI.GOOD
+const COL_RISK: Color = UI.BAD
+const COL_WASTE: Color = UI.RISK
+## What each level meant for this flight.
+const LEVEL_NOTE: Dictionary = {"EASY": "guide and auto-build, no loss", "NORMAL": "fewer hints, mistakes cost science", "HARD": "no hints, mistakes end the mission"}
 
 const PAGE_Y: float = 94.0
 const PAGE_H: float = 232.0
@@ -69,6 +71,7 @@ var metal: String = "fail"
 var head: String = ""
 var diff_name: String = "NORMAL"
 var task_name: String = ""
+var cause_lines: Array = []   # failed mission: the last failed log line (cause and fix)
 var grade: String = ""          # "A" "B" "C" or "" (no grade: the mission did not succeed)
 var grade_lines: Array = []
 var grade_rule_lines: Array = []
@@ -150,13 +153,22 @@ func _load(run: Dictionary) -> void:
 			done += 1
 	score = int(r.get("score", roundi(100.0 * done / maxf(1.0, goals.size()))))
 	level = 2 if score >= 100 else (1 if score >= 50 else 0)
-	head = ["MISSION FAILED", "PARTIAL SUCCESS", "MISSION SUCCESS"][level]
+	head = ["MISSION FAILED", "PARTIAL RESULT", "MISSION SUCCESS"][level]
 	metal = "fail" if level == 0 else ("gold" if score >= 100 else ("silver" if score >= 75 else "bronze"))
 	total = int(rep.get("total", r.get("total", score)))
 	diff_name = String(rep.get("difficulty", Data.DIFFICULTY[clampi(Game.difficulty, 0, 2)]["name"]))
 	task_name = ""
 	if Game.has_method("task"):
 		task_name = String((Game.call("task") as Dictionary).get("name", ""))
+	cause_lines = []
+	if level == 0:
+		var cause: String = ""
+		for ph: Dictionary in _phases():
+			for ln: Dictionary in ph.get("lines", []) as Array:
+				if not bool(ln.get("ok", true)):
+					cause = String(ln.get("text", ""))
+		if cause != "":
+			cause_lines = _wrap_cap(cause, 380.0, 2)
 	grade = String(rep.get("grade", "")).to_upper()
 	grade_lines = _wrap_cap(String(rep.get("grade_text", "")), 112.0, 5) if grade != "" else []
 	grade_rule_lines = _wrap_cap(String(rep.get("grade_rule", "")), 294.0, 2) if grade != "" else []
@@ -296,7 +308,7 @@ func _journey_items(mode: int) -> Array:
 			if txt.begins_with("DECISION,"):
 				continue   # shown as a card below
 			var lines: Array = _wrap_cap(txt, 572.0, line_cap)
-			items.append({"k": "line", "ok": bool(ln.get("ok", true)), "lines": lines, "h": lines.size() * 12 + 3})
+			items.append({"k": "line", "ok": bool(ln.get("ok", true)), "warn": bool(ln.get("warn", false)) or txt.begins_with("WARNING") or txt.contains("LOW ") or txt.contains("RISK"), "lines": lines, "h": lines.size() * 12 + 3})
 		for dc: Dictionary in decs:
 			if String(dc.get("phase", "")) != String(ph["id"]):
 				continue
@@ -657,7 +669,7 @@ func _draw_band() -> void:
 	Pix.stars(self, t, Vector2(640, 70), 30, 11, Vector2(-t * 4.0, 0))
 	draw_rect(Rect2(0, 68, 640, 3), Color(0.02, 0.03, 0.07))
 	draw_rect(Rect2(0, 71, 640, 1), LINE)
-	var col: Color = UI.GREEN if level == 2 else (UI.YELLOW if level == 1 else UI.RED)
+	var col: Color = UI.GOOD if level == 2 else (UI.RISK if level == 1 else UI.BAD)
 	if grade == "":
 		_draw_vignette()
 	else:
@@ -678,29 +690,38 @@ func _draw_band() -> void:
 	var vt: float = t - _tl("verdict")
 	if vt >= 0.0:
 		var shown_chars: int = mini(head.length(), int(vt * 30.0) + 1)
-		Pix.title(self, Vector2(80, 36), head.substr(0, shown_chars), col, 3)
+		var failed: bool = not cause_lines.is_empty()
+		Pix.title(self, Vector2(80, 35 if failed else 36), head.substr(0, shown_chars), col, 3)
 		if vt > 0.4:
-			_draw_subline()
+			_draw_subline(46.0 if failed else 51.0)
 			var sc: int = roundi(float(total) * clampf((t - _tl("score")) / 1.4, 0.0, 1.0))
-			Pix.text(self, Vector2(82, 65), "TOTAL SCORE", 10, UI.DIM)
-			Pix.title(self, Vector2(158, 66), "%d / 100" % sc, UI.YELLOW, 1)
+			var sx: float = 416.0 if failed else 82.0
+			var sy: float = 20.0 if failed else 65.0
+			for k: int in cause_lines.size():
+				Pix.text(self, Vector2(82, 57.0 + k * 9.0), String(cause_lines[k]), 10, UI.BAD)
+			Pix.text(self, Vector2(sx, sy), "SCORE" if failed else "TOTAL SCORE", 10, UI.DIM)
+			Pix.title(self, Vector2(sx + (38.0 if failed else 76.0), sy + 1.0), "%d / 100" % sc, UI.YELLOW, 1)
 			if reward > 0:
-				_img("ic_coin", Vector2(246, 55))
-				Pix.text(self, Vector2(264, 65), "+%d CREDITS" % reward, 10, UI.YELLOW)
+				_img("ic_coin", Vector2(sx if failed else 246.0, sy + 3.0 if failed else 55.0))
+				Pix.text(self, Vector2(sx + 18.0 if failed else 264.0, sy + 13.0 if failed else 65.0), "+%d CREDITS" % reward, 10, UI.YELLOW)
+			var lv_col: Color = [UI.GOOD, UI.RISK, UI.BAD][clampi(["EASY", "NORMAL", "HARD"].find(diff_name), 0, 2)]
+			var lnote: String = String(LEVEL_NOTE.get(diff_name, ""))
+			if not failed:
+				Pix.text(self, Vector2(352, 65), diff_name + ":", 10, lv_col)
+				Pix.text(self, Vector2(358.0 + Pix.text_w(diff_name + ":", 10), 65), lnote, 10, UI.DIM)
 			if sc < total and sc / 8 != int(fired.get("sc", 0)) / 8:
 				Audio.play("poll_blip", -12.0, 0.8 + sc / 100.0)
 			fired["sc"] = sc
 
 ## "MOON - TASK NAME [NORMAL] - 5 of 5 goals": the level is a small tag after the task.
-func _draw_subline() -> void:
+func _draw_subline(y: float = 51.0) -> void:
 	var x: float = 82.0
-	var y: float = 51.0
 	var head_s: String = String(d.get("name", ""))
 	if task_name != "":
 		head_s += "  -  " + task_name
 	Pix.text(self, Vector2(x, y), head_s, 10, UI.DIM)
 	x += Pix.text_w(head_s, 10) + 8.0
-	var tcol: Color = [UI.GREEN, UI.CYAN, UI.ORANGE][clampi(["EASY", "NORMAL", "HARD"].find(diff_name), 0, 2)]
+	var tcol: Color = [UI.GOOD, UI.RISK, UI.BAD][clampi(["EASY", "NORMAL", "HARD"].find(diff_name), 0, 2)]
 	var tw: float = Pix.text_w(diff_name, 10) + 8.0
 	draw_rect(Rect2(x, y - 9.0, tw, 12), tcol)
 	draw_rect(Rect2(x + 1, y - 8.0, tw - 2, 10), Color(0.02, 0.03, 0.07))
@@ -905,8 +926,9 @@ func _draw_journey() -> void:
 				Pix.title(self, Vector2(32, y + 12), String(it["name"]), UI.TEXT, 1)
 			"line":
 				var good: bool = bool(it["ok"])
+				var lc: Color = UI.BAD if not good else (UI.RISK if bool(it.get("warn", false)) else UI.TEXT)
 				draw_rect(Rect2(28, y + 4, 3, 3), COL_WELL if good else COL_RISK)
-				_lines(Vector2(36, y + 9), it["lines"], UI.TEXT if good else COL_RISK)
+				_lines(Vector2(36, y + 9), it["lines"], lc)
 			"dec":
 				_draw_decision(it, y)
 		y += h

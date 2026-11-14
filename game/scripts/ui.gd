@@ -15,6 +15,10 @@ const CYAN: Color = Color("4fd6ff")
 const YELLOW: Color = Color("ffd75e")
 const RED: Color = Color("ff5a5a")
 const GREEN: Color = Color("6dff8a")
+## Consequence colours for small texts (v7): a loss, a chance, a gain. Use these three everywhere.
+const BAD: Color = Color("ff5a5a")
+const RISK: Color = Color("ffd75e")
+const GOOD: Color = Color("6dff8a")
 const PINK: Color = Color("ff7ad9")
 const ORANGE: Color = Color("ff9f43")
 ## Text colours for the bright button faces.

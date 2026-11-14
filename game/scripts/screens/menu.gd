@@ -35,6 +35,15 @@ const FACT_IDX: Dictionary = {"moon": 3, "mercury": 1, "venus": 1, "mars": 2, "j
 const RES_ICON: Dictionary = {"mass": "mass", "power": "power", "fuel": "fuel", "budget": "money", "time": "time", "data": "data", "comms": "comms"}
 const LEVEL_COL: Array[Color] = [UI.GREEN, UI.YELLOW, UI.RED]
 
+## What each level changes, in two short lines (the level word is drawn in its colour first).
+const LEVEL_TXT: Array = [
+	["Guide and auto-build. The computer helps", "you fly. You cannot lose the mission."],
+	["Fewer hints, no auto-build. You fly it", "yourself. Mistakes cost science."],
+	["No hints. No help. A mistake can end", "the mission."],
+]
+
+const LEVEL_SHORT: Array = ["cannot lose", "mistakes cost science", "a mistake ends it"]
+
 const CARD: Rect2 = Rect2(10, 158, 620, 168)
 
 var t: float = 0.0
@@ -541,7 +550,7 @@ func _draw_card() -> void:
 	var vy: float = y0 + 112.0
 	draw_texture(v1, Vector2(x0, vy - v1.get_height()))
 	draw_texture(v2, Vector2(x0 + 44.0, vy - v2.get_height() - (8.0 + roundf(sin(t * 2.0)) if ring else 0.0)))
-	Pix.text(self, Vector2(x0 + 96, y0 + 98), "ORBIT, THEN FLY A DRONE" if ring else ("LAND, THEN WALK AS AN ASTRONAUT" if String(Game.task().get("job", "drill")) == "crew" else "LAND, THEN DRIVE A ROVER"), 10, C_TXT)
+	Pix.text(self, Vector2(x0 + 96, y0 + 98), "ORBIT, THEN FLY A DRONE" if ring else ("LAND, THEN WALK AS AN ASTRONAUT" if String((tasks[task_i] as Dictionary).get("job", "drill")) == "crew" else "LAND, THEN DRIVE A ROVER"), 10, C_TXT)
 	var facts: Array = d["facts"]
 	var fact: String = String(facts[clampi(int(FACT_IDX.get(id, 0)), 0, facts.size() - 1)])
 	_img("ic_fact", Vector2(x0 - 1, y0 + 120))
@@ -551,18 +560,23 @@ func _draw_card() -> void:
 	for i: int in tasks.size():
 		var tk: Dictionary = tasks[i]
 		var on: bool = i == task_i
-		var tr: Rect2 = Rect2(x1, y0 + 10 + i * 26, 288, 24)
+		var tr: Rect2 = Rect2(x1, y0 + 8 + i * 24, 288, 22)
 		_hit(tr, "task:%d" % i)
 		var lit: bool = on or hot == "task:%d" % i
 		_nine(tr, "tile", TILE_M, Color(1.25, 1.2, 1.0) if on else (Color.WHITE if lit else Color(0.75, 0.75, 0.85)))
 		if on:
 			_brackets(tr.grow(1.0), C_HI)
-		Pix.text(self, tr.position + Vector2(8, 16), String(tk["name"]), 10, C_HI if on else C_TXT)
-		_draw_job(tr.position.x + 150.0, tr.position.y + 16, tk, C_DIM)
+		Pix.text(self, tr.position + Vector2(8, 15), String(tk["name"]), 10, C_HI if on else C_TXT)
+		_draw_job(tr.position.x + 150.0, tr.position.y + 15, tk, C_DIM)
 		var lv: String = String(tk["level"])
-		Pix.text(self, Vector2(tr.end.x - 8 - Pix.text_w(lv, 10), tr.position.y + 16), lv, 10, LEVEL_COL[clampi(int(tk["diff"]), 0, 2)])
+		Pix.text(self, Vector2(tr.end.x - 8 - Pix.text_w(lv, 10), tr.position.y + 15), lv, 10, LEVEL_COL[clampi(int(tk["diff"]), 0, 2)])
 	if not tasks.is_empty():
-		_para(Vector2(x1 + 2, y0 + 100), String(tasks[task_i]["text"]), 286.0, C_TXT, 2)
+		_para(Vector2(x1 + 2, y0 + 92), String(tasks[task_i]["text"]), 286.0, C_TXT, 2)
+		var li: int = clampi(int(tasks[task_i]["diff"]), 0, 2)
+		var lw: String = String(tasks[task_i]["level"])
+		Pix.text(self, Vector2(x1 + 2, y0 + 118), lw, 10, LEVEL_COL[li])
+		Pix.text(self, Vector2(x1 + 8 + Pix.text_w(lw, 10), y0 + 118), String(LEVEL_TXT[li][0]), 10, C_DIM)
+		Pix.text(self, Vector2(x1 + 2, y0 + 130), String(LEVEL_TXT[li][1]), 10, C_DIM)
 	_button(Rect2(r.end.x - 148, y0 + 134, 136, 24), "play", "PLAY  " + nm, "btn_green", "ic_play")
 
 func _draw_bar() -> void:
@@ -648,7 +662,9 @@ func _draw_brief(pr: Rect2) -> void:
 	Pix.text(self, Vector2(x, y + 56), "DESTINATION", 10, C_DIM)
 	Pix.title(self, Vector2(x + 72, y + 57), String(d["name"]), C_TXT, 1)
 	Pix.text(self, Vector2(x + 180, y + 56), "DIFFICULTY", 10, C_DIM)
-	Pix.title(self, Vector2(x + 246, y + 57), String(tasks[task_i]["level"]), C_TXT, 1)
+	Pix.title(self, Vector2(x + 246, y + 57), String(tasks[task_i]["level"]), LEVEL_COL[clampi(int(tasks[task_i]["diff"]), 0, 2)], 1)
+	var bl: int = clampi(int(tasks[task_i]["diff"]), 0, 2)
+	Pix.text(self, Vector2(x + 252 + Pix.title_w(String(tasks[task_i]["level"]), 1), y + 56), String(LEVEL_SHORT[bl]), 10, C_DIM)
 	# the world itself, top right
 	var pt: Texture2D = _planet("planet_%s_%d" % [sel, 22 if sel == "saturn" else 36])
 	draw_texture(pt, Vector2(pr.end.x - 24 - pt.get_width(), y + 44 + floorf(sin(t) * 1.5)))

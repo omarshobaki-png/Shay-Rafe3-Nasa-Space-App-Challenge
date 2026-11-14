@@ -4,8 +4,8 @@
 # screen: menu | builder | flight | landing | surface | probe | report      dest: moon | mars | saturn
 # extra args are passed to the game's debug hook (scripts/main.gd), e.g.  call=debug_night  mode=home
 # Prints script errors if there are any. Imports new assets first (locked, safe to call in parallel).
-GODOT="${GODOT:-godot}"
-PROJ="$(cd "$(dirname "$0")/../.." && pwd)"
+GODOT="godot"
+PROJ="<local path>Games/space-apps-2026/game"
 screen="$1"; dest="$2"; out="$3"; wait="${4:-1.5}"; shift 4 2>/dev/null
 bash "$PROJ/tools/dev/godot_import.sh" >/dev/null
 "$GODOT" --audio-driver Dummy --path "$PROJ" --position -4000,-4000 --resolution 640x360 -- screen="$screen" dest="$dest" shot="$out" wait="$wait" "$@" 2>&1 \

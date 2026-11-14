@@ -108,6 +108,6 @@ No new sounds except the cheer; reuse what `Audio` has (a missing name is silent
 - Debug hook (in `main.gd`): `shot.sh <screen> <dest> out.png [wait] task=0|1|2 job=drill|photo|crew call=debug_x`.
   dest: moon mercury venus mars jupiter saturn uranus neptune. `task=` picks the task (default 1).
   `job=` forces `Game.run["job"]` so you can test photo and crew before the core's task list lands.
-- Scratch files under `C:\Games\space-apps-2026\research\work\v6_<your label>\`.
+- Scratch files under `<local path>\Games\space-apps-2026\research\work\v6_<your label>\`.
 - Keep every `debug_*` hook working; the orchestrator's end-to-end test uses them (`debug_auto` etc.).
 - Final report: under 200 words. What changed, what you verified by screenshot, what is not done.

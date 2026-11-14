@@ -4,6 +4,7 @@ extends Node
 
 const SAVE_PATH: String = "user://save.json"
 const Events = preload("res://scripts/events.gd")
+const UI = preload("res://scripts/ui.gd")
 
 var main: Node = null
 var funds: int = 0
@@ -640,6 +641,11 @@ func start_run(seed_n: int = -1) -> void:
 		"use": (c["use"] as Dictionary).duplicate(true),  # the resource ratings at launch, for the build report
 		"difficulty": difficulty,
 		"job": String(task().get("job", "drill")),
+		# v7: what resources rated UNDER at launch cost on the way (see _short)
+		"short_pts": 0,
+		"shorts": [],
+		"store_mult": 1.0,
+		"data_lost": 0.0,
 	}
 	for o: String in dest()["objectives"]:
 		run["obj"][o] = false
@@ -651,6 +657,39 @@ func note(ok: bool, text: String) -> void:
 func fail(text: String) -> void:
 	note(false, text)
 	run["dead"] = true
+
+## v7: true when resource `key` (a Game.calc()["use"] key) was rated UNDER, a risk, at launch and has not
+## shown its cost yet.
+func _rated_under(key: String) -> bool:
+	if run.is_empty():
+		return false
+	for sh: Dictionary in run.get("shorts", []):
+		if sh["key"] == key:
+			return false
+	var row: Dictionary = (run.get("use", {}) as Dictionary).get(key, {})
+	return String(row.get("state", "")) == "risk"
+
+## v7: a resource rated UNDER at launch shows its cost, once, in the flight log and the report (game rule).
+## EASY: a warning and a small efficiency cost. NORMAL and HARD: `loss`, the real loss the caller has applied,
+## in words, and a bigger efficiency cost (8 x bite points). The line names the cause and the fix.
+func _short(key: String, what: String, loss: String, fix: String) -> void:
+	var pts: int = roundi(8.0 * diff("bite"))
+	run["short_pts"] = int(run.get("short_pts", 0)) + pts
+	var text: String = "%s %s (-%d efficiency). Fix: %s" % [what, loss if loss != "" else "Mission control covered for it this time", pts, fix]
+	(run["shorts"] as Array).append({"key": key, "text": text})
+	note(false, text)
+
+## v7: switches off the hungriest instrument an event may lose; returns its name, "" when there is none.
+func _switch_off() -> String:
+	var worst: String = ""
+	for id: String in build:
+		if _can_lose(id) and not run["broken"].has(id):
+			if worst == "" or float(Data.PARTS[id].get("draw", 0.0)) > float(Data.PARTS[worst].get("draw", 0.0)):
+				worst = id
+	if worst == "":
+		return ""
+	run["broken"][worst] = true
+	return String(Data.PARTS[worst]["name"])
 
 func burn(dv_kms: float) -> float:
 	## Returns propellant used (kg). If not enough, uses it all and returns -need.
@@ -678,6 +717,18 @@ func phase_launch() -> void:
 		return
 	run["obj"]["launch"] = true
 	note(true, "Launch on %s: %s kg of %s kg capacity used." % [rk["name"], fmt(c["mass"]), fmt(c["cap"])])
+	var hit: bool = diff("fail") >= 1.0
+	if _rated_under("mass"):
+		var kg: float = float(run["prop"]) * 0.05 * diff("bite") if hit else 0.0
+		run["prop"] = float(run["prop"]) - kg
+		run["mass"] = float(run["mass"]) - kg
+		_short("mass", "HEAVY SHIP: it used %d%% of the rocket's lift, past the 65%% line." % roundi(100.0 * float(c["mass"]) / maxf(1.0, float(c["cap"]))),
+			"The upper stage ran short and the ship burned %s kg of its own fuel to finish the climb" % fmt(kg) if hit else "", "a bigger rocket or a lighter ship.")
+	if _rated_under("budget"):
+		var m: float = roundf(float(c["cost"]) * 0.03 * diff("bite")) if hit else 0.0
+		run["money"] = float(run["money"]) + m
+		_short("budget", "THIN BUDGET: under 25% of the money was kept in reserve.",
+			"Tests found a fault and fixing it cost $%sM of the reserve" % fmt(m) if hit else "", "a cheaper rocket or fewer extras, to keep a 25% reserve.")
 
 ## Checks that the ship survives the trip: power, heat near the Sun, fuel for course corrections.
 ## auto_events = true (old screens): a planned solar storm that nobody decided on is flown through as before.
@@ -701,6 +752,10 @@ func phase_cruise(auto_events: bool = true) -> void:
 		fail("NOT ENOUGH FUEL for course corrections. Small steering burns on the way needed %s kg; the ship drifted off its path and missed %s." % [fmt(-used), place().capitalize()])
 		return
 	note(true, "Cruise: %d days. Power OK (%d W made, %d W used). Course corrections used %s kg of fuel." % [int(traj()["days"]), roundi(gen), roundi(need), fmt(used)])
+	if _rated_under("power"):
+		var off: String = _switch_off() if diff("fail") >= 1.0 else ""
+		_short("power", "LOW POWER MARGIN: %d W made for %d W of work, under the 35%% margin." % [roundi(c["gen"]), roundi(c["power_need"])],
+			"The %s was switched off to keep the rest running" % off.to_lower() if off != "" else "", "add a solar array or an RTG until the power lamp is green.")
 	if auto_events:
 		for ev: Dictionary in run["events"]:
 			if ev["id"] == "storm" and not bool(ev["done"]):
@@ -726,12 +781,26 @@ func phase_arrive() -> void:
 			note(true, "%s arrival: direct entry. The lander dives straight into the thick air behind its heat shield. No braking burn." % name)
 		run["obj"]["arrive"] = true
 	else:
+		var had: float = float(run["prop"])
 		var used: float = burn(cap_dv)
 		if used < 0.0:
-			fail("NOT ENOUGH FUEL to brake into orbit. Braking by %s km/s needed %s kg of fuel; you had %s kg. The ship flew past %s." % [str(snappedf(cap_dv, 0.01)), fmt(-used), fmt(run["calc"]["prop"]), name])
-			return
-		run["obj"]["arrive"] = true
-		note(true, "Orbit reached: braking burn of %s km/s used %s kg of fuel (rocket equation, Isp %d s)." % [str(snappedf(cap_dv, 0.01)), fmt(used), int(Data.ISP)])
+			# HARD: the ship flies past. EASY and NORMAL: a slow capture loop, days late (game rule)
+			if diff("fail") >= 2.0:
+				fail("NOT ENOUGH FUEL to brake into orbit. Braking by %s km/s needed %s kg of fuel; you had %s kg. The ship flew past %s. Fix: fill the fuel bar into the green band." % [str(snappedf(cap_dv, 0.01)), fmt(-used), fmt(had), name])
+				return
+			var late: float = roundf(40.0 * diff("bite"))
+			run["days_extra"] = float(run["days_extra"]) + late
+			run["obj"]["arrive"] = true
+			_short("fuel", "NOT ENOUGH FUEL to brake into orbit: it needed %s kg, %s kg were left." % [fmt(-used), fmt(had)],
+				"Navigators looped the ship round %s for a slow capture: +%d days" % [name, int(late)], "fill the fuel bar into the green band.")
+		else:
+			run["obj"]["arrive"] = true
+			note(true, "Orbit reached: braking burn of %s km/s used %s kg of fuel (rocket equation, Isp %d s)." % [str(snappedf(cap_dv, 0.01)), fmt(used), int(Data.ISP)])
+	if _rated_under("fuel"):
+		var days: float = roundf(10.0 * diff("bite")) if diff("fail") >= 1.0 else 0.0
+		run["days_extra"] = float(run["days_extra"]) + days
+		_short("fuel", "LOW FUEL RESERVE: under the 10% margin, so every burn on the way was trimmed to save fuel.",
+			"Slower burns cost +%d days" % int(days) if days > 0.0 else "", "add propellant until the fuel bar is in the green band.")
 	if has_hazard("radiation"):
 		if id_has("shield"):
 			note(true, "RADIATION BELTS: the shielding kept the electronics alive, as Juno's titanium vault does.")
@@ -817,6 +886,24 @@ func surface_result(samples: int, battery: float, data: float) -> void:
 	run["obj"]["samples"] = samples >= goal
 	var what: String = {"photo": "Photos taken", "crew": "Science stations set up"}.get(job(), "Samples collected")
 	note(samples >= goal, "%s: %d of %d. Battery left: %d%%." % [what, samples, goal, roundi(100.0 * battery / maxf(1.0, float(run["wh"])))])
+	if _rated_under("battery"):
+		var loss: String = ""
+		var wh: float = float(run["wh"])
+		if diff("fail") >= 2.0 and battery < 0.15 * wh:
+			fail("DEAD BATTERY. The battery had no margin and the work emptied it: the lander froze in the dark before it could send its science. Fix: add batteries until the battery lamp is green.")
+			return
+		if diff("fail") >= 1.0:
+			if bool(dest()["returns"]):
+				var drain: float = minf(float(run["battery"]), wh * 0.15 * diff("bite"))
+				run["battery"] = float(run["battery"]) - drain
+				loss = "The heaters took %d%% more of the battery in the dark hours" % roundi(100.0 * drain / maxf(1.0, wh))
+			else:
+				var lost: float = float(run["data"]) * minf(0.9, 0.2 * diff("bite"))
+				run["data"] = float(run["data"]) - lost
+				run["data_lost"] = float(run["data_lost"]) + lost
+				if lost > 0.0:
+					loss = "The heaters took the power and %s Gb of science was lost" % fmt(lost)
+		_short("battery", "SMALL BATTERY: under the 35% margin for the dark hours.", loss, "add a battery until the battery lamp is green.")
 
 func probe_result(samples: int, docked: bool, data: float) -> void:
 	run["phase_now"] = "site"
@@ -839,7 +926,7 @@ func live_store() -> float:
 	var store: float = float(run["calc"]["store"])
 	if run["broken"].has("recorder"):
 		store -= float(Data.PARTS["recorder"]["store_gb"]) * count("recorder")
-	return store
+	return store * float(run.get("store_mult", 1.0))
 
 func live_rate() -> float:
 	var rate: float = float(run["calc"]["rate"]) * float(run["rate_mult"])
@@ -854,10 +941,22 @@ func phase_home() -> void:
 	run["phase_now"] = "home"
 	var c: Dictionary = run["calc"]
 	var d: Dictionary = dest()
-	# Data to Earth
+	# Data to Earth. v7: storage or a radio link rated UNDER at launch costs room or speed now (game rule)
+	var hit: bool = diff("fail") >= 1.0
+	if _rated_under("data"):
+		var cut: float = minf(0.9, 0.15 * diff("bite")) if hit else 0.0
+		run["store_mult"] = 1.0 - cut
+		_short("data", "TIGHT STORAGE: under the 20% margin for the science.",
+			"Housekeeping files filled %d%% of the memory" % roundi(cut * 100.0) if hit else "", "add a data recorder until the data lamp is green.")
+	if _rated_under("comms"):
+		var slow: float = minf(0.9, 0.3 * diff("bite")) if hit else 0.0
+		run["rate_mult"] = float(run["rate_mult"]) * (1.0 - slow)
+		_short("comms", "WEAK RADIO LINK: under twice the science, the 3 dB margin.",
+			"Bad weather at the dishes on Earth made the link %d%% slower" % roundi(slow * 100.0) if hit else "", "a bigger antenna until the radio lamp is green.")
 	var data: float = float(run["data"])
 	var store: float = live_store()
 	if data > store:
+		run["data_lost"] = float(run.get("data_lost", 0.0)) + data - store
 		note(false, "Storage full: %s Gb of science made but only %s Gb fit. The rest was lost." % [fmt(data), fmt(store)])
 		data = store
 	var rate: float = live_rate()
@@ -921,6 +1020,7 @@ func event_plan() -> void:
 			ev["done"] = false
 			if ev["id"] == "storm":
 				_dress_storm(ev)
+			_bite_event(ev)
 			plan.append(ev)
 	plan.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return phases.find(a["phase"]) * 10.0 + float(a["at"]) < phases.find(b["phase"]) * 10.0 + float(b["at"]))
@@ -968,7 +1068,65 @@ func event_by_id(id: String) -> Dictionary:
 		_dress_storm(ev)
 		if keep != null:
 			run["storm"] = keep
+	_bite_event(ev)
 	return ev
+
+## Effect keys that are losses and grow with the level's bite (a negative score or hull change too).
+const BITE_KEYS: Array = ["dv_ms", "fuel_kg", "battery_pct", "battery_wh", "money", "days", "data_pct", "data_gb", "minutes"]
+
+## v7: the level's bite on an event. Every loss x bite (at least 1), permanent power / radio losses x bite (at
+## most 90%), risk odds x (0.5 + 0.5 x bite) (at most 90%), and the choice texts rewritten to the new numbers.
+## Gains stay as they are. Game rules.
+func _bite_event(ev: Dictionary) -> void:
+	if ev.has("bitten"):
+		return
+	ev["bitten"] = true
+	var b: float = diff("bite")
+	var num: RegEx = RegEx.create_from_string("[0-9]+([.][0-9]+)?")
+	for ch: Dictionary in ev["choices"]:
+		var swap: Dictionary = {}   # a number in the text -> the new one
+		var risk: Dictionary = ch.get("risk", {})
+		var fx: Array = [ch.get("cost", {})]
+		if risk.has("bad"):
+			fx.append(risk["bad"])
+		for e: Dictionary in fx:
+			for k: String in e.keys():
+				if k == "power" or k == "rate":
+					var loss: float = 1.0 - float(e[k])
+					var nl: float = clampf(roundf(loss * b * 100.0) / 100.0, 0.01, 0.9)
+					swap[_num(loss * 100.0)] = _num(nl * 100.0)
+					e[k] = 1.0 - nl
+				elif BITE_KEYS.has(k) or ((k == "score" or k == "hull") and float(e[k]) < 0.0):
+					var v: float = float(e[k])
+					var nv: float = signf(v) * maxf(1.0, roundf(absf(v) * b))
+					swap[_num(absf(v))] = _num(absf(nv))
+					e[k] = nv
+		var p0: int = -1
+		var p1: int = -1
+		if risk.has("chance"):
+			p0 = roundi(float(risk["chance"]) * 100.0)
+			p1 = mini(90, roundi(float(risk["chance"]) * (0.5 + 0.5 * b) * 20.0) * 5)
+			risk["chance"] = p1 / 100.0
+			swap[str(p0)] = str(p1)
+			swap[str(100 - p0)] = str(100 - p1)
+		# "50% it is fine. 50% it costs ...": the odds of success come first in every such text
+		var text: String = String(ch["text"])
+		var found: Array = num.search_all(text)
+		var halves: int = 0
+		for i: int in range(found.size() - 1, -1, -1):
+			var m: RegExMatch = found[i]
+			var s: String = m.get_string()
+			var to: String = String(swap.get(s, s))
+			if p0 == 50 and s == "50":
+				halves += 1
+				to = str(p1) if halves == 1 else str(100 - p1)
+			text = text.substr(0, m.get_start()) + to + text.substr(m.get_end())
+		text = RegEx.create_from_string("\\b1 days\\b").sub(text, "1 day", true)
+		ch["text"] = RegEx.create_from_string("\\b([02-9]|[1-9][0-9]+) day\\b").sub(text, "$1 days", true)
+
+## A number as an event text writes it: "5", "2.5".
+static func _num(v: float) -> String:
+	return str(roundi(v)) if is_equal_approx(v, roundf(v)) else str(snappedf(v, 0.1))
 
 ## kg of fuel a burn of dv_ms would use right now.
 func _dv_kg(dv_ms: float) -> float:
@@ -1026,6 +1184,9 @@ const SHORT_WORDS: Dictionary = {
 	"money": "The budget is overspent.",
 }
 
+const SHORT_CHIP: Dictionary = {"fuel": "LOW FUEL", "power": "LOW POWER", "comms": "RADIO TOO SLOW", "time": "LATE", "battery": "BATTERY EMPTY", "money": "OVER BUDGET"}
+const SHORT_ICON: Dictionary = {"fuel": "fuel", "power": "power", "comms": "comms", "time": "time", "battery": "battery", "money": "money"}
+
 func _draw_now() -> float:
 	var c: Dictionary = run["calc"]
 	var draw: float = float(c["power_need"])
@@ -1041,7 +1202,110 @@ func _draw_now() -> float:
 ##   line  String  the price in the ship's own numbers ("31 kg of fuel, 85 kg on board"), "" when there is none
 ##   warn  String  open, but it leaves the ship short of something ("" = fine)
 ##   safe  bool    a part on board removes the risk of this choice
+## v7 adds, for the card's colours:
+##   tone       "risk" | "bad" | "good" | "info"   the choice text as a whole
+##   note_tone  the note line under it (closed: bad, warn: risk, safe: good, a price: info)
+##   fx         [[text, tone], ...]  every effect of the choice in the ship's own units, one per line or chip
+##   tip        bool  MISSION CONTROL RECOMMENDS this choice (EASY only: Game.recommended)
 func event_choice(ev: Dictionary, i: int) -> Dictionary:
+	var out: Dictionary = _choice_info(ev, i)
+	var ch: Dictionary = ev["choices"][i]
+	var fx: Array = _choice_fx(ch, bool(out["safe"]))
+	out["fx"] = fx
+	var tones: Array = []
+	for f: Array in fx:
+		tones.append(f[1])
+	out["tone"] = "risk" if tones.has("risk") else ("bad" if tones.has("bad") else ("good" if tones.has("good") else "info"))
+	out["note_tone"] = "bad" if not bool(out["can"]) else ("risk" if String(out["warn"]) != "" else ("good" if bool(out["safe"]) else "info"))
+	out["tip"] = recommended(ev) == i
+	return out
+
+## The colour of a tone: a loss red, a chance yellow, a gain green, a plain fact white (V7_PLAN.md).
+static func tone_color(tone: String) -> Color:
+	match tone:
+		"bad":
+			return UI.BAD
+		"risk":
+			return UI.RISK
+		"good":
+			return UI.GOOD
+	return UI.TEXT
+
+## The effects of a choice as short lines with their tone, before it is taken.
+func _choice_fx(ch: Dictionary, safe: bool) -> Array:
+	var out: Array = []
+	for t: String in _fx_words(ch.get("cost", {})):
+		out.append([t, "bad"])
+	var risk: Dictionary = ch.get("risk", {})
+	if risk.has("chance"):
+		if safe:
+			out.append(["%s ON BOARD: NO RISK" % String(Data.PARTS[String(risk["save_part"])]["name"]).to_upper(), "good"])
+		else:
+			out.append(["%d%% CHANCE: %s" % [roundi(float(risk["chance"]) * 100.0), ", ".join(PackedStringArray(_fx_words(risk["bad"])))], "risk"])
+	for t: String in _fx_words(ch.get("gain", {})):
+		out.append([t, "good"])
+	if out.is_empty():
+		out.append(["no change", "info"])
+	return out
+
+## Effect keys in the ship's own words ("-12 kg fuel", "+3 days", "radio 20% slower").
+func _fx_words(e: Dictionary) -> Array:
+	var w: Array = []
+	if run.is_empty():
+		return w
+	var kg: float = _fuel_cost(e)
+	if kg > 0.0:
+		w.append("-%s kg fuel" % fmt(kg))
+	if e.has("battery_pct") or e.has("battery_wh"):
+		w.append("-%d%% battery" % roundi(100.0 * _battery_cost(e) / maxf(1.0, float(run["wh"]))))
+	if e.has("power"):
+		w.append("-%d%% power" % roundi((1.0 - float(e["power"])) * 100.0))
+	if e.has("rate"):
+		w.append("radio %d%% slower" % roundi((1.0 - float(e["rate"])) * 100.0))
+	if e.has("money"):
+		w.append("-$%sM" % _num(float(e["money"])))
+	if e.has("days"):
+		w.append("+%d day%s" % [int(e["days"]), "" if int(e["days"]) == 1 else "s"])
+	if e.has("data_pct"):
+		w.append("-%d%% data" % int(e["data_pct"]))
+	if e.has("break"):
+		w.append("an instrument breaks" if String(e["break"]) == "science" else "a part breaks")
+	if e.has("minutes"):
+		w.append("-%d minutes" % int(e["minutes"]))
+	if e.has("samples"):
+		w.append("%+d samples" % int(e["samples"]))
+	if e.has("score"):
+		w.append("%+d science" % int(e["score"]))
+	if e.has("hull"):
+		w.append("drone %+d hull" % int(e["hull"]))
+	return w
+
+## The safer choice of an event, which the EASY card marks MISSION CONTROL RECOMMENDS; -1 above EASY.
+## Closed choices and gambles weigh most, then what a choice leaves short, then what it costs; a gain helps.
+func recommended(ev: Dictionary) -> int:
+	if diff("hints") < 2.0 or run.is_empty():
+		return -1
+	var best_i: int = -1
+	var best_v: float = INF
+	for i: int in (ev["choices"] as Array).size():
+		var ch: Dictionary = ev["choices"][i]
+		var info: Dictionary = _choice_info(ev, i)
+		var v: float = 0.0 if bool(info["can"]) else 1000.0
+		if String(info["warn"]) != "":
+			v += 100.0
+		var risk: Dictionary = ch.get("risk", {})
+		if risk.has("chance") and not bool(info["safe"]):
+			v += float(risk["chance"]) * 100.0
+		for k: String in (ch.get("cost", {}) as Dictionary):
+			v += 15.0 if k in ["power", "rate", "break"] else 5.0
+		if ch.has("gain"):
+			v -= 10.0
+		if v < best_v:
+			best_v = v
+			best_i = i
+	return best_i
+
+func _choice_info(ev: Dictionary, i: int) -> Dictionary:
 	var ch: Dictionary = ev["choices"][i]
 	var c: Dictionary = run["calc"]
 	var out: Dictionary = {"can": true, "why": "", "line": "", "warn": "", "safe": false}
@@ -1087,7 +1351,6 @@ func event_choice(ev: Dictionary, i: int) -> Dictionary:
 			out["warn"] = "MISSES THE DEADLINE"
 	if ch.has("risk") and (ch["risk"] as Dictionary).has("save_part") and Events.has_part(build, ch["risk"]["save_part"]):
 		out["safe"] = true
-		lines.append("%s ON BOARD: NO RISK" % String(Data.PARTS[String(ch["risk"]["save_part"])]["name"]).to_upper())
 	out["line"] = ". ".join(lines)
 	return out
 
@@ -1147,6 +1410,14 @@ func resolve_event(ev: Dictionary, choice: int) -> Dictionary:
 	elif gambled and chance > 0.35:
 		res["grade"] = "risky"
 		res["points"] = 70
+	# what the call leaves short is a warning, not yet a loss
+	for sh: String in new_short:
+		if not bool(run["dead"]):
+			(res["chips"] as Array).append([SHORT_ICON[sh], SHORT_CHIP[sh], true, "risk"])
+	var tones: Array = []
+	for chp: Array in res["chips"]:
+		tones.append(chp[3])
+	res["tone"] = "bad" if tones.has("bad") else ("risk" if tones.has("risk") else ("good" if tones.has("good") or bool(res["ok"]) else "info"))
 	var text: String = lead
 	if not (res["effects"] as Array).is_empty():
 		text += " " + ", ".join(PackedStringArray(res["effects"])) + "."
@@ -1168,13 +1439,18 @@ func resolve_event(ev: Dictionary, choice: int) -> Dictionary:
 		note(fine, "DECISION, %s: %s. %s" % [ev["title"], ch["label"], text])
 	return res
 
-func _chip(res: Dictionary, icon: String, text: String, bad: bool) -> void:
+## A result chip: [icon, text, bad, tone]; tone "bad" | "good" | "risk" | "info" (default: from bad).
+func _chip(res: Dictionary, icon: String, text: String, bad: bool, tone: String = "") -> void:
 	(res["effects"] as Array).append(text)
-	(res["chips"] as Array).append([icon, text, bad])
+	(res["chips"] as Array).append([icon, text, bad, tone if tone != "" else ("bad" if bad else "good")])
 
 func _apply(e: Dictionary, res: Dictionary, bad: bool) -> void:
 	var ap: Dictionary = res["applied"]
 	var kg: float = _fuel_cost(e)
+	if kg > float(run["prop"]) + 0.01 and diff("fail") >= 2.0 and not bool(run["dead"]):
+		# HARD: a burn the tank cannot pay for ends the mission (on EASY and NORMAL it takes what is left)
+		fail("TANK DRY. The burn needed %s kg of fuel and only %s kg were left: the ship drifted off its path. Fix: fill the fuel bar into the green band so a surprise burn still fits." % [fmt(kg), fmt(run["prop"])])
+		_chip(res, "bad", "mission lost", true)
 	if kg > 0.0:
 		kg = minf(kg, float(run["prop"]))
 		run["prop"] = float(run["prop"]) - kg
@@ -1194,7 +1470,7 @@ func _apply(e: Dictionary, res: Dictionary, bad: bool) -> void:
 		_chip(res, "comms", "radio x%s" % str(e["rate"]), true)
 	if e.has("money"):
 		run["money"] = float(run["money"]) + float(e["money"])
-		_chip(res, "money", "-$%sM" % fmt(e["money"]), true)
+		_chip(res, "money", "-$%sM" % _num(float(e["money"])), true)
 	if e.has("days"):
 		run["days_extra"] = float(run["days_extra"]) + float(e["days"])
 		_chip(res, "time", "+%d days" % int(e["days"]), true)
@@ -1202,16 +1478,17 @@ func _apply(e: Dictionary, res: Dictionary, bad: bool) -> void:
 	if e.has("data_pct") or e.has("data_gb"):
 		lost = minf(lost, float(run["data"]))
 		run["data"] = float(run["data"]) - lost
+		run["data_lost"] = float(run.get("data_lost", 0.0)) + lost
 		ap["data_gb"] = float(ap.get("data_gb", 0.0)) - lost
-		_chip(res, "data", "-%s Gb science" % fmt(lost) if lost > 0.0 else "no data on board to lose", lost > 0.0)
+		_chip(res, "data", "-%s Gb science" % fmt(lost) if lost > 0.0 else "no data on board to lose", lost > 0.0, "bad" if lost > 0.0 else "info")
 	if e.has("break"):
 		var nm: String = _break(String(e["break"]), ap)
-		_chip(res, "wrench", "%s lost" % nm if nm != "" else "nothing left to break", nm != "")
+		_chip(res, "wrench", "%s lost" % nm if nm != "" else "nothing left to break", nm != "", "bad" if nm != "" else "info")
 	if e.has("samples"):
 		var before: int = int(run["samples"])
 		run["samples"] = maxi(0, before + int(e["samples"]))
 		ap["samples"] = int(ap.get("samples", 0)) + int(run["samples"]) - before
-		_chip(res, "sample", "%+d samples" % (int(run["samples"]) - before), int(e["samples"]) < 0)
+		_chip(res, "sample", "%+d samples" % (int(run["samples"]) - before), int(e["samples"]) < 0, "info" if int(run["samples"]) == before else "")
 	if e.has("score"):
 		run["score_bonus"] = int(run["score_bonus"]) + int(e["score"])
 		_chip(res, "science", "%+d science" % int(e["score"]), int(e["score"]) < 0)
@@ -1281,10 +1558,20 @@ func _power_check(res: Dictionary) -> void:
 			res["applied"]["broken"] = []
 		(res["applied"]["broken"] as Array).append(worst)
 		_chip(res, "wrench", "%s switched off" % String(Data.PARTS[worst]["name"]), true)
-	if gen < float(c["draw_cruise"]) and not bool(run["dead"]):
-		fail("OUT OF POWER. After the damage the ship makes %d W and needs %d W just to stay alive. A power margin would have absorbed it." % [roundi(gen), roundi(c["draw_cruise"])])
-		_chip(res, "bad", "mission lost", true)
-		res["ok"] = false
+	# HARD: power under what keeps the ship alive ends the mission; with power rated UNDER at launch, under the
+	# full need does. EASY and NORMAL: the ship limps on with heaters cycled (a warning). Game rule.
+	var alive: float = float(c["draw_cruise"])
+	if diff("fail") >= 2.0 and _rated_under("power"):
+		alive = maxf(alive, float(c["power_need"]))
+	if gen < alive and not bool(run["dead"]):
+		if diff("fail") >= 2.0:
+			fail("OUT OF POWER. After the damage the ship makes %d W and needs %d W to keep working. Fix: build the power lamp into the green band: the margin absorbs a loss like this." % [roundi(gen), roundi(alive)])
+			_chip(res, "bad", "mission lost", true)
+			res["ok"] = false
+		elif gen < float(c["draw_cruise"]):
+			run["gen_mult"] = float(c["draw_cruise"]) / maxf(1.0, float(c["gen"]))
+			_chip(res, "power", "heaters cycled to survive", true, "risk")
+			note(false, "LOW POWER. After the damage the ship made %d W of the %d W it needs; it survived by cycling its heaters. Fix: a power margin (green lamp)." % [roundi(gen), roundi(c["draw_cruise"])])
 
 # ---------------------------------------------------------------- the end
 
@@ -1326,7 +1613,9 @@ func finish() -> void:
 	for id: String in build:
 		if not run["broken"].has(id):
 			pts += int(part_science(id)[1])
-	var home_frac: float = float(run["sent"]) / float(run["data"]) if float(run["data"]) > 0.0 else 0.0
+	# v7: science lost on the way (events, a small battery, full storage) counts against what reached Earth
+	var made: float = float(run["data"]) + float(run.get("data_lost", 0.0))
+	var home_frac: float = float(run["sent"]) / made if made > 0.0 else 0.0
 	if bool(d["returns"]):
 		home_frac = 1.0 if bool(obj.get("return", false)) else 0.0
 	var rich: float = minf(1.0, pts / 6.0)
@@ -1349,20 +1638,24 @@ func finish() -> void:
 		var row: Dictionary = use[key]
 		var v: float = 100.0
 		if row["state"] == "waste":
-			v = 55.0
+			v = maxf(0.0, 100.0 - 45.0 * diff("bite"))   # v7: OVER costs more on harder levels
 		elif row["state"] == "risk":
 			v = 35.0 if st[key] != "bad" else 0.0
 		eff += v / use.size()
 		if v < eff_low:
 			eff_low = v
 			eff_tip = "%s %s: %s" % [row["name"], "OVER" if row["rating"] == "over" else "UNDER", row["tip"]]
+	var shorts: Array = run.get("shorts", [])
+	eff -= float(run.get("short_pts", 0))
+	if not shorts.is_empty() and eff_low >= 100.0:
+		eff_tip = "%s ran short on the way. Fix: %s" % [String(Data.USE_NAMES[shorts[0]["key"]]), String(shorts[0]["text"]).get_slice("Fix: ", 1)]
 	if days_over() > 0.0:
-		eff -= 10.0
-		if eff_low >= 100.0:
+		eff -= 10.0 * diff("bite")
+		if eff_low >= 100.0 and shorts.is_empty():
 			eff_tip = "The mission ran %s days late: keep spare days for surprises." % fmt(days_over())
 	if money_left() < 0.0:
-		eff -= 10.0
-		if eff_low >= 100.0:
+		eff -= 10.0 * diff("bite")
+		if eff_low >= 100.0 and shorts.is_empty():
 			eff_tip = "Decisions overspent the budget: the 25% reserve is there for them."
 	scores["efficiency"] = {"name": "RESOURCE EFFICIENCY", "value": clampi(roundi(eff), 0, 100), "tip": eff_tip}
 	# 4. good decisions: the event calls

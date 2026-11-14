@@ -184,7 +184,7 @@ func _add(x: float, feet: float, v: int, role: String, back: bool) -> void:
 		role = "clap" if rng.randf() < 0.75 else "idle"
 	people.append({"x": x, "feet": feet, "v": v, "role": role, "back": back,
 		"off": BEAT1 + 0.55 + (x / 640.0) * 0.35 + rng.randf() * 0.25, "rate": rng.randf_range(0.85, 1.2),
-		"h": rng.randf_range(7.0, 12.0), "threw": false})
+		"h": rng.randf_range(2.0, 4.0), "threw": false})
 
 func _process(delta: float) -> void:
 	t += delta
@@ -453,7 +453,7 @@ func _draw_wall_screen(p: Vector2) -> void:
 	draw_rect(Rect2(box.position + Vector2(-1, box.size.y), Vector2(box.size.x + 2, 1)), Color("1d5a80"))
 	# the count
 	var cx: float = p.x + 214
-	var col: Color = UI.GREEN if full else UI.ORANGE
+	var col: Color = UI.GOOD if full else UI.RISK
 	Pix.title_c(self, cx, p.y + 58, "%d/%d" % [counted, goal], col, 3)
 	Pix.text_c(self, cx, p.y + 78, noun, 20, UI.TEXT)
 	if u >= 0.6 and (full or int(t * 3.0) % 3 != 0):
@@ -503,7 +503,7 @@ func _person(p: Dictionary, o: Vector2, mod: Color) -> void:
 				"idle":
 					f = 0 if int(w / 0.5) % 2 == 0 else 5
 	var pos: Vector2 = (o + Vector2(float(p["x"]) - CW / 2.0 + sway, float(p["feet"]) - CH - lift_px)).floor()
-	if lift_px >= 3.0 and not bool(p["back"]):   # the shadow stays on the floor while they are airborne
+	if lift_px >= 2.0 and not bool(p["back"]):   # the shadow stays on the floor while they are airborne
 		draw_rect(Rect2((o + Vector2(float(p["x"]) - 4.0, float(p["feet"]) - 1.0)).floor(), Vector2(9, 1)), Color(0, 0, 0, 0.35))
 	_sprite(int(p["v"]), f, pos, flip, mod)
 
@@ -543,7 +543,7 @@ func _draw_cabin() -> void:
 		draw_texture_rect_region(tex_space, Rect2(0, 0, 318, 360), Rect2(0, 0, 318, 360))
 	Pix.stars(self, t, Vector2(318, 360), 50, 21)
 	if tex_planet != null:   # the world falls away below
-		Pix.sprite(self, tex_planet, Vector2(36, floorf(262 + (t - BEAT1) * 4.0)))
+		Pix.sprite(self, tex_planet, Vector2(36, 262))
 	var cy: float = 60.0
 	if tex_capsule != null:
 		draw_texture(tex_capsule, Vector2(0, cy))
@@ -563,8 +563,11 @@ func _draw_cabin() -> void:
 			else:
 				f = 3 if int(w / 0.25) % 2 == 0 else 6
 				flip = not a and f == 6
-		var bob: float = roundf(2.0 * sin(t * 1.6 + (0.0 if a else 1.7)))
-		var x: float = float(p["x"]) if f == 7 or f == 0 else float(p["x"]) + (-10.0 if a else 10.0)
+		var hop: float = 0.0   # standing on the surface: one tiny low-gravity hop per cheer (Moon 1/6 g, a little higher than Mars 3/8 g)
+		if f == 3:
+			hop = absf(sin(u * float(p["rate"]) * 3.0)) * (2.0 if Game.dest_id == "moon" else 1.0)
+		var bob: float = -roundf(hop)
+		var x: float = float(p["x"]) if f == 7 or f == 0 else float(p["x"]) + (-3.0 if a else 3.0)
 		_sprite(int(p["v"]), f, Vector2(floorf(x - CW / 2.0), cy + 128.0 + bob), flip, Color.WHITE)
 
 func _lower_third() -> void:
