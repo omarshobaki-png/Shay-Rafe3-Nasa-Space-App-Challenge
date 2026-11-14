@@ -14,8 +14,8 @@ drilling; budgets retuned. Roadmap #2 (hints by difficulty) is done by this.
 Merge fixes (kept both sides): the stored storm in `event_by_id()` plus v7's `_bite_event()`; landing
 damage levels plus the legs-up crash; the drone throttle multiplied by `drain`; the comms downlink after
 v7's partial-result rule; `surface._finish()` driver-only.
-Checked headless: BALANCE OK, 9 screens x Moon/Mars/Saturn with no script errors. Not checked: online
-play after the merge, a full mission by hand, the web build in a browser. `docs/play/`, the website
+Checked headless: BALANCE OK, 9 screens x Moon/Mars/Saturn, the 66-boot smoke test (`server/test-v5.js smoke`) and both two-client online missions (Mars landing, Saturn drone: identical runs, role locks, requests, signatures, remote events) all pass. Not checked: online
+play on 2 real computers, a full mission by hand, the web build in a browser. `docs/play/`, the website
 screenshots, README screenshots and both PDFs are refreshed for v7 (29 parts, 20 events).
 
 ## v6 is merged (14 Nov, morning)
