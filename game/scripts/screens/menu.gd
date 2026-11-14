@@ -60,8 +60,23 @@ var sparks: Array = []   # {pos, age, dur, tint}
 var shake: Dictionary = {}  # tile id -> time of a denied click
 var bought: Dictionary = {}  # tile id -> time of the purchase
 
+# multiplayer lobby (decision D7; the network is scripts/net.gd)
+var name_text: String = ""
+var code_text: String = ""
+var field: String = "code"      # the text field that takes the keys
+var connecting: bool = false
+var lobby_dest: String = "moon" # host: where the mission goes
+
+
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
+	name_text = Game.player_name
+	Net.connected.connect(_on_connected)
+	Net.started.connect(_on_started)
+	Net.received.connect(_on_lobby_message)
+	Net.lobby_changed.connect(_on_lobby_changed)
+	if Game.net_error != "":
+		call_deferred("_open", "multi")
 	if Data.DEST.has(Game.dest_id):
 		sel = Game.dest_id
 	for n: String in ["logo", "card", "plate", "tile", "tile_owned", "medal_gold", "medal_silver", "medal_bronze",
@@ -133,6 +148,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	var k: InputEventKey = event as InputEventKey
 	if k == null or not k.pressed or k.echo:
 		return
+	if overlay == "multi" and not Net.is_online() and not connecting and k.keycode != KEY_ESCAPE:
+		_type(k)
+		return
 	match k.keycode:
 		KEY_ESCAPE:
 			_close()
@@ -178,7 +196,7 @@ func _activate(id: String) -> void:
 	elif id.begins_with("pl:"):
 		Audio.play("ui_tab")
 		Game.players = int(id.substr(3))
-	elif id == "tech" or id == "help" or id == "src":
+	elif id == "tech" or id == "help" or id == "src" or id == "multi":
 		_open(id)
 	elif id == "o:close":
 		_close()
@@ -186,8 +204,12 @@ func _activate(id: String) -> void:
 		_buy(id.substr(6))
 	elif id == "o:reset":
 		_reset()
+	elif id.begins_with("o:"):
+		_lobby_action(id.substr(2))
 
 func _pick(id: String) -> void:
+	if Net.is_online() and not Net.is_host():
+		return
 	if id != sel:
 		Audio.play("ui_tab")
 		sel_t = 0.0
@@ -195,12 +217,16 @@ func _pick(id: String) -> void:
 		task_picked = false
 		_load_tasks()
 	picked = true
+	_sync_choice()
 
 func _pick_task(i: int) -> void:
+	if Net.is_online() and not Net.is_host():
+		return
 	if i != task_i:
 		Audio.play("ui_tab")
 	task_i = i
 	task_picked = true
+	_sync_choice()
 
 ## The three tasks of `sel` from the core (Game.tasks() reads Game.dest_id). Until the core has tasks,
 ## the three difficulty levels stand in, so the menu never breaks.
@@ -216,6 +242,9 @@ func _load_tasks() -> void:
 	task_i = clampi(task_i, 0, tasks.size() - 1)
 
 func _start() -> void:
+	if Net.is_online():
+		_open("multi")
+		return
 	Audio.play("confirm")
 	Audio.play("ignition", -6.0)
 	Game.new_mission(sel)
@@ -513,6 +542,7 @@ func _draw_bar() -> void:
 		_img("ic_helmet" if n + 1 <= Game.players else "ic_helmet_off", Vector2(r.position.x + 3, r.position.y + 4 - lift))
 		if n + 1 == Game.players:
 			draw_rect(Rect2(r.position.x + 3, r.position.y + 20, 14, 2), UI.CYAN)
+	_button(Rect2(270, 332, 84, 24), "multi", "ROOM " + String(Net.lobby().get("code", "")) if Net.is_online() else "MULTIPLAYER", "btn_blue")
 	var shown: int = roundi(shown_funds)
 	Pix.text(self, Vector2(166, 348), "CREDITS", 10, C_DIM)
 	_img("ic_coin", Vector2(212, 336))
@@ -535,7 +565,7 @@ func _draw_overlay() -> void:
 	var pr: Rect2 = _panel_rect()
 	_hit(pr, "o:panel")
 	_nine(pr, "card", FRAME_M)
-	var title: String = {"tech": "TECH LAB", "help": "HOW TO PLAY", "src": "NASA DATA & CREDITS", "brief": "MISSION BRIEFING"}[overlay]
+	var title: String = {"tech": "TECH LAB", "help": "HOW TO PLAY", "src": "NASA DATA & CREDITS", "brief": "MISSION BRIEFING", "multi": "MULTIPLAYER"}[overlay]
 	Pix.title(self, pr.position + Vector2(16, 28), title, C_HI, 2)
 	_button(Rect2(pr.end.x - 38, pr.position.y + 8, 28, 24), "o:close", "", "btn_red", "ic_close")
 	draw_rect(Rect2(pr.position.x + 10, pr.position.y + 38, pr.size.x - 20, 1), Color("2a3558"))
@@ -548,6 +578,11 @@ func _draw_overlay() -> void:
 			_draw_sources(pr)
 		"brief":
 			_draw_brief(pr)
+		"multi":
+			if Net.is_online():
+				_draw_lobby(pr)
+			else:
+				_draw_join(pr)
 
 ## What will end the mission here, in plain words, from the destination's hazards, air and kind (at most 3).
 func _enders(id: String) -> Array[String]:
@@ -775,3 +810,241 @@ func debug_go() -> void:
 func debug_owned() -> void:
 	Game.tech["solar2"] = true
 	Game.tech["ka"] = true
+
+func _type(k: InputEventKey) -> void:
+	if k.keycode == KEY_BACKSPACE:
+		if field == "code":
+			code_text = code_text.left(-1)
+		else:
+			name_text = name_text.left(-1)
+	elif k.keycode == KEY_TAB:
+		field = "name" if field == "code" else "code"
+	elif k.keycode == KEY_ENTER or k.keycode == KEY_KP_ENTER:
+		if field == "code":
+			_activate("o:join")
+		else:
+			field = "code"
+	elif k.unicode > 0 and not k.echo:
+		var ch: String = String.chr(k.unicode).to_upper()
+		if field == "code":
+			if ch >= "A" and ch <= "Z" and code_text.length() < 4:
+				code_text += ch
+		elif ((ch >= "A" and ch <= "Z") or (ch >= "0" and ch <= "9") or ch == " ") and name_text.length() < 12:
+			name_text += ch
+
+func _me() -> Dictionary:
+	for p: Variant in Net.lobby().get("players", []):
+		var pd: Dictionary = p
+		if int(pd.get("id", -1)) == Net.my_id():
+			return pd
+	return {}
+
+func _all_ready() -> bool:
+	var players: Array = Net.lobby().get("players", [])
+	for p: Variant in players:
+		if not bool((p as Dictionary).get("ready", false)):
+			return false
+	return not players.is_empty()
+
+func _lobby_action(a: String) -> void:
+	if a == "field:name" or a == "field:code":
+		field = a.substr(6)
+		Audio.play("ui_tab")
+	elif a == "host" and not connecting:
+		_connect("")
+	elif a == "join" and not connecting:
+		if code_text.length() != 4:
+			Audio.play("ui_deny")
+			Game.net_error = "TYPE 4 LETTERS"
+			return
+		_connect(code_text)
+	elif a.begins_with("role:"):
+		var role: String = a.substr(5)
+		var holder: String = Game.holder(role)
+		if Net.owns(role):
+			Net.drop_role(role)
+			Audio.play("ui_close")
+		elif holder == "":
+			Net.pick_role(role)   # only a free role: the server drops a player who picks a taken one
+			Audio.play("confirm", -3.0)
+		else:
+			Audio.play("ui_deny")
+	elif a == "ready":
+		Net.set_ready(not bool(_me().get("ready", false)))
+		Audio.play("ui_tab")
+	elif a.begins_with("dest:"):
+		_pick(a.substr(5))
+	elif a == "choose":
+		_close()
+	elif a == "start":
+		if Net.is_host() and _all_ready():
+			Audio.play("confirm")
+			Net.start()
+		else:
+			Audio.play("ui_deny")
+	elif a == "leave":
+		Net.leave()
+		connecting = false
+		Audio.play("ui_close")
+
+func _connect(code: String) -> void:
+	Game.player_name = name_text.strip_edges() if name_text.strip_edges() != "" else "PLAYER"
+	Game.net_error = ""
+	connecting = true
+	Audio.play("confirm", -3.0)
+	if code == "":
+		Net.host(Game.player_name)
+	else:
+		Net.join(code, Game.player_name)
+
+func _on_connected() -> void:
+	connecting = false
+	_open("multi")
+	_sync_choice()
+
+## Every player hears this; the host takes everyone to the builder for the chosen destination.
+
+func _on_started() -> void:
+	if Net.is_host():
+		var selected_task: int = task_i
+		Game.new_mission(sel)
+		Game.set_task(selected_task)
+		Game.host_goto("builder")
+
+## The server's reasons, in plain words.
+
+static func _plain(reason: String) -> String:
+	match reason:
+		"ROOM NOT FOUND":
+			return "No room has that code. Check the 4 letters with your host."
+		"ROOM FULL":
+			return "That room already has 4 players."
+		"ROOM STARTED":
+			return "That mission has already started. Ask the host for a new room."
+		"HOST LEFT":
+			return "The host left, so the room closed."
+		"TIMEOUT", "CONNECTION FAILED":
+			return "Could not reach the game server. Check your internet and try again."
+		"CONNECTION CLOSED", "connection lost":
+			return "The connection to the server was lost."
+		"ROLE TAKEN":
+			return "Someone else took that role first."
+		"SERVER FULL":
+			return "The server is full. Try again later."
+		"TYPE 4 LETTERS":
+			return "Type the 4-letter room code first."
+	return "Connection problem: %s." % reason.to_lower()
+
+func _field(r: Rect2, id: String, label: String, text: String, hint: String) -> void:
+	_hit(r, "o:field:" + id)
+	var on: bool = field == id and not connecting
+	Pix.text(self, r.position + Vector2(0, -4), label, 10, UI.CYAN)
+	draw_rect(r, Color("05070d"))
+	draw_rect(r, UI.YELLOW if on else Color("3a4a7a"), false, 1.0)
+	var shown: String = text if text != "" else hint
+	Pix.text(self, r.position + Vector2(7, 15), shown, 10, UI.TEXT if text != "" else Color("56608a"))
+	if on and fposmod(t, 1.0) < 0.55:
+		draw_rect(Rect2(r.position.x + 8 + (Pix.text_w(text, 10) if text != "" else 0.0), r.position.y + 5, 1, 12), UI.YELLOW)
+
+## Not in a room yet: a name, HOST, or a code and JOIN.
+
+func _draw_join(pr: Rect2) -> void:
+	var x: float = pr.position.x + 16.0
+	_para(Vector2(x, pr.position.y + 56), "1 to 4 players, each on their own computer. Each player takes a role: Planner, Engineer, Scientist or Comms. One player hosts and gets a 4-letter code; the others join with it.", 528.0, UI.DIM, 3)
+	_field(Rect2(x, pr.position.y + 108, 200, 22), "name", "YOUR NAME", name_text, "TYPE YOUR NAME")
+	if connecting:
+		Pix.text(self, Vector2(x, pr.position.y + 170), "CONNECTING" + ".".repeat(int(t * 3.0) % 4), 10, UI.YELLOW)
+		_button(Rect2(x, pr.position.y + 186, 120, 24), "o:leave", "CANCEL", "btn_grey")
+	else:
+		Pix.text(self, Vector2(x, pr.position.y + 158), "START A NEW ROOM", 10, UI.CYAN)
+		_button(Rect2(x, pr.position.y + 164, 200, 24), "o:host", "HOST A ROOM", "btn_green", "ic_play")
+		var jx: float = pr.position.x + 300.0
+		_field(Rect2(jx, pr.position.y + 108, 90, 22), "code", "ROOM CODE", code_text, "ABCD")
+		Pix.text(self, Vector2(jx, pr.position.y + 158), "JOIN A FRIEND'S ROOM", 10, UI.CYAN)
+		_button(Rect2(jx, pr.position.y + 164, 200, 24), "o:join", "JOIN ROOM", "btn_blue", "ic_helmet", code_text.length() == 4)
+	if Game.net_error != "":
+		_img("ic_close", Vector2(x, pr.position.y + 214))
+		_para(Vector2(x + 18, pr.position.y + 225), _plain(Game.net_error), 500.0, UI.RED, 2)
+	Pix.text(self, pr.position + Vector2(16, 300), "Type with the keyboard. TAB switches fields, ENTER joins. Solo play needs no network.", 10, Color("56608a"))
+
+func _role_rect(i: int, pr: Rect2) -> Rect2:
+	return Rect2(pr.position.x + 10 + i * 136, pr.position.y + 66, 130, 96)
+
+## In a room: the 4 role slots, the players and READY, the host's destination and START, LEAVE.
+
+func _draw_lobby(pr: Rect2) -> void:
+	var lob: Dictionary = Net.lobby()
+	var code: String = String(lob.get("code", "----"))
+	Pix.text(self, Vector2(pr.end.x - 190, pr.position.y + 20), "ROOM CODE", 10, UI.DIM)
+	Pix.title(self, Vector2(pr.end.x - 120, pr.position.y + 30), code, UI.YELLOW, 2)
+	Pix.text(self, pr.position + Vector2(16, 56), "Click a role to take it, click it again to drop it. Free roles go to the host.", 10, UI.DIM)
+	for i: int in Data.ROLES.size():
+		var role: Dictionary = Data.ROLES[i]
+		var id: String = role["id"]
+		var r: Rect2 = _role_rect(i, pr)
+		var col: Color = role["color"]
+		var mine: bool = Net.owns(id)
+		var who: String = Game.holder(id)
+		_hit(r, "o:role:" + id)
+		_nine(r, "tile_owned" if mine else "tile", TILE_M, Color(1.15, 1.15, 1.15) if hot == "o:role:" + id else Color.WHITE)
+		draw_rect(Rect2(r.position.x + 5, r.position.y + 5, r.size.x - 10, 3), col)
+		Pix.text(self, r.position + Vector2(8, 22), String(role["name"]), 10, col)
+		_para(r.position + Vector2(8, 36), String(role["job"]), r.size.x - 16.0, UI.DIM, 3)
+		var tag: String = "YOU" if mine else (who.substr(0, 14) if who != "" else "FREE")
+		Pix.text(self, Vector2(r.position.x + 8, r.end.y - 18), tag, 10, UI.GREEN if mine else (UI.TEXT if who != "" else Color("56608a")))
+		Pix.text(self, Vector2(r.position.x + 8, r.end.y - 7), "CLICK TO DROP" if mine else ("CLICK TO TAKE" if who == "" else "TAKEN"), 10, Color("56608a"))
+	# players and READY
+	var y: float = pr.position.y + 176.0
+	Pix.text(self, Vector2(pr.position.x + 16, y), "PLAYERS", 10, UI.CYAN)
+	var players: Array = lob.get("players", [])
+	for k: int in players.size():
+		var p: Dictionary = players[k]
+		var py: float = y + 14.0 + k * 13.0
+		var rdy: bool = bool(p.get("ready", false))
+		_img("ic_tick" if rdy else "ic_dash", Vector2(pr.position.x + 14, py - 10))
+		var nm: String = String(p.get("name", "PLAYER")).substr(0, 14) + (" (HOST)" if bool(p.get("host", false)) else "") + (" - YOU" if int(p.get("id", -1)) == Net.my_id() else "")
+		Pix.text(self, Vector2(pr.position.x + 32, py), nm, 10, UI.TEXT)
+		var rx: float = pr.position.x + 200.0
+		for rid: Variant in p.get("roles", []):
+			draw_rect(Rect2(rx, py - 8, 9, 9), Game.role_color(String(rid)))
+			rx += 12.0
+		Pix.text(self, Vector2(pr.position.x + 256, py), "READY" if rdy else "NOT READY", 10, UI.GREEN if rdy else UI.DIM)
+	var me_ready: bool = bool(_me().get("ready", false))
+	_button(Rect2(pr.position.x + 16, pr.end.y - 64, 130, 24), "o:ready", "I'M READY" if not me_ready else "NOT READY", "btn_green" if not me_ready else "btn_grey", "ic_tick" if not me_ready else "")
+	_button(Rect2(pr.position.x + 16, pr.end.y - 34, 130, 24), "o:leave", "LEAVE ROOM", "btn_red")
+	# Destination and task are the v5 pickers beneath this lobby.
+	var dx: float = pr.position.x + 350.0
+	Pix.text(self, Vector2(dx, y), String(Data.DEST[sel]["name"]), 10, UI.CYAN)
+	_para(Vector2(dx, y + 14), String(tasks[task_i]["name"]), 190.0, UI.TEXT, 2)
+	if Net.is_host():
+		_button(Rect2(dx, pr.end.y - 88, 182, 24), "o:choose", "CHOOSE MISSION", "btn_blue")
+		_button(Rect2(dx, pr.end.y - 58, 182, 24), "o:start", "START MISSION", "btn_green", "ic_play", _all_ready())
+		Pix.text(self, Vector2(dx, pr.end.y - 12), "Everyone must be READY.", 10, UI.DIM)
+	else:
+		_para(Vector2(dx, pr.end.y - 58), "The host picks the task and starts when everyone is READY.", 190.0, UI.DIM, 3)
+	if Game.net_error != "":
+		_para(Vector2(pr.position.x + 160, pr.end.y - 46), _plain(Game.net_error), 190.0, UI.RED, 3)
+
+func _sync_choice() -> void:
+	if Net.is_online() and Net.is_host():
+		lobby_dest = sel
+		Net.send("mission", {"dest": sel, "task": task_i})
+
+func _on_lobby_changed(_lobby: Dictionary) -> void:
+	_sync_choice()
+
+func _on_lobby_message(kind: String, d: Dictionary, from_id: int) -> void:
+	if kind != "mission" or Net.is_host():
+		return
+	var from_host: bool = false
+	for player: Dictionary in Net.lobby().get("players", []):
+		if int(player.get("id", -1)) == from_id:
+			from_host = bool(player.get("host", false))
+	if not from_host or not Data.DEST.has(String(d.get("dest", ""))):
+		return
+	sel = String(d["dest"])
+	lobby_dest = sel
+	_load_tasks()
+	task_i = clampi(int(d.get("task", 0)), 0, tasks.size() - 1)
+	picked = true
+	task_picked = true

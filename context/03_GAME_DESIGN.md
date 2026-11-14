@@ -132,6 +132,13 @@ reasons are in [`00_TEAM_NOTES.md` §9](00_TEAM_NOTES.md#9-conflicts-resolved).
     touching down with them up is a crash; drone throttle ECO/NORMAL/BOOST (`DRONE_THROTTLE`); the
     downlink pick after docking (`DRONE_DOWNLINK`: 6 units, 20 s, 2 credits per point); team sync
     weights (`TEAM_SYNC`). Online, undo/redo/auto-build are off.
+  - **Re-ported onto v5 (14 Nov).** Landing jobs now run for every `kind "land"` destination
+    (parachute job where `air == "thin"`; Venus has no engine job), drone jobs for every `kind "ring"`
+    destination; the host picks the destination and task in the lobby. **Two more mappings v5 needed,
+    waiting for team approval:** (1) decision events: online, only the player holding the card's
+    `role` chooses; the others see "<ROLE> IS DECIDING", and the host resolves and sends the result to
+    everyone; (2) the new launch screen is flown by the host and watched by the others (like cruise
+    and surface). `DRONE_DOWNLINK.max_samples` (8) is the old manifest cap, now in `data.gd`.
 - **D5 Efficiency rating:** a separate score for resource use, reported next to the success score.
   Proposed formula: for each of budget, mass and power, full marks when 10–35% of the allotment is left
   at launch, falling off toward 0% (no margin) and toward 60%+ (waste). Average the three.

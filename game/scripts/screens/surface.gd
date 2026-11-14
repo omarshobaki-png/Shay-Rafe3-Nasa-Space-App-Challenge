@@ -40,6 +40,10 @@ const SKIN: Dictionary = {
 		"light": "ffffff", "accent": "8a5a3c", "body": [0.16, 0.08, 0.06, 0.85], "noun": "ROCK", "clouds": true, "devils": true, "moonlet": true},
 }
 
+var driver: bool = true
+var send_t: float = 0.0
+const MP_FIELDS: Array[String] = ["t", "state", "end_t", "banner", "rx", "ry", "vy", "on_ground", "face", "moving", "wheel_k", "drilling", "drill_target", "got", "data", "battery", "gen_now", "draw_now", "hour", "minutes", "fired", "hazard_hit", "low_warned", "confirm_t", "got_t", "land_t", "land_x", "samples"]
+
 var t: float = 0.0
 var state: String = "explore"
 var end_t: float = 0.0
@@ -140,6 +144,9 @@ var floor_mat: ShaderMaterial = null
 var front: Control = null
 
 func _ready() -> void:
+	driver = Net.is_host()
+	if Net.is_online():
+		Net.received.connect(_on_net)
 	d = Game.dest()
 	skin = String(d["skin"])
 	sk = SKIN.get(skin, SKIN["moon"])
@@ -288,7 +295,7 @@ func _ready() -> void:
 	front.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	front.draw.connect(_draw_front)
 	add_child(front)
-	if DisplayServer.is_touchscreen_available():
+	if driver and DisplayServer.is_touchscreen_available():
 		_hold_buttons()
 
 func _exit_tree() -> void:
@@ -334,6 +341,8 @@ func _pressed(key: Key, act: String, h: String) -> bool:
 	return hold.has(h) or Input.is_physical_key_pressed(key) or (act != "" and Input.is_action_pressed(act))
 
 func _input(event: InputEvent) -> void:
+	if not driver:
+		return
 	if EventCard.is_open():
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -378,6 +387,8 @@ func _low() -> bool:
 	return battery / wh < 0.2 and gen_now < draw_now
 
 func _use() -> void:
+	if not driver:
+		return
 	if state != "explore" or drilling > 0.0 or EventCard.is_open():
 		return
 	if _at_lander():
@@ -405,6 +416,8 @@ func _pop(x: float, y: float, s: String) -> void:
 	pops.append({"x": x, "y": y, "age": 0.0, "s": s, "spark": false})
 
 func _finish(text: String) -> void:
+	if not driver:
+		return
 	if state != "explore":
 		return
 	state = "done"
@@ -421,6 +434,10 @@ func _life_left() -> float:
 	return life_min - minutes - float(Game.run.get("minutes_lost", 0.0))
 
 func _physics_process(delta: float) -> void:
+	if not driver:
+		_particles(delta)
+		return
+	_send_state(delta)
 	if auto:
 		_auto_step()
 	if EventCard.is_open():
@@ -436,10 +453,10 @@ func _physics_process(delta: float) -> void:
 			Game.surface_result(got, battery, data)
 			if bool(Game.run.get("dead", false)):
 				Game.finish()
-				Game.goto("report")
+				Game.flow("report")
 				return
 			Game.run["mode"] = "home"
-			Game.goto("flight")
+			Game.flow("flight")
 		return
 	if hold.has("e"):
 		hold.erase("e")
@@ -550,6 +567,8 @@ func _maybe_event() -> void:
 		_open_event(ev)
 
 func _open_event(ev: Dictionary) -> void:
+	if not driver:
+		return
 	Game.run["battery"] = battery
 	Game.run["data"] = data
 	Game.run["samples"] = got
@@ -1018,6 +1037,9 @@ func _direction() -> Array:
 	return [">" if dir > 0.0 else "<", "HOLD %s TO DRIVE TO THE GLOWING %s" % [side, noun]]
 
 func _draw_hud(night: float) -> void:
+	if not driver:
+		Pix.panel(front, Rect2(145, 334, 350, 20), UI.YELLOW, pan_body)
+		Pix.text_c(front, 320, 348, "THE HOST IS DRIVING. YOU ARE WATCHING.", 10, UI.YELLOW)
 	var pct: float = battery / wh
 	var dim_c: Color = UI.DIM
 	# left: battery, samples and data, gravity
@@ -1257,3 +1279,40 @@ func debug_outcome() -> void:
 	debug_crater()
 	card_ev = Game.event_by_id("stuck_wheel")
 	_after_event({"ok": false, "chips": [["battery", "-40% battery", true]], "applied": {}})
+
+# ---------------------------------------------------------------- multiplayer (D7)
+func _send_state(delta: float) -> void:
+	if not Net.is_online() or not driver:
+		return
+	send_t -= delta
+	if send_t > 0.0:
+		return
+	send_t = 1.0 / float(Data.NET_RATES["state_hz"])
+	var snapshot: Dictionary = {"screen": "surface", "run": Game.run}
+	for key: String in MP_FIELDS:
+		snapshot[key] = get(key)
+	Net.send("state", snapshot)
+
+func _on_net(kind: String, snapshot: Dictionary, from_id: int) -> void:
+	if driver or kind != "state" or String(snapshot.get("screen", "")) != "surface":
+		return
+	var host_sender: bool = false
+	for player: Dictionary in Net.lobby().get("players", []):
+		if int(player.get("id", -1)) == from_id and bool(player.get("host", false)):
+			host_sender = true
+	if not host_sender:
+		return
+	if snapshot.get("run") is Dictionary:
+		Game.run = snapshot["run"]
+	for key: String in MP_FIELDS:
+		if snapshot.has(key):
+			set(key, snapshot[key])
+	_reload()
+	Audio.loop("drill", drilling > 0.0 and not EventCard.is_open(), -12.0)
+	Audio.loop("rover_loop", moving and on_ground and not EventCard.is_open(), -10.0)
+	queue_redraw()
+
+## Opening a remote event must not overwrite the authoritative resource snapshot.
+func mp_open_event(ev: Dictionary) -> void:
+	card_ev = ev
+	card = EventCard.open(self, ev, _after_event)

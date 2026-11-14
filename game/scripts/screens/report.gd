@@ -528,13 +528,15 @@ func _activate(id: String) -> void:
 		"next":
 			_flip(1)
 		"again":
+			if Net.is_online() and not Net.is_host():
+				return
 			Game.signed = {}
-			Game.goto("builder")
+			Game.flow("builder")
 		"menu":
-			Game.goto("menu")
+			Game.leave_room()
 		"tech":
 			MenuScript.open_tech_next = true
-			Game.goto("menu")
+			Game.leave_room()
 
 # ---------------------------------------------------------------- drawing helpers
 
@@ -854,6 +856,8 @@ func _draw_overview() -> void:
 	# the four scores
 	var pr: Rect2 = Rect2(322, PAGE_Y, 310, PAGE_H)
 	_head(pr, "THE FOUR SCORES")
+	if Net.is_online() and Game.run.has("team_sync"):
+		Pix.text(self, Vector2(pr.end.x - 115, pr.position.y + 14), "TEAM SYNC %d" % int(Game.run["team_sync"]), 10, UI.CYAN)
 	var gk: float = clampf((t - maxf(_tl("roles"), page_t0)) / 0.9, 0.0, 1.0)
 	var pitch: float = 45.0 if grade != "" else 51.0
 	for i: int in score_rows.size():

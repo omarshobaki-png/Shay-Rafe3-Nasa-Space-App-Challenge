@@ -700,7 +700,7 @@ func phase_arrive() -> void:
 ## Called before the landing minigame. Returns the start state for it:
 ## g, alt, vy, vx, drag, prop, mass, touch, air ("none" | "thin" | "thick") and vterm
 ## (m/s: in thick air the lander cannot fall faster than this and needs no engine; 0 elsewhere).
-func landing_setup() -> Dictionary:
+func landing_setup(manual_chute: bool = false) -> Dictionary:
 	run["phase_now"] = "landing"
 	var d: Dictionary = dest()
 	var air: String = d["air"]
@@ -715,7 +715,11 @@ func landing_setup() -> Dictionary:
 	elif not id_has("heatshield"):
 		fail("BURNED UP at %s. Even behind a shield, entry heats a lander to about 1,300 C. Without one it burns." % place().capitalize())
 	elif air == "thin":
-		if id_has("chute"):
+		if id_has("chute") and manual_chute:
+			var jobs: Dictionary = Data.LANDING_JOBS
+			note(true, "Entry: heat shield OK. The Scientist must open the packed parachute.")
+			s = {"g": float(d["gravity"]), "alt": float(jobs["mars_alt"]), "vy": float(jobs["mars_vy"]), "vx": float(jobs["mars_vx"]), "drag": 0.0}
+		elif id_has("chute"):
 			note(true, "Entry: heat shield OK, parachute opened (420 m/s to 85 m/s). Powered descent begins.")
 			s = {"g": float(d["gravity"]), "alt": 1500.0, "vy": 85.0, "vx": 6.0, "drag": 0.0}
 		else:
@@ -746,7 +750,9 @@ func landing_result(ok: bool, vy: float, prop_left: float, reason: String = "") 
 	run["mass"] = float(run["mass"]) - used
 	var touch: float = float(run["calc"]["touch"])
 	if not ok:
-		if prop_left <= 0.5 and dest()["air"] != "thick":
+		if reason != "":
+			fail("CRASH at %.1f m/s. %s" % [vy, reason])
+		elif prop_left <= 0.5 and dest()["air"] != "thick":
 			fail("CRASH at %.1f m/s. Out of fuel before touchdown: bring more propellant." % vy)
 		else:
 			fail("CRASH at %.1f m/s. The %s can survive only %.0f m/s." % [vy, "landing gear" if touch > 1.0 else "bare frame", touch])
@@ -1317,6 +1323,10 @@ func finish() -> void:
 	for e: Dictionary in decs:
 		if bool(e["good"]):
 			reward += 5
+	if multi():
+		if run.has("site"):
+			reward = roundi(reward * float(Data.LANDING_SITES[int(run["site"])]["credit_mult"]))
+		reward += int(run.get("downlink_pts", 0)) * int(Data.DRONE_DOWNLINK["credits_per_pt"])
 	run["reward"] = reward
 	funds += reward
 	missions_flown += 1
@@ -1327,6 +1337,9 @@ func finish() -> void:
 	roles["science"] = roundi(100.0 * s_frac)
 	roles["comms"] = roundi(100.0 * float(run["sent"]) / float(run["data"])) if float(run["data"]) > 0.0 else 0
 	run["roles"] = roles
+	if Net.is_online():
+		run["team_sync"] = team_sync()
+		run["team"] = team.duplicate(true)
 	# letter grade: only a mission that met every goal of its task gets one
 	var grade: String = ""
 	var grade_text: String = "No letter: a mission goal was missed."
@@ -1441,6 +1454,12 @@ func sender_owns(from_id: int, role: String) -> bool:
 			return (pd.get("roles", []) as Array).has(role)
 	return false
 
+func sender_is_host(from_id: int) -> bool:
+	for player: Dictionary in Net.lobby().get("players", []):
+		if int(player.get("id", -1)) == from_id:
+			return bool(player.get("host", false))
+	return false
+
 ## Name of whoever holds a role ("" offline or when nobody does).
 func holder(role: String) -> String:
 	for p: Variant in Net.lobby().get("players", []):
@@ -1516,7 +1535,7 @@ func flow(screen: String) -> void:
 ## Host: sends the run, then the screen change (destination, build, cruise seed), then goes there itself.
 func host_goto(screen: String, seed_n: int = 0) -> void:
 	Net.send("run", {"run": run})
-	Net.send("goto", {"screen": screen, "dest": dest_id, "build": snap(), "seed": seed_n})
+	Net.send("goto", {"screen": screen, "dest": dest_id, "task": task_idx, "build": snap(), "seed": seed_n})
 	goto(screen)
 
 ## Host and offline: starts the flight. Online every player flies the same cruise from the same seed.
@@ -1531,7 +1550,17 @@ func launch() -> void:
 		goto("flight")
 
 func _on_net(kind: String, d: Dictionary, from_id: int) -> void:
+	if kind in ["goto", "run", "build"] and not sender_is_host(from_id):
+		return
 	match kind:
+		"event_open":
+			if not Net.is_host() and sender_is_host(from_id) and main != null:
+				run = d["run"]
+				if main.current.has_method("mp_open_event"):
+					main.current.call("mp_open_event", d["event"])
+				else:
+					var card_script: GDScript = load("res://scripts/event_card.gd")
+					card_script.open(main.current, d["event"], Callable())
 		"goto":
 			if not Net.is_host():
 				_remote_goto(d)
@@ -1552,21 +1581,17 @@ func _on_net(kind: String, d: Dictionary, from_id: int) -> void:
 
 func _remote_goto(d: Dictionary) -> void:
 	var screen: String = String(d.get("screen", ""))
-	if main == null or not ["builder", "flight", "landing", "surface", "probe", "report"].has(screen):
+	if main == null or not ["builder", "launch", "flight", "landing", "surface", "probe", "report"].has(screen):
 		return
 	var id: String = String(d.get("dest", dest_id))
 	if Data.DEST.has(id) and id != dest_id:
 		new_mission(id)
 	if d.get("build") is Dictionary:
 		apply_snap(d["build"])
+	set_task(int(d.get("task", task_idx)))
 	match screen:
 		"builder":
 			signed = {}
-		"flight":
-			if int(d.get("seed", 0)) != 0:
-				rng.seed = int(d["seed"])
-				start_run()
-				run["mode"] = "out"
 		"report":
 			# the host finished the run: this player earns the same credits
 			funds += int(run.get("reward", 0))

@@ -581,6 +581,7 @@ const DRONE_THROTTLE: Array = [
 ## Saturn downlink online: after docking, the Comms officer picks what to send home within `limit` units.
 ## Each ice sample's kind follows the grain it came from; the orbiter adds two photos.
 const DRONE_DOWNLINK: Dictionary = {
+	"max_samples": 8, # existing D7 manifest cap (ce5c943); src below
 	"limit": 6, "secs": 20.0, "credits_per_pt": 2,
 	"samples": [
 		{"name": "ICE GRAIN", "size": 1, "pts": 1},

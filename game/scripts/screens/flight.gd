@@ -58,6 +58,11 @@ const FLYBYS: Dictionary = {
 	"neptune/fast": [[688.0, "jupiter"]],
 }
 
+# D7: only the host advances the mission; clients render its snapshots.
+var driver: bool = true
+var send_t: float = 0.0
+const MP_FIELDS: Array[String] = ["stage", "st", "t", "did", "hint", "new_t", "shake", "flash_age", "flyby_age", "flyby_name", "react_t", "react_kind", "react_text", "react_bad", "storm_ev", "storm_age", "storm_hit", "storm_speed", "storm_asked", "storm_res", "cruise_t", "lost", "lost_t", "lost_p", "arr", "arr_t", "entry_mode", "cap", "band_w", "dv_done", "dv_max", "m0", "p0", "holding", "armed", "pressed_once", "released_once", "cut_note", "orb_th", "ang", "strain", "entry_t", "orb_rx", "orb_ry", "orb_tilt", "home_t", "dl_t"]
+
 var stage: String = ""
 var st: float = 0.0
 var t: float = 0.0
@@ -172,6 +177,9 @@ func _ring() -> bool:
 	return String(Game.dest()["kind"]) == "ring"
 
 func _ready() -> void:
+	driver = Net.is_host()
+	if Net.is_online():
+		Net.received.connect(_on_net)
 	clip_contents = true
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	var skin: String = _skin()
@@ -226,18 +234,22 @@ func _dead() -> bool:
 func _end() -> void:
 	Audio.loop("thrust", false)
 	Game.finish()
-	Game.goto("report")
+	Game.flow("report")
 
 # ------------------------------------------------------------- input and clock
 
 func _space_held() -> bool:
-	return Input.is_key_pressed(KEY_SPACE) or btn_hold or sim_hold
+	return driver and (Input.is_key_pressed(KEY_SPACE) or btn_hold or sim_hold)
 
 ## Coasting stages: SPACE fast-forwards. Never while the player must act.
 func _coasting() -> bool:
 	return (stage == "cruise" and not lost) or (stage == "home" and not did.has("p"))
 
 func _process(delta: float) -> void:
+	if not driver:
+		queue_redraw()
+		return
+	_send_state(delta)
 	if auto:
 		_auto_card(delta)
 	if help_open or EventCard.is_open():
@@ -269,6 +281,8 @@ func _burn_btn_on() -> bool:
 	return stage == "arrive" and arr in ["burn", "grace", "entry"]
 
 func _gui_input(event: InputEvent) -> void:
+	if not driver:
+		return
 	var mb: InputEventMouseButton = event as InputEventMouseButton
 	if mb == null or mb.button_index != MOUSE_BUTTON_LEFT:
 		return
@@ -414,6 +428,8 @@ func _draw_parts(off: Vector2) -> void:
 # ------------------------------------------------------------- decision events
 
 func _open_card(ev: Dictionary) -> void:
+	if not driver:
+		return
 	card = EventCard.open(self, ev, _after_event)
 	card_age = 0.0
 
@@ -1027,7 +1043,7 @@ func _step_arrive(dt: float) -> void:
 		"orbit":
 			orb_th -= dt * 1.1
 			if arr_t > 2.8:
-				Game.goto("probe" if _ring() else "landing")
+				Game.flow("probe" if _ring() else "landing")
 		"flyby":
 			var e: float = _ecc()
 			var nth: float = orb_th - dt * 0.8
@@ -1046,7 +1062,7 @@ func _step_arrive(dt: float) -> void:
 			_step_entry(dt, held)
 		"entered":
 			if arr_t > 1.8:
-				Game.goto("probe" if _ring() else "landing")
+				Game.flow("probe" if _ring() else "landing")
 		"burnup", "skip":
 			if arr_t > 3.0:
 				_end()
@@ -1506,7 +1522,7 @@ func _text_c(cx: float, y: float, s: String, c: Color) -> void:
 
 ## The one direction, centred at the top, with its key; and the "?" button for the list of controls.
 func _draw_direction() -> void:
-	var dr: Array = _direction()
+	var dr: Array = _direction() if driver else ["", "THE HOST IS FLYING. YOU ARE WATCHING."]
 	var key: String = dr[0]
 	var words: String = dr[1]
 	if words != "":
@@ -1817,3 +1833,47 @@ func debug_autopilot() -> void:
 	auto = true
 	if stage == "home":
 		Game.run["data"] = maxf(float(Game.run["data"]), 2.0)
+
+# ---------------------------------------------------------------- multiplayer (D7)
+func _send_state(delta: float) -> void:
+	if not Net.is_online() or not driver:
+		return
+	send_t -= delta
+	if send_t > 0.0:
+		return
+	send_t = 1.0 / float(Data.NET_RATES["state_hz"])
+	var snapshot: Dictionary = {"screen": "flight", "run": Game.run}
+	for key: String in MP_FIELDS:
+		snapshot[key] = get(key)
+	for key: String in ["fly_p", "fly_v", "orb_c"]:
+		var point: Vector2 = get(key)
+		snapshot[key] = [point.x, point.y]
+	Net.send("state", snapshot)
+
+func _on_net(kind: String, snapshot: Dictionary, from_id: int) -> void:
+	if driver or kind != "state" or String(snapshot.get("screen", "")) != "flight":
+		return
+	var host_sender: bool = false
+	for player: Dictionary in Net.lobby().get("players", []):
+		if int(player.get("id", -1)) == from_id and bool(player.get("host", false)):
+			host_sender = true
+	if not host_sender:
+		return
+	if snapshot.get("run") is Dictionary:
+		Game.run = snapshot["run"]
+	var next_stage: String = String(snapshot.get("stage", stage))
+	if next_stage != stage:
+		_set_stage(next_stage)
+	for key: String in MP_FIELDS:
+		if snapshot.has(key):
+			set(key, snapshot[key])
+	for key: String in ["fly_p", "fly_v", "orb_c"]:
+		if snapshot.get(key) is Array and (snapshot[key] as Array).size() == 2:
+			set(key, Vector2(float(snapshot[key][0]), float(snapshot[key][1])))
+	_update_log(false)
+	queue_redraw()
+
+## EventCard's network dispatcher opens the same card on spectators.
+func mp_open_event(ev: Dictionary) -> void:
+	card = EventCard.open(self, ev, _after_event)
+	card_age = 0.0

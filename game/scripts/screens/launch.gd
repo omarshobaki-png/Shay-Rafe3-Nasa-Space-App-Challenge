@@ -210,6 +210,9 @@ class Ascent extends RefCounted:
 # ------------------------------------------------------------------ state
 
 var a: Ascent = null
+var net_clock: float = 0.0
+const WATCH_FIELDS: Array[String] = ["mode", "in_cam", "count_t", "mode_t", "t", "ev_i", "due_since", "q_red", "q_peak_alt", "meco_alt", "q_seen", "q_seen_alt", "maxq_task", "maxq_missed", "dmg", "doomed", "ship_dv", "flash_msg", "flash_t", "fail_title", "fail_why", "fail_real", "dep_t", "hv", "last_h", "stage_t", "cut_v", "shake", "flash_age", "boom_age", "ign_t"]
+const ASCENT_FIELDS: Array[String] = ["alt", "vx", "vy", "t", "p1", "pb", "p2", "p2_min", "thr", "s1_on", "boost_on", "fair_on", "s2_lit", "s2_wait", "cut", "held", "q", "accel"]
 var lv: Dictionary = {}
 var lv_id: String = ""
 var mode: String = "pad"    # pad, count, fly, coast, cam, deploy, done, fail
@@ -306,6 +309,8 @@ const BTN_HELP: Rect2 = Rect2(614, 6, 20, 17)
 func _ready() -> void:
 	clip_contents = true
 	_setup()
+	if Net.is_online():
+		Net.received.connect(_on_net)
 
 func _f(name: String) -> Texture2D:
 	return Pix.img("flight/" + name)
@@ -442,8 +447,34 @@ func _setup_ship() -> void:
 # ------------------------------------------------------------------ time
 
 func _process(delta: float) -> void:
+	if Net.is_online() and not Net.is_host():
+		queue_redraw()
+		return
 	_tick(delta * speed_mult)
+	if Net.is_online():
+		net_clock += delta
+		if net_clock >= 1.0 / float(Data.NET_RATES["state_hz"]):
+			net_clock = 0.0
+			var fields: Dictionary = {}
+			var ascent: Dictionary = {}
+			for key: String in WATCH_FIELDS:
+				fields[key] = get(key)
+			for key: String in ASCENT_FIELDS:
+				ascent[key] = a.get(key)
+			Net.send("state", {"screen": "launch", "fields": fields, "ascent": ascent, "run": Game.run})
 	queue_redraw()
+
+func _on_net(kind: String, data: Dictionary, from_id: int) -> void:
+	if kind != "state" or data.get("screen", "") != "launch" or Net.is_host() or not Game.sender_is_host(from_id):
+		return
+	for key: String in WATCH_FIELDS:
+		if data["fields"].has(key):
+			set(key, data["fields"][key])
+	for key: String in ASCENT_FIELDS:
+		if data["ascent"].has(key):
+			a.set(key, data["ascent"][key])
+	Game.run = data["run"]
+	_update_log(true)
 
 func _tick(dt: float) -> void:
 	t += dt
@@ -467,7 +498,7 @@ func _tick(dt: float) -> void:
 			if mode_t > 0.6 and not bool(Game.run.get("launched", false)):
 				Game.run["launched"] = true
 				Audio.loop("thrust", false)
-				Game.goto("flight")
+				Game.flow("flight")
 				return
 	if auto:
 		_autopilot()
@@ -643,7 +674,7 @@ func _act() -> void:
 				return
 			Audio.loop("thrust", false)
 			Game.finish()
-			Game.goto("report")
+			Game.flow("report")
 			return
 	if mode != "fly":
 		return
@@ -912,6 +943,8 @@ func _throttle(d: int) -> void:
 	Audio.play("click", -10.0, 1.0 + 0.3 * a.thr)
 
 func _input(event: InputEvent) -> void:
+	if Net.is_online() and not Net.is_host():
+		return
 	if event is InputEventKey and event.pressed:
 		var ke: InputEventKey = event as InputEventKey
 		match ke.keycode:
@@ -932,6 +965,8 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 func _gui_input(event: InputEvent) -> void:
+	if Net.is_online() and not Net.is_host():
+		return
 	if event is InputEventMouseButton and event.pressed and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
 		var p: Vector2 = (event as InputEventMouseButton).position
 		if BTN_HELP.has_point(p):
@@ -1453,7 +1488,7 @@ func _act_label() -> String:
 	return "WAIT"
 
 func _draw_direction() -> void:
-	var d: Array = _direction()
+	var d: Array = _direction() if Net.is_host() else ["", "THE HOST IS FLYING. YOU ARE WATCHING.", false]
 	var key: String = d[0]
 	var txt: String = d[1]
 	var urgent: bool = d[2]
@@ -1471,7 +1506,7 @@ func _draw_direction() -> void:
 	if mode == "deploy" or mode == "done" or mode == "coast":
 		return
 	var lab: String = _act_label()
-	var ready: bool = lab != "WAIT" and not (mode == "fail" and mode_t < 1.2)
+	var ready: bool = Net.is_host() and lab != "WAIT" and not (mode == "fail" and mode_t < 1.2)
 	var go: bool = ready and (mode != "fly" or _due(_next()))
 	Pix.button(self, BTN_ACT, lab, "btn_go" if go else "btn", "normal" if ready else "disabled")
 

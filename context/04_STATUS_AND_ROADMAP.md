@@ -17,13 +17,16 @@ below, V5_DESIGN.md wins (it records the team's 13–14 Nov decisions). What's n
 - report with the 4 score parts, a build report and a letter grade;
 - `tools/dev/balance.gd` checks every task has an all-green ship (prints `BALANCE OK`).
 
-**Multiplayer (roadmap #9) is NOT wired into v5 yet.** v5 was built from v4 in parallel with the
-multiplayer commit (ce5c943). In the merge, v5 won every screen script, so the lobby, shared builder,
-landing/drone jobs and team sync score are gone from the screens. What's still in the repo and
-works: `net.gd` (Net autoload), `server/` (relay), `team_ui.gd`, the multiplayer helpers and state
-in `game.gd` (`multi()`, `job()`, `cpu()`, signing, snapshots, `_on_net`, `team_sync()`), and the MP
-constants in `data.gd`. `mp_test.gd` is stale. The reference for re-porting is
-`git show ce5c943 -- game/scripts/screens/`.
+**Multiplayer (roadmap #9) is wired into v5 again (14 Nov, Codex then Claude).** Lobby with the
+destination and task picked by the host, shared builder (role locks, SIGN, REQUEST, quick chat),
+landing jobs on all land destinations, drone jobs on all ring destinations, role-owned decision
+events, host-flown launch/cruise/surface for the others to watch, team sync on the report.
+`mp_test.gd` is updated. Checked headless: `node server/test-v5.js <godot> smoke` (66 boots, solo
+and `roles=engineer`), `... missions` (two clients complete Mars and Saturn with identical
+`Game.run`), `npm test` in `server/`, and `balance.gd` (BALANCE OK). **Not tested:** two real
+computers, the web build, a deployed relay (`net.gd` DEFAULT_URL points at
+`wss://smd-relay.fly.dev`, which is not deployed yet). Two new mappings need
+team approval (D7 note in `03_GAME_DESIGN.md`).
 
 Checked after the merge (headless only, not played by hand): `balance.gd` prints BALANCE OK, and
 menu/builder/launch/flight/landing/surface/probe/report boot without script errors for moon, mars,

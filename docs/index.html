@@ -1,220 +1,332 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-	<head>
-		<meta charset="utf-8">
-		<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
-		<title>AstroPixel</title>
-		<style>
-html, body, #canvas {
-	margin: 0;
-	padding: 0;
-	border: 0;
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroPixel Mission Designer</title>
+<meta name="description" content="AstroPixel Mission Designer: a free browser game where 1 to 4 players design, launch and fly a whole space mission with real NASA data. Team Shay Rafe3, NASA Space Apps Challenge 2026.">
+<link rel="icon" href="play/index.icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #070a1a; --bg2: #0d1230; --card: #121838; --line: #26305e;
+  --ink: #e8ecff; --mut: #9aa3cc; --gold: #ffd75e; --cyan: #4fd6ff;
+  --green: #6dff8a; --pink: #ff7ad9; --red: #ff6b6b;
 }
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 Inter, system-ui, sans-serif; }
+img { max-width: 100%; display: block; image-rendering: pixelated; }
+a { color: var(--cyan); }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+.px { font-family: Silkscreen, monospace; letter-spacing: .5px; }
 
-body {
-	color: white;
-	background-color: black;
-	overflow: hidden;
-	touch-action: none;
+/* nav */
+nav { position: sticky; top: 0; z-index: 10; background: rgba(7,10,26,.92); backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); }
+nav .wrap { display: flex; align-items: center; gap: 18px; height: 54px; overflow-x: auto; white-space: nowrap; }
+nav .brand { font-family: Silkscreen, monospace; color: var(--gold); text-decoration: none; font-size: 18px; margin-right: auto; }
+nav a.l { color: var(--mut); text-decoration: none; font-size: 14px; }
+nav a.l:hover { color: var(--ink); }
+.btn { display: inline-block; background: var(--green); color: #062010; font-weight: 700; text-decoration: none; padding: 10px 20px; border-radius: 4px; box-shadow: 0 4px 0 #2a9a44; font-family: Silkscreen, monospace; }
+.btn:hover { transform: translateY(1px); box-shadow: 0 3px 0 #2a9a44; }
+.btn.alt { background: transparent; color: var(--ink); border: 2px solid var(--line); box-shadow: none; }
+nav .btn { padding: 6px 14px; font-size: 14px; }
+
+/* hero */
+header.hero { position: relative; overflow: hidden; border-bottom: 1px solid var(--line);
+  background: radial-gradient(ellipse at 70% 0%, #1d2a6b 0%, transparent 60%), var(--bg); }
+.hero .wrap { display: grid; grid-template-columns: 1.05fr 1fr; gap: 40px; align-items: center; padding-top: 56px; padding-bottom: 56px; }
+.hero h1 { font-family: Silkscreen, monospace; font-size: clamp(34px, 5vw, 56px); line-height: 1.05; margin: 0 0 6px; color: var(--gold); text-shadow: 0 4px 0 #6b4a00; }
+.hero .tag { font-size: 20px; margin: 14px 0 22px; }
+.hero .meta { color: var(--mut); font-size: 14px; margin-top: 22px; }
+.hero .cta { display: flex; gap: 12px; flex-wrap: wrap; }
+.shot { border: 3px solid var(--line); border-radius: 6px; background: #000; }
+.hero .shot { box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+
+/* sections */
+section { padding: 64px 0; border-bottom: 1px solid var(--line); }
+section:nth-of-type(even) { background: var(--bg2); }
+.kicker { font-family: Silkscreen, monospace; color: var(--cyan); font-size: 13px; text-transform: uppercase; }
+h2 { font-size: clamp(26px, 3.4vw, 36px); margin: 4px 0 14px; line-height: 1.2; }
+h3 { margin: 0 0 6px; font-size: 18px; }
+p.lead { font-size: 18px; color: var(--mut); max-width: 760px; margin: 0 0 28px; }
+.crit { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 3px; background: #1d2a6b; color: var(--gold); margin-left: 6px; vertical-align: middle; }
+
+.grid { display: grid; gap: 18px; }
+.g2 { grid-template-columns: repeat(2, 1fr); }
+.g3 { grid-template-columns: repeat(3, 1fr); }
+.g4 { grid-template-columns: repeat(4, 1fr); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 20px; }
+.card p { margin: 0; color: var(--mut); font-size: 15px; }
+.card .ico { font-size: 26px; margin-bottom: 6px; }
+.quote { border-left: 4px solid var(--gold); padding: 6px 0 6px 18px; font-size: 17px; color: var(--ink); margin: 0 0 18px; }
+
+/* steps */
+.steps { counter-reset: s; display: grid; gap: 28px; }
+.step { display: grid; grid-template-columns: 1fr 1.25fr; gap: 28px; align-items: center; }
+.step:nth-child(even) .txt { order: 2; }
+.step .txt h3 { font-size: 22px; }
+.step .txt h3::before { counter-increment: s; content: counter(s); display: inline-grid; place-items: center; width: 34px; height: 34px; margin-right: 10px; background: var(--gold); color: #1a1200; font-family: Silkscreen, monospace; border-radius: 4px; }
+.step .txt p { color: var(--mut); margin: 6px 0 0; }
+
+/* tables */
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 14.5px; min-width: 620px; }
+th { text-align: left; background: #18205a; color: var(--gold); font-weight: 600; padding: 10px 12px; }
+td { padding: 9px 12px; border-top: 1px solid var(--line); vertical-align: top; color: var(--ink); }
+td.m { color: var(--mut); }
+tr:hover td { background: rgba(79,214,255,.04); }
+.ok { color: var(--green); font-weight: 700; }
+.part { color: var(--gold); font-weight: 700; }
+code { font-family: Consolas, monospace; font-size: 13px; background: #0a0e26; padding: 1px 5px; border-radius: 3px; color: var(--cyan); }
+.f { font-family: Consolas, monospace; color: var(--gold); font-size: 14px; }
+
+.dl { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; background: var(--card); border: 1px dashed var(--gold); border-radius: 8px; padding: 18px 20px; margin-top: 24px; }
+.dl p { margin: 0; color: var(--mut); flex: 1 1 300px; }
+
+.gallery { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 24px; }
+.gallery figure { margin: 0; }
+.gallery figcaption { font-size: 13px; color: var(--mut); margin-top: 4px; }
+
+footer { padding: 40px 0 60px; color: var(--mut); font-size: 14px; }
+footer h3 { color: var(--ink); }
+ul.clean { margin: 8px 0 0; padding-left: 18px; color: var(--mut); }
+ul.clean li { margin-bottom: 4px; }
+
+.grid > *, .hero .wrap > *, .step > *, .gallery > * { min-width: 0; }
+h1, h2, h3, .kicker { overflow-wrap: anywhere; }
+@media (max-width: 860px) {
+  .hero h1 { font-size: 30px; }
+  section { padding: 44px 0; }
+  .hero .wrap, .step, .g2, .g3, .g4 { grid-template-columns: 1fr; }
+  .step:nth-child(even) .txt { order: 0; }
+  .gallery { grid-template-columns: repeat(2, 1fr); }
+  nav a.l { display: none; }
 }
+</style>
+</head>
+<body>
 
-#canvas {
-	display: block;
-}
+<nav><div class="wrap">
+  <a class="brand" href="#top">ASTROPIXEL</a>
+  <a class="l" href="#challenge">Challenge</a>
+  <a class="l" href="#problem">Problem</a>
+  <a class="l" href="#solution">Solution</a>
+  <a class="l" href="#how">How it plays</a>
+  <a class="l" href="#nasa">NASA data</a>
+  <a class="l" href="#judging">Judging</a>
+  <a class="l" href="#team">Team</a>
+  <a class="btn" href="play/">PLAY</a>
+</div></nav>
 
-#canvas:focus {
-	outline: none;
-}
+<header class="hero" id="top"><div class="wrap">
+  <div>
+    <div class="kicker">NASA Space Apps Challenge 2026 · Space Mission Design Game</div>
+    <h1>AstroPixel<br>Mission Designer</h1>
+    <p class="tag">Design a spacecraft, launch it and fly the whole mission, as a team of up to 4, with real NASA numbers. When it fails, the game tells you <b>why</b>.</p>
+    <div class="cta">
+      <a class="btn" href="play/">▶ PLAY IN YOUR BROWSER</a>
+      <a class="btn alt" href="NASA_Data_In_Game.pdf">NASA DATA (PDF)</a>
+    </div>
+    <p class="meta">Team <b>Shay Rafe3</b> · Ramallah local event · Free, no download, no login · Built with Godot 4.7</p>
+  </div>
+  <img class="shot" src="img/menu.png" alt="AstroPixel main menu: the Solar System as a destination picker">
+</div></header>
 
-#status, #status-splash, #status-progress {
-	position: absolute;
-	left: 0;
-	right: 0;
-}
+<!-- CHALLENGE -->
+<section id="challenge"><div class="wrap">
+  <div class="kicker">The challenge</div>
+  <h2>Space Mission Design Game</h2>
+  <p class="lead">NASA asked for an interactive game where people design, manage and simulate a <b>complete</b> space mission: make engineering decisions, manage limited resources, and see how each choice shapes success or failure.</p>
+  <div class="grid g3">
+    <div class="card"><div class="ico">🎯</div><h3>What it targets</h3><p>Students and aspiring engineers, including people with little prior knowledge. Beginner/Youth and Intermediate levels.</p></div>
+    <div class="card"><div class="ico">🔗</div><h3>What it asks for</h3><p>Objective → requirements → spacecraft → instruments → launcher and orbit → budget, mass, power, comms, data and time → simulate → feedback.</p></div>
+    <div class="card"><div class="ico">👥</div><h3>How</h3><p>Single player or a team of up to 4 with roles, real trade-offs, and feedback that rewards good engineering and efficient use of resources.</p></div>
+  </div>
+  <p style="margin-top:20px"><a href="https://www.spaceappschallenge.org/2026/challenges/space-mission-design-game/">Read the official challenge →</a></p>
+</div></section>
 
-#status, #status-splash {
-	top: 0;
-	bottom: 0;
-}
+<!-- PROBLEM -->
+<section id="problem"><div class="wrap">
+  <div class="kicker">The problem <span class="crit">IMPACT</span></div>
+  <h2>Students learn space one topic at a time</h2>
+  <p class="quote">Orbits in one class, rockets in another, power and radios somewhere else. Students almost never get to run a whole mission from idea to operation, where every choice affects every other one.</p>
+  <div class="grid g3">
+    <div class="card"><h3>Tools are single-topic</h3><p>Existing tools cover orbital mechanics, spacecraft design or rocket launches on their own. They don't show how the parts interact as one system.</p></div>
+    <div class="card"><h3>Failure teaches, but only if you know why</h3><p>A mission can fail because of mass, power, data or one missing part. Without an explanation, failure just feels random.</p></div>
+    <div class="card"><h3>Real missions are teamwork</h3><p>NASA designs missions with whole teams of specialists who must agree. Most learning games are single-player.</p></div>
+  </div>
+</div></section>
 
-#status {
-	background-color: #242424;
-	display: flex;
-	flex-direction: column;
-	justify-content: center;
-	align-items: center;
-	visibility: hidden;
-}
+<!-- SOLUTION -->
+<section id="solution"><div class="wrap">
+  <div class="kicker">Our solution <span class="crit">CREATIVITY</span></div>
+  <h2>One game, the whole mission, a real team</h2>
+  <p class="lead">Pick a world, pick a task, build a ship from real NASA-sourced parts, pass Mission Control's GO / NO-GO, then fly it: launch, cruise, land or orbit, explore, and send the science home. The report explains what worked, what failed and why.</p>
+  <div class="grid g4">
+    <div class="card"><div class="ico">🪐</div><h3>8 worlds, 24 missions</h3><p>Moon, Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune. Each has 3 tasks: Easy, Normal and Hard.</p></div>
+    <div class="card"><div class="ico">🛠️</div><h3>A visual hangar</h3><p>28 parts snap onto the ship. Live gauges for mass, power, fuel, data, comms, budget and time.</p></div>
+    <div class="card"><div class="ico">🧑‍🚀</div><h3>4 roles</h3><p>Planner, Engineer, Scientist and Comms Officer. Online, each player owns their part and must sign off before launch.</p></div>
+    <div class="card"><div class="ico">📋</div><h3>Feedback that teaches</h3><p>Four scores, a letter grade, a flight log of every cause, and the real NASA mission your design is like.</p></div>
+  </div>
+  <h3 style="margin-top:34px">What makes it different</h3>
+  <div class="tbl"><table>
+    <tr><th>Existing</th><th>What it does</th><th>What AstroPixel adds</th></tr>
+    <tr><td>Kerbal Space Program</td><td class="m">Fun rocket building and orbital flight</td><td>Mission-design trade-offs (budget, data, comms, time), real NASA sources for every number, a report on why it failed</td></tr>
+    <tr><td>NASA Webb <i>Build It Yourself</i></td><td class="m">Design one telescope, solo, then compare it with real missions</td><td>8 destinations, landers, rovers and drones, 4-player roles, random events from real missions, and you fly it yourself</td></tr>
+  </table></div>
+</div></section>
 
-#status-splash {
-	max-height: 100%;
-	max-width: 100%;
-	margin: auto;
-}
+<!-- HOW IT PLAYS -->
+<section id="how"><div class="wrap">
+  <div class="kicker">How a mission plays</div>
+  <h2>From idea to science, in 6 steps</h2>
+  <p class="lead">The same flow NASA uses, start from the goal and work backwards to the spacecraft.</p>
+  <div class="steps">
+    <div class="step"><div class="txt"><h3>Choose the goal</h3><p>Click a planet. The card shows what's <b>critical</b> there (fuel, power, time…), the hazards, and 3 tasks. The task sets the difficulty.</p></div><img class="shot" src="img/menu.png" alt="Destination and task picker"></div>
+    <div class="step"><div class="txt"><h3>Build the spacecraft</h3><p>Pick a rocket, a flight path and parts. Every part has real mass, power, cost and data. Mission Control lamps turn green only with NASA's margins kept, and say in plain words what's wrong.</p></div><img class="shot" src="img/builder.png" alt="The hangar builder with Mission Control"></div>
+    <div class="step"><div class="txt"><h3>Launch</h3><p>Fly the launch yourself: throttle, max-Q, staging, fairing, deploy. Too heavy for the rocket? It won't reach the right speed.</p></div><img class="shot" src="img/launch.png" alt="Falcon Heavy on the launch pad"></div>
+    <div class="step"><div class="txt"><h3>Cruise and decide</h3><p>Months or years pass on the real flight path. Decision events from real missions hit the ship, including real 2024 solar storms from NASA's DONKI database. Each role decides its own events.</p></div><img class="shot" src="img/cruise.png" alt="Cruise map with the Solar System"></div>
+    <div class="step"><div class="txt"><h3>Land or orbit, then explore</h3><p>Hand-fly the landing in real gravity, drive the rover to the rocks, or fly a sampling drone through a giant planet's rings.</p></div><img class="shot" src="img/landing.png" alt="Landing on Mars with the brake gauge"></div>
+    <div class="step"><div class="txt"><h3>Report, learn, fly again</h3><p>Four scores (mission success, science value, resource efficiency, good decisions), a grade, the cause chain, and the real mission to compare with. Earn credits, unlock tech in the Tech Lab, redesign.</p></div><img class="shot" src="img/surface.png" alt="Rover on Venus with the 127-minute heat clock"></div>
+  </div>
+  <div class="gallery">
+    <figure><img class="shot" src="img/builder_venus.png" alt="Venus builder"><figcaption>Venus: pressure hull, 127 minutes</figcaption></figure>
+    <figure><img class="shot" src="img/drone.png" alt="Neptune ring drone"><figcaption>Neptune: the ring drone</figcaption></figure>
+    <figure><img class="shot" src="img/cruise.png" alt="Cruise"><figcaption>Cruise: 203 days to Mars</figcaption></figure>
+    <figure><img class="shot" src="img/launch.png" alt="Launch"><figcaption>Launch: Falcon Heavy</figcaption></figure>
+  </div>
+</div></section>
 
-#status-splash.show-image--false {
-	display: none;
-}
+<!-- CHECKLIST -->
+<section id="checklist"><div class="wrap">
+  <div class="kicker">Does it answer the challenge? <span class="crit">RELEVANCE</span></div>
+  <h2>The challenge, point by point</h2>
+  <div class="tbl"><table>
+    <tr><th style="width:34%">The challenge asks for</th><th>AstroPixel</th></tr>
+    <tr><td>An interactive game with a clear interface</td><td><span class="ok">✓</span> Every screen says in one line what to do now</td></tr>
+    <tr><td>Mission configuration</td><td><span class="ok">✓</span> Destination → task → rocket → flight path → parts</td></tr>
+    <tr><td>Resources: mass, power, budget, data, comms, time</td><td><span class="ok">✓</span> Live gauges for all six plus fuel; the critical ones are marked for each world</td></tr>
+    <tr><td>Check the spacecraft fits the launcher</td><td><span class="ok">✓</span> Real rocket capacity per destination and path; a 35% lift margin</td></tr>
+    <tr><td>Simulation and evaluation</td><td><span class="ok">✓</span> Launch, cruise, arrival, landing or orbit, surface or drone, return or downlink</td></tr>
+    <tr><td>Up to 4 players, with roles</td><td><span class="ok">✓</span> 1–4 players online, one role each, shared builder, sign-offs, requests and quick chat. Solo plays all roles</td></tr>
+    <tr><td>Negotiating competing priorities</td><td><span class="ok">✓</span> Each role owns its parts; others must <b>REQUEST</b> changes; any change clears everyone's signature</td></tr>
+    <tr><td>Reward efficient resource use</td><td><span class="ok">✓</span> UNDER / WELL USED / OVER rating per resource and a Resource Efficiency score</td></tr>
+    <tr><td>Feedback on <i>why</i> it worked or failed</td><td><span class="ok">✓</span> Flight log cause chain, "the lesson", and the real mission to compare</td></tr>
+    <tr><td>Difficulty levels and scenarios</td><td><span class="ok">✓</span> 8 worlds × 3 tasks; difficulty changes events, landing, hazards and budget</td></tr>
+    <tr><td>Random events</td><td><span class="ok">✓</span> 37 decision events on the way, at the site and going home, each a true NASA or partner-agency story</td></tr>
+    <tr><td>Teach the science inside the game</td><td><span class="ok">✓</span> Plain-word hints, NASA facts on screen, formulas and sources on hover, a NASA DATA screen</td></tr>
+    <tr><td>Redesign and fly again</td><td><span class="ok">✓</span> One click back to the hangar; credits unlock better parts</td></tr>
+  </table></div>
+</div></section>
 
-#status-splash.fullsize--true {
-	height: 100%;
-	width: 100%;
-	object-fit: contain;
-}
+<!-- NASA DATA -->
+<section id="nasa"><div class="wrap">
+  <div class="kicker">NASA data at the core <span class="crit">RELEVANCE</span> <span class="crit">VALIDITY</span></div>
+  <h2>Every number has a source</h2>
+  <p class="lead">Every number lives in one file, <code>data.gd</code>, with a source next to it. Real values name their source. Values we chose for gameplay say "game rule". Take out the NASA data and the physics stops being real.</p>
 
-#status-splash.use-filter--false {
-	image-rendering: pixelated;
-}
+  <h3>The science the game runs on</h3>
+  <div class="tbl"><table>
+    <tr><th style="width:15%">Topic</th><th style="width:34%">Real science</th><th>What happens in the game</th></tr>
+    <tr><td><b>Fuel</b></td><td>Rocket equation <span class="f">Δv = Isp·g₀·ln(m₀/m₁)</span>, Isp 300 s (NASA GMAT default)</td><td class="m">Heavier ship → more fuel → heavier ship. Run out while braking and you fly past the planet</td></tr>
+    <tr><td><b>Solar power</b></td><td>Sunlight falls with distance² from the Sun; arrays lose 5% a year (GMAT)</td><td class="m">Saturn gets ~1% of Earth's sunlight: solar ships go dark, so you need nuclear power</td></tr>
+    <tr><td><b>Nuclear power</b></td><td>MMRTG: 110 W, 45 kg, 14-year life (NASA fact sheet)</td><td class="m">Works at any distance and through the night, but heavy, costly and slow to approve</td></tr>
+    <tr><td><b>Batteries</b></td><td>Li-ion 150–270 Wh/kg (NASA Small Spacecraft Technology 2026)</td><td class="m">Mars nights last 12.3 h; a Venus lander lives 127 minutes on batteries alone</td></tr>
+    <tr><td><b>Radio</b></td><td>Signal falls with distance² from Earth; MRO 6 Mbps, LRO Ka-band 100–300 Mbps</td><td class="m">Far worlds need a big dish, or the science never reaches Earth</td></tr>
+    <tr><td><b>Margins</b></td><td>JPL Concept Maturity Level 4: 35% mass, power and energy, 3 dB link; NASA Discovery: 25% cost reserve</td><td class="m">A gauge turns green only with NASA's margin kept, just like a real design review</td></tr>
+    <tr><td><b>Landing</b></td><td>Real surface gravity from NASA fact sheets; air or no air</td><td class="m">Moon: engine only. Mars: heat shield + parachute (Perseverance). Venus: the thick air does the braking</td></tr>
+    <tr><td><b>Hazards</b></td><td>Mercury sunlight 9,083 W/m²; Jupiter radiation (Juno's titanium vault)</td><td class="m">No sunshade → electronics cook. No shielding → parts fail</td></tr>
+    <tr><td><b>Space weather</b></td><td>NASA DONKI: 15 real geomagnetic storms of 2024, up to Kp 9 (10 May 2024)</td><td class="m">A real storm hits during cruise. Kp ≥ 7.5 is severe: 70% damage chance unless shielded</td></tr>
+  </table></div>
 
-#status-progress, #status-notice {
-	display: none;
-}
+  <h3 style="margin-top:34px">NASA resources we used</h3>
+  <div class="tbl"><table>
+    <tr><th style="width:30%">Resource</th><th>Where it is in the game</th></tr>
+    <tr><td><a href="https://www.nasa.gov/wp-content/uploads/2025/04/250323-design-and-develop-science-mission.pdf">NASA <i>Design and Develop Science Missions</i></a></td><td class="m">Goal-first flow; the 4 mission segments became our 4 roles</td></tr>
+    <tr><td><a href="https://software.nasa.gov/software/GSC-19468-1">NASA GMAT</a></td><td class="m">Engine Isp 300 s and the solar-array ageing model (GMAT default values)</td></tr>
+    <tr><td><a href="https://dataverse.jpl.nasa.gov/dataset.xhtml?persistentId=hdl:2014/44299">JPL Concept Maturity Levels</a></td><td class="m">The margins and the green / yellow / red GO / NO-GO review</td></tr>
+    <tr><td><a href="https://etd.gsfc.nasa.gov/capabilities/integrated-design-center/mission-design-lab/">NASA Goddard Mission Design Lab</a></td><td class="m">Engineering seats grouped into 4 roles; the parts bin works like an equipment list</td></tr>
+    <tr><td><a href="https://science.nasa.gov/mission/webb/game-build-it-yourself/">NASA Webb <i>Build It Yourself</i></a></td><td class="m">"Your design is like…" real-mission comparison in the report</td></tr>
+    <tr><td><a href="https://api.nasa.gov/">NASA DONKI</a> (space weather)</td><td class="m">Real 2024 geomagnetic storms during cruise</td></tr>
+    <tr><td><a href="https://nssdc.gsfc.nasa.gov/planetary/factsheet/">NASA Planetary Fact Sheets</a></td><td class="m">Gravity, sunlight and distance for all 8 worlds</td></tr>
+    <tr><td><a href="https://mars.nasa.gov/files/mep/MMRTG_FactSheet_update_10-2-13.pdf">NASA MMRTG fact sheet</a></td><td class="m">The nuclear power part</td></tr>
+    <tr><td><a href="https://www.nasa.gov/smallsat-institute/sst-soa/power-subsystems/">NASA Small Spacecraft Technology 2026</a></td><td class="m">Solar array and battery parts</td></tr>
+    <tr><td><a href="https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=2005-029A">NASA NSSDCA: MRO</a>, <a href="https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=2009-031A">LRO</a>; <a href="https://science.nasa.gov/mission/mars-reconnaissance-orbiter/science-instruments/">MRO instruments</a>; <a href="https://science.nasa.gov/mission/cassini/spacecraft/cassini-orbiter/magnetometer/mag-technical-write-up/">Cassini MAG</a></td><td class="m">Dishes, data rates, camera, spectrometer, magnetometer</td></tr>
+    <tr><td>Mission pages: <a href="https://www.nasa.gov/mission/apollo-11/">Apollo 11</a>, <a href="https://science.nasa.gov/mission/mars-2020-perseverance/">Perseverance</a>, <a href="https://science.nasa.gov/mission/cassini/">Cassini</a>, <a href="https://science.nasa.gov/mission/juno/">Juno</a>, <a href="https://science.nasa.gov/mission/messenger/">MESSENGER</a>, <a href="https://science.nasa.gov/mission/voyager/">Voyager</a>, <a href="https://www.nasa.gov/news-release/nasa-awards-contract-to-launch-cubesat-to-moon-from-virginia/">CAPSTONE</a></td><td class="m">Real flight paths and times, braking burns, the parachute, airbags and the ring drone idea</td></tr>
+    <tr><td>Partner agency: <a href="https://www.esa.int/Science_Exploration/Space_Science/Venus_Express">ESA Venus Express</a>, <a href="https://www.esa.int/Science_Exploration/Space_Science/BepiColombo">ESA BepiColombo</a></td><td class="m">Venus and Mercury flight paths</td></tr>
+  </table></div>
 
-#status-progress {
-	bottom: 10%;
-	width: 50%;
-	margin: 0 auto;
-}
+  <h3 style="margin-top:34px">Every world, from NASA fact sheets</h3>
+  <div class="tbl"><table>
+    <tr><th>World</th><th>Gravity m/s²</th><th>Sunlight W/m²</th><th>Real flight path</th><th>What it teaches</th></tr>
+    <tr><td>Moon</td><td>1.62</td><td>1,361</td><td class="m">3 days (Apollo 11) or 4.5 months (CAPSTONE)</td><td class="m">Fuel vs mass</td></tr>
+    <tr><td>Mercury</td><td>3.70</td><td>9,083</td><td class="m">6.6 years, 6 flybys (MESSENGER)</td><td class="m">Heat, and fuel to brake</td></tr>
+    <tr><td>Venus</td><td>8.87</td><td>2,601</td><td class="m">153 days (Venus Express)</td><td class="m">Pressure, heat, 127 minutes</td></tr>
+    <tr><td>Mars</td><td>3.73</td><td>586</td><td class="m">203 days (Perseverance)</td><td class="m">Air, night, signal delay</td></tr>
+    <tr><td>Jupiter</td><td>25.92</td><td>50.3</td><td class="m">4.9 years (Juno)</td><td class="m">Radiation</td></tr>
+    <tr><td>Saturn</td><td>11.19</td><td>14.8</td><td class="m">6.7 years (Cassini)</td><td class="m">Power and data far away</td></tr>
+    <tr><td>Uranus</td><td>9.01</td><td>3.69</td><td class="m">13 years (NASA orbiter study)</td><td class="m">Time and budget</td></tr>
+    <tr><td>Neptune</td><td>11.27</td><td>1.51</td><td class="m">12 years (Voyager 2)</td><td class="m">The slowest radio link</td></tr>
+  </table></div>
 
-#status-notice {
-	background-color: #5b3943;
-	border-radius: 0.5rem;
-	border: 1px solid #9b3943;
-	color: #e0e0e0;
-	font-family: 'Noto Sans', 'Droid Sans', Arial, sans-serif;
-	line-height: 1.3;
-	margin: 0 2rem;
-	overflow: hidden;
-	padding: 1rem;
-	text-align: center;
-	z-index: 1;
-}
-		</style>
-		<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
-<link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
+  <div class="dl">
+    <p><b style="color:var(--ink)">Full NASA data sheet (PDF, 3 pages):</b> every resource with its link, where it is in the game, the formulas, all 8 destinations, the 37 real stories behind the events, and what we invented.</p>
+    <a class="btn" href="NASA_Data_In_Game.pdf">DOWNLOAD PDF</a>
+  </div>
+</div></section>
 
-	</head>
-	<body>
-		<canvas id="canvas">
-			Your browser does not support the canvas tag.
-		</canvas>
+<!-- JUDGING -->
+<section id="judging"><div class="wrap">
+  <div class="kicker">For the judges</div>
+  <h2>How AstroPixel meets each criterion</h2>
+  <div class="grid g3">
+    <div class="card"><h3 style="color:var(--gold)">Impact</h3><p>Free in any browser, no install and no login, so any school or student can play. Explains the science in plain words, for beginners and engineers alike.</p></div>
+    <div class="card"><h3 style="color:var(--gold)">Creativity</h3><p>The whole mission chain in one game, played as a team of 4 roles who must negotiate, with events taken from real missions and a ring-sampling drone.</p></div>
+    <div class="card"><h3 style="color:var(--gold)">Validity</h3><p>Real physics (rocket equation, inverse-square power and radio, real gravity). Every number sourced; invented ones labelled. A complete, playable loop on 8 worlds.</p></div>
+    <div class="card"><h3 style="color:var(--gold)">Relevance</h3><p>Answers every point of the challenge (table above). NASA data drives the results: fact sheets, DONKI storms, JPL margins, GMAT values, NASA part specs.</p></div>
+    <div class="card"><h3 style="color:var(--gold)">Presentation</h3><p>Pixel art made entirely by our own code and Blender scripts, synthesized sound, and one clear line on every screen telling you what to do next.</p></div>
+    <div class="card"><h3 style="color:var(--cyan)">Honest limits</h3><p>Robotic missions only. Flight times and speed changes come from real missions and textbook maths, not full GMAT runs. Online play needs our relay server.</p></div>
+  </div>
+</div></section>
 
-		<noscript>
-			Your browser does not support JavaScript.
-		</noscript>
+<!-- TEAM -->
+<section id="team"><div class="wrap">
+  <div class="kicker">Team and credits</div>
+  <h2>Team Shay Rafe3</h2>
+  <div class="grid g2">
+    <div class="card">
+      <h3>Built with</h3>
+      <ul class="clean">
+        <li>Godot 4.7 and GDScript; exported to the web</li>
+        <li>Art: Blender and Python scripts we wrote (no AI image generators, no NASA logos)</li>
+        <li>Sound and music: synthesized by our own code</li>
+        <li>Pixel font from our earlier game, Rotorfall</li>
+        <li>Rocket capacity and prices: SpaceX, ULA, Rocket Lab and Wikipedia (secondary sources)</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>AI disclosure</h3>
+      <ul class="clean">
+        <li>The game idea and design are the team's.</li>
+        <li>Claude (AI) wrote code and the art and sound scripts; the team reviewed them.</li>
+        <li>Claude also helped research and compile the NASA data sheet and this page.</li>
+        <li>No AI-generated images, video or audio.</li>
+      </ul>
+    </div>
+  </div>
+  <p style="margin-top:28px; display:flex; gap:12px; flex-wrap:wrap">
+    <a class="btn" href="play/">▶ PLAY NOW</a>
+    <a class="btn alt" href="https://github.com/omarshobaki-png/Shay-Rafe3-Nasa-Space-App-Challenge">SOURCE ON GITHUB</a>
+  </p>
+</div></section>
 
-		<div id="status">
-			<img id="status-splash" class="show-image--true fullsize--true use-filter--true" src="index.png" alt="">
-			<progress id="status-progress"></progress>
-			<div id="status-notice"></div>
-		</div>
+<footer><div class="wrap">
+  AstroPixel Mission Designer · Team Shay Rafe3 · NASA Space Apps Challenge 2026, Ramallah.
+  This is a student project. It is not affiliated with or endorsed by NASA.
+</div></footer>
 
-		<script src="index.js"></script>
-		<script>
-const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":4805608,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
-const GODOT_THREADS_ENABLED = false;
-const engine = new Engine(GODOT_CONFIG);
-
-(function () {
-	const statusOverlay = document.getElementById('status');
-	const statusProgress = document.getElementById('status-progress');
-	const statusNotice = document.getElementById('status-notice');
-
-	let initializing = true;
-	let statusMode = '';
-
-	function setStatusMode(mode) {
-		if (statusMode === mode || !initializing) {
-			return;
-		}
-		if (mode === 'hidden') {
-			statusOverlay.remove();
-			initializing = false;
-			return;
-		}
-		statusOverlay.style.visibility = 'visible';
-		statusProgress.style.display = mode === 'progress' ? 'block' : 'none';
-		statusNotice.style.display = mode === 'notice' ? 'block' : 'none';
-		statusMode = mode;
-	}
-
-	function setStatusNotice(text) {
-		while (statusNotice.lastChild) {
-			statusNotice.removeChild(statusNotice.lastChild);
-		}
-		const lines = text.split('\n');
-		lines.forEach((line) => {
-			statusNotice.appendChild(document.createTextNode(line));
-			statusNotice.appendChild(document.createElement('br'));
-		});
-	}
-
-	function displayFailureNotice(err) {
-		console.error(err);
-		if (err instanceof Error) {
-			setStatusNotice(err.message);
-		} else if (typeof err === 'string') {
-			setStatusNotice(err);
-		} else {
-			setStatusNotice('An unknown error occurred.');
-		}
-		setStatusMode('notice');
-		initializing = false;
-	}
-
-	const missing = Engine.getMissingFeatures({
-		threads: GODOT_THREADS_ENABLED,
-	});
-
-	if (missing.length !== 0) {
-		if (GODOT_CONFIG['serviceWorker'] && GODOT_CONFIG['ensureCrossOriginIsolationHeaders'] && 'serviceWorker' in navigator) {
-			let serviceWorkerRegistrationPromise;
-			try {
-				serviceWorkerRegistrationPromise = navigator.serviceWorker.getRegistration();
-			} catch (err) {
-				serviceWorkerRegistrationPromise = Promise.reject(new Error('Service worker registration failed.'));
-			}
-			// There's a chance that installing the service worker would fix the issue
-			Promise.race([
-				serviceWorkerRegistrationPromise.then((registration) => {
-					if (registration != null) {
-						return Promise.reject(new Error('Service worker already exists.'));
-					}
-					return registration;
-				}).then(() => engine.installServiceWorker()),
-				// For some reason, `getRegistration()` can stall
-				new Promise((resolve) => {
-					setTimeout(() => resolve(), 2000);
-				}),
-			]).then(() => {
-				// Reload if there was no error.
-				window.location.reload();
-			}).catch((err) => {
-				console.error('Error while registering service worker:', err);
-			});
-		} else {
-			// Display the message as usual
-			const missingMsg = 'Error\nThe following features required to run Godot projects on the Web are missing:\n';
-			displayFailureNotice(missingMsg + missing.join('\n'));
-		}
-	} else {
-		setStatusMode('progress');
-		engine.startGame({
-			'onProgress': function (current, total) {
-				if (current > 0 && total > 0) {
-					statusProgress.value = current;
-					statusProgress.max = total;
-				} else {
-					statusProgress.removeAttribute('value');
-					statusProgress.removeAttribute('max');
-				}
-			},
-		}).then(() => {
-			setStatusMode('hidden');
-		}, displayFailureNotice);
-	}
-}());
-		</script>
-	</body>
+</body>
 </html>
-

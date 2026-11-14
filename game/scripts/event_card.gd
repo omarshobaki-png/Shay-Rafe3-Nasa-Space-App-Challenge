@@ -51,6 +51,8 @@ static func open(parent: Control, event: Dictionary, on_done: Callable) -> Contr
 	c.set("done", on_done)
 	_current = c
 	parent.add_child(c)
+	if Net.is_online() and Net.is_host():
+		Net.send("event_open", {"event": event, "run": Game.run})
 	return c
 
 static func demo(parent: Control, id: String = "", choice: int = -1) -> Control:
@@ -65,6 +67,8 @@ static func demo(parent: Control, id: String = "", choice: int = -1) -> Control:
 	return c
 
 func _ready() -> void:
+	if Net.is_online():
+		Net.received.connect(_on_net)
 	position = Vector2.ZERO
 	size = Vector2(640, 360)
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -93,6 +97,15 @@ func _process(delta: float) -> void:
 # ---------------------------------------------------------------- input
 
 func _choose(i: int) -> void:
+	if Net.is_online():
+		if not Net.owns(String(ev["role"])):
+			return
+		if not Net.is_host():
+			Net.send("event_choice", {"id": ev["id"], "choice": i})
+			return
+	_resolve(i)
+
+func _resolve(i: int) -> void:
 	if not result.is_empty() or i < 0 or i >= infos.size():
 		return
 	var res: Dictionary = Game.resolve_event(ev, i)
@@ -100,12 +113,25 @@ func _choose(i: int) -> void:
 		Audio.play("ui_deny")
 		return
 	result = res
+	if Net.is_online():
+		Net.send("event_result", {"id": ev["id"], "event": ev, "result": res, "run": Game.run})
 	hover = -1
 	pressed = -1
 	age = maxf(age, INPUT_DELAY) - 0.25   # a short beat before CONTINUE can be pressed
 	Audio.play("confirm" if bool(res["ok"]) else "error", -3.0)
 
 func _continue() -> void:
+	if result.is_empty():
+		return
+	if Net.is_online():
+		if not Net.is_host():
+			if Net.owns(String(ev["role"])):
+				Net.send("event_continue", {"id": ev["id"]})
+			return
+		Net.send("event_close", {"id": ev["id"]})
+	_close_result()
+
+func _close_result() -> void:
 	var cb: Callable = done
 	var res: Dictionary = result
 	if _current == self:
@@ -113,6 +139,27 @@ func _continue() -> void:
 	queue_free()
 	if cb.is_valid():
 		cb.call(res)
+
+func _on_net(kind: String, data: Dictionary, from_id: int) -> void:
+	if String(data.get("id", "")) != String(ev["id"]):
+		return
+	if Net.is_host():
+		if not Game.sender_owns(from_id, String(ev["role"])):
+			return
+		if kind == "event_choice":
+			_resolve(int(data.get("choice", -1)))
+		elif kind == "event_continue":
+			_continue()
+	elif Game.sender_is_host(from_id):
+		if kind == "event_result":
+			ev = data["event"]
+			result = data["result"]
+			Game.run = data["run"]
+			hover = -1
+			pressed = -1
+			Audio.play("confirm" if bool(result["ok"]) else "error")
+		elif kind == "event_close" and not result.is_empty():
+			_close_result()
 
 func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey):
@@ -196,6 +243,8 @@ func _draw() -> void:
 	Pix.frame(self, card, "panel_trim", role_col)
 	# who decides
 	var role: String = "%s DECIDES" % String(Events.ROLE_WORD.get(ev["role"], "CREW"))
+	if Net.is_online() and not Net.owns(String(ev["role"])):
+		role = "%s IS DECIDING" % Game.role_name(String(ev["role"]))
 	var tag_w: float = Pix.text_w(role, 10) + 30.0
 	draw_rect(Rect2(card.position.x + 6.0, y + 5.0, tag_w, 15.0), role_col)
 	draw_rect(Rect2(card.position.x + 6.0, y + 19.0, tag_w, 1.0), role_col.darkened(0.35))
@@ -211,7 +260,7 @@ func _draw() -> void:
 	if result.is_empty():
 		for i: int in choices.size():
 			var info: Dictionary = infos[i]
-			var can: bool = info["can"]
+			var can: bool = bool(info["can"]) and (not Net.is_online() or Net.owns(String(ev["role"])))
 			var r: Rect2 = Rect2(x - 4.0, y, tw + 8.0, ch_h[i])
 			hit.append(r if can else Rect2())
 			var face: String = "btn_disabled" if not can else ("btn_pressed" if pressed == i else ("btn_hover" if hover == i else "btn_normal"))

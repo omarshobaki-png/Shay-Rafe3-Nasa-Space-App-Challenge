@@ -32,6 +32,13 @@ node server/test-godot.js "C:/path/to/godot.exe"
 This uses a temporary local relay on an available port and stops its processes
 after testing. See VALIDATION.md for the commands and observed results.
 
+v5 checks (from the repo root; logs go to `tmp/v5-validation/`, which git ignores):
+
+```powershell
+node server/test-v5.js "C:/path/to/godot.exe" smoke     # 66 screen/destination/mode boots, solo and roles=engineer
+node server/test-v5.js "C:/path/to/godot.exe" missions  # relay on port 18080 + two clients fly Mars and Saturn
+```
+
 ## Team deployment (not run by the implementation worker)
 
 Install Fly CLI, then run from server/:

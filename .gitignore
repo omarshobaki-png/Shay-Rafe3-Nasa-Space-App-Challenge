@@ -18,3 +18,5 @@ Thumbs.db
 
 # local builds (upload the Windows zip as a GitHub Release instead)
 builds/
+# test logs (server/test-v5.js writes here)
+tmp/

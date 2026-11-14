@@ -13,6 +13,7 @@ const Pix = preload("res://scripts/pix.gd")
 const Fx = preload("res://scripts/fx.gd")
 const ShipKit = preload("res://scripts/ship_kit.gd")
 const Meta = preload("res://scripts/vab_meta.gd")
+const TeamUI = preload("res://scripts/team_ui.gd")
 const Preflight = preload("res://scripts/preflight.gd")
 
 const TABS: Array[String] = ["launcher", "power", "comms", "science", "landing", "robot", "return", "fuel", "protect"]
@@ -134,6 +135,18 @@ var b_fix: Button = null
 var b_anyway: Button = null
 var b_go: Button = null            # the big launch button in the hint box, when every station is GO
 
+# multiplayer (decision D7): roles lock the bin, the host's game is the truth, every role signs
+var multi: bool = false
+var team: Control = null           # team_ui.gd: chat, REQUEST, toasts
+var b_menu: Button = null
+var b_sign: Button = null
+var b_req: Button = null
+var b_chat: Button = null
+var sent_snap: Dictionary = {}     # host: the last build sent to the others
+var seen_snap: Dictionary = {}     # the build the board was last worked out for
+var remote_edit: bool = false      # host: applying another player's edit (their role, not ours)
+var last_signed: int = 0
+
 # ---------------------------------------------------------------- setup
 
 func _ready() -> void:
@@ -150,6 +163,7 @@ func _ready() -> void:
 	add.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
 	glow.material = add
 	front = _layer(_paint_front)
+	multi = Game.multi()
 	_btn(self, "< MENU", _menu, Rect2(2, 3, 48, 17))
 	# undo and redo: two small arrows (redo is the same picture mirrored)
 	b_undo = UI.icon_button("back", "", _undo)
@@ -165,6 +179,16 @@ func _ready() -> void:
 	var hb: Button = UI.icon_button("help", "", _toggle_help)
 	_place(self, hb, Rect2(552, 3, 22, 17))
 	b_launch = _btn(self, "LAUNCH", _start_poll, Rect2(576, 1, 62, 22))
+	if multi:
+		# undo, redo and auto-build (the example ship) are off in multiplayer: they would change other roles' parts
+		for b: Button in [b_undo, b_redo, b_auto]:
+			b.visible = false
+		b_sign = _btn(self, "SIGN", _toggle_sign, Rect2(398, 3, 42, 17))
+		b_req = _btn(self, "REQUEST", _request, Rect2(442, 3, 62, 17))
+		b_chat = _btn(self, "CHAT", _chat, Rect2(506, 3, 42, 17))
+		Game.signed = {}
+		Game.team_reset()
+		Net.received.connect(_on_net)
 	b_minus = _btn(self, "-", _minus, Rect2(24, 104, 18, 17))
 	b_plus = _btn(self, "+", _plus, Rect2(86, 104, 18, 17))
 	b_x10 = _btn(self, "x10", _toggle_x10, Rect2(111, 104, 36, 17))
@@ -181,6 +205,10 @@ func _ready() -> void:
 	b_anyway = UI.danger_button("LAUNCH ANYWAY", _launch, 10, 100)
 	_place(over, b_anyway, Rect2(0, 0, 100, 17))
 	origin = Vector2(Meta.STAND_TOP.x, Meta.STAND_TOP.y - ShipKit.bounds(Game.build).end.y)
+	if multi:
+		team = TeamUI.new()
+		add_child(team)
+		seen_snap = Game.snap()
 	guide = 1 if Game.build.size() <= 1 else 3
 	refresh()
 
@@ -311,25 +339,37 @@ func _restore(s: Dictionary) -> void:
 	refresh()
 
 func _undo() -> void:
+	if multi:
+		return
 	if undo_stack.is_empty():
 		return
 	redo_stack.append(_snap())
 	_restore(undo_stack.pop_back())
 
 func _redo() -> void:
+	if multi:
+		return
 	if redo_stack.is_empty():
 		return
 	undo_stack.append(_snap())
 	_restore(redo_stack.pop_back())
 
 func _menu() -> void:
-	Game.goto("menu")
+	if Net.is_online():
+		Game.leave_room()
+	else:
+		Game.goto("menu")
 
 func _deny(text: String) -> void:
 	Audio.play("part_deny")
 	floats.append({"pos": mouse + Vector2(0, -8), "text": text, "age": 0.0, "col": UI.RED, "ship": false})
 
 func _take(id: String) -> void:
+	var locked_role: String = _locked(id)
+	if locked_role != "":
+		hand = ""
+		_deny_role(locked_role)
+		return
 	sel = id
 	tab = _tab_of(id)
 	var st: String = _state(id)
@@ -352,6 +392,11 @@ func _put_away() -> void:
 	refresh()
 
 func _choose(tile: String) -> void:
+	var locked_role: String = _locked(tile)
+	if locked_role != "":
+		hand = ""
+		_deny_role(locked_role)
+		return
 	hand = ""
 	if tile.begins_with("rocket:"):
 		var id: String = tile.substr(7)
@@ -359,22 +404,37 @@ func _choose(tile: String) -> void:
 			_deny("CANNOT REACH %s" % Game.place())
 			refresh()
 			return
+		if _remote():
+			Net.send("edit", {"op": "rocket", "id": id})
+			return
 		if id != Game.rocket_id:
 			_commit()
 			Game.rocket_id = id
+			Game.signed = {}
 			lv_drop = 16.0
 			Audio.play("part_snap", -1.0, 0.75)
 	else:
 		var i: int = int(tile.substr(5))
+		if _remote():
+			Net.send("edit", {"op": "traj", "i": i})
+			return
 		if i != Game.traj_idx:
 			_commit()
 			Game.traj_idx = i
+			Game.signed = {}
 			Audio.play("confirm", -4.0)
-	Game.signed = {}
 	refresh()
 
 ## Adds n of a part to the craft, with the snap effects. Returns false when it cannot be added.
 func _attach(id: String, n: int) -> bool:
+	var locked_role: String = _locked(id)
+	if locked_role != "":
+		hand = ""
+		_deny_role(locked_role)
+		return false
+	if _remote():
+		Net.send("edit", {"op": "add", "id": id, "n": n})
+		return true
 	var slot: Dictionary = ShipKit.next_slot(Game.build, id)
 	if slot.is_empty() or not Game.part_available(id):
 		_deny("NO MORE FIT")
@@ -404,11 +464,20 @@ func _impact(f: Dictionary) -> void:
 
 ## Takes n of a part off the craft; to_hand keeps it in the hand so it can go back on.
 func _remove(id: String, n: int, to_hand: bool) -> void:
+	var locked_role: String = _locked(id)
+	if locked_role != "":
+		hand = ""
+		_deny_role(locked_role)
+		return
 	if Game.count(id) == 0:
 		return
 	if Data.PARTS[id].get("locked_in", false):
 		sel = id
 		_deny("THE BUS STAYS")
+		return
+	if _remote():
+		Net.send("edit", {"op": "remove", "id": id, "n": n})
+		hand = id if to_hand else ""
 		return
 	var at: Vector2 = Vector2.ZERO
 	var last: Dictionary = {}
@@ -432,6 +501,11 @@ func _remove(id: String, n: int, to_hand: bool) -> void:
 
 ## A part flies from the bin to its slot by itself (double-click, the "+" button, auto-build).
 func _fly(id: String, n: int, dur: float = 0.22) -> void:
+	var locked_role: String = _locked(id)
+	if locked_role != "":
+		hand = ""
+		_deny_role(locked_role)
+		return
 	var slot: Dictionary = ShipKit.next_slot(Game.build, id)
 	if slot.is_empty() or _state(id) != "ok":
 		_deny("NO MORE FIT" if _state(id) == "max" else "NOT AVAILABLE")
@@ -694,6 +768,8 @@ func _show_me() -> void:
 	refresh()
 
 func _auto_build() -> void:
+	if multi:
+		return
 	if auto:
 		_auto_finish()
 		return
@@ -735,19 +811,28 @@ func _auto_finish() -> void:
 func _start_poll() -> void:
 	if not poll.is_empty():
 		return
-	hand = ""
-	help = false
-	poll = {"i": -1, "t": 0.0, "phase": "call"}
-	Audio.play("ui_open")
-	refresh()
+	if multi:
+		# LAUNCH needs all 4 roles signed; only the host presses it, then the poll runs for everyone
+		if _remote():
+			_deny("ONLY THE HOST CAN LAUNCH")
+			return
+		if not Game.all_signed():
+			_deny("ALL 4 ROLES MUST SIGN FIRST")
+			return
+		if Net.is_online():
+			var s: Dictionary = Game.snap()
+			s["poll"] = "start"
+			Net.send("build", s)
+	_open_poll()
 
 func _poll_end() -> void:
 	poll["i"] = stations.size() - 1
 	if top.is_empty():
 		poll["phase"] = "go"
 		poll["t"] = 0.0
-		for r: Dictionary in Data.ROLES:
-			Game.signed[r["id"]] = true
+		if not multi:
+			for r: Dictionary in Data.ROLES:
+				Game.signed[r["id"]] = true
 		Audio.play("all_go")
 	else:
 		poll["phase"] = "nogo"
@@ -755,6 +840,9 @@ func _poll_end() -> void:
 	refresh()
 
 func _poll_fix() -> void:
+	if _remote():
+		return
+	_stop_poll_all()
 	poll = {}
 	sel_station = ""
 	hover_row = -1
@@ -763,6 +851,11 @@ func _poll_fix() -> void:
 	refresh()
 
 func _launch() -> void:
+	if multi:
+		if _remote() or not Game.all_signed():
+			return
+		Game.launch()
+		return
 	Game.start_run()
 	Game.run["mode"] = "out"
 	Game.goto("flight")
@@ -832,6 +925,15 @@ func refresh() -> void:
 		go_wave = -1.0
 	b_fix.visible = String(poll.get("phase", "")) == "nogo"
 	b_anyway.visible = b_fix.visible
+	if multi:
+		b_launch.disabled = _remote() or not Game.all_signed()
+		b_go.disabled = b_launch.disabled
+		b_anyway.disabled = b_launch.disabled
+		b_fix.disabled = _remote()
+		b_fill.disabled = _locked("prop") != ""
+		if part_sel:
+			b_minus.disabled = b_minus.disabled or _locked(sel) != ""
+			b_plus.disabled = b_plus.disabled or _locked(sel) != ""
 	over.mouse_filter = Control.MOUSE_FILTER_STOP if auto or not poll.is_empty() else Control.MOUSE_FILTER_IGNORE
 	_layout_hint()
 
@@ -982,6 +1084,8 @@ func _update_hand() -> void:
 	snapped = HALL.has_point(mouse) and (zone.has_point(mouse - org) or mouse.distance_to(org + Vector2(hand_slot["node"])) < 44.0)
 
 func _process(delta: float) -> void:
+	if multi:
+		_team_tick()
 	t += delta
 	# the craft stands on the stand; it rises to make room for a part held under it
 	var b: Rect2 = ShipKit.bounds(Game.build)
@@ -1106,6 +1210,9 @@ func _input(ev: InputEvent) -> void:
 			_poll_fix()
 		elif key.keycode == KEY_ESCAPE:
 			if not poll.is_empty():
+				if _remote():
+					return
+				_stop_poll_all()
 				poll = {}
 				refresh()
 			elif help:
@@ -1551,7 +1658,7 @@ func _draw_tile(ci: Control, tile: String, r: Rect2) -> void:
 	else:
 		Pix.icon(ci, TAB_ICON.get(Data.PARTS[tile]["cat"], "core"), r.position + Vector2(9, 4), mod)
 		Pix.text_c(ci, r.position.x + 15, r.position.y + 26, tile.substr(0, 4).to_upper(), 10, Color(UI.TEXT, mod.a))
-	if st == "lock":
+	if st == "lock" or _locked(tile) != "":
 		Pix.icon(ci, "lock", r.position + Vector2(16, 16))
 	# the need badge: a solid corner for REQUIRED, a small pale one for RECOMMENDED
 	if level == "required":
@@ -1762,6 +1869,12 @@ func _draw_board(ci: Control) -> void:
 # ---------------------------------------------------------------- drawing: on top
 
 func _paint_over(ci: Control) -> void:
+	if multi:
+		var sx: float = HALL.position.x + 6.0
+		for role: Dictionary in Data.ROLES:
+			var rid: String = String(role["id"])
+			Pix.text(ci, Vector2(sx, 354), "%s %s" % [ROLE_SHORT[rid], "GO" if bool(Game.signed.get(rid, false)) else "--"], 10, UI.GREEN if bool(Game.signed.get(rid, false)) else UI.DIM)
+			sx += 76.0
 	var org: Vector2 = _org()
 	for f: Dictionary in flyers:
 		var u: float = clampf(float(f["age"]) / float(f["dur"]), 0.0, 1.0)
@@ -2407,3 +2520,148 @@ func _draw_bin_probe() -> void:
 	ShipKit.layout(Game.build)
 	ShipKit.bounds(Game.build)
 	_part_at(mouse)
+
+func _role_of(tile: String) -> String:
+	var tb: String = _tab_of(tile)
+	return String(Data.TAB_ROLE[tb]) if tb != "src" and Data.TAB_ROLE.has(tb) else ""
+
+## "" when this player may change the tile, else the role whose part it is.
+
+func _locked(tile: String) -> String:
+	if not multi or remote_edit:
+		return ""
+	var r: String = _role_of(tile)
+	return "" if r == "" or Net.owns(r) else r
+
+func _deny_role(role: String) -> void:
+	_deny("%s's part: use REQUEST" % Game.role_name(role))
+
+## Online, a player who is not the host sends edits; the host applies them and sends the new build back.
+
+func _remote() -> bool:
+	return Net.is_online() and not Net.is_host()
+
+## Host: another player's builder action, applied through the same code as a click, if they own that role.
+
+func _apply_edit(d: Dictionary, from_id: int) -> void:
+	var op: String = String(d.get("op", ""))
+	var keep: Array = [sel, tab, hand, sel_station]
+	remote_edit = true
+	match op:
+		"add", "remove":
+			var id: String = String(d.get("id", ""))
+			if Data.PARTS.has(id) and Game.sender_owns(from_id, _role_of(id)):
+				var n: int = clampi(int(d.get("n", 1)), 1, int(Data.PARTS[id]["max"]))
+				if op == "add":
+					_attach(id, n)
+				else:
+					_remove(id, n, false)
+		"rocket":
+			var rk: String = String(d.get("id", ""))
+			if Data.ROCKETS.has(rk) and Game.sender_owns(from_id, "planner"):
+				_choose("rocket:" + rk)
+		"traj":
+			var i: int = int(d.get("i", -1))
+			if i >= 0 and i < (Game.dest()["traj"] as Array).size() and Game.sender_owns(from_id, "planner"):
+				_choose("path:%d" % i)
+	remote_edit = false
+	sel = keep[0]
+	tab = keep[1]
+	hand = keep[2]
+	sel_station = keep[3]
+	refresh()
+
+func _toggle_sign() -> void:
+	var mine: Array[String] = Net.my_roles()
+	var on: bool = false
+	for r: String in mine:
+		on = on or not bool(Game.signed.get(r, false))
+	for r: String in mine:
+		Game.signed[r] = on
+		Net.send("sign", {"role": r, "on": on})
+	Audio.play("confirm" if on else "ui_close", -3.0)
+	if on:
+		var names: PackedStringArray = []
+		for r: String in mine:
+			names.append(Game.role_name(r))
+		team.call("toast", "%s SIGNED" % " + ".join(names), Game.role_color(Game.my_role()))
+	refresh()
+
+func _request() -> void:
+	team.call("toggle_request")
+
+func _chat() -> void:
+	team.call("toggle_chat", Vector2(b_chat.position.x - 120, 24))
+
+func _on_net(kind: String, d: Dictionary, from_id: int) -> void:
+	match kind:
+		"edit":
+			if Net.is_host():
+				_apply_edit(d, from_id)
+		"build":
+			# Game has applied the snapshot already; the host also starts and stops the launch poll here
+			if not Net.is_host() and Game.sender_is_host(from_id) and d.has("poll"):
+				if String(d["poll"]) == "start" and poll.is_empty():
+					_open_poll()
+				elif String(d["poll"]) == "stop" and not poll.is_empty():
+					poll = {}
+					refresh()
+		"sign":
+			var role: String = String(d.get("role", ""))
+			if bool(d.get("on", false)) and Game.sender_owns(from_id, role):
+				team.call("toast", "%s SIGNED" % Game.role_name(role), Game.role_color(role))
+			refresh()
+
+## Every frame in multiplayer: the host sends its build when it changed; every player redraws the board
+## for a new build, and hears when a change wiped the signatures.
+
+func _team_tick() -> void:
+	if not _remote() and not poll.is_empty() and not Game.all_signed():
+		_stop_poll_all()
+		poll = {}
+		refresh()
+	var s: Dictionary = Game.snap()
+	if Net.is_online() and Net.is_host() and s != sent_snap:
+		sent_snap = s
+		Net.send("build", s)
+	if s != seen_snap:
+		if not poll.is_empty():
+			_stop_poll_all()
+			poll = {}
+		seen_snap = s
+		if _remote():
+			Audio.play("part_snap", -4.0)
+		if last_signed > 0 and Game.signed.is_empty():
+			team.call("toast", "THE BUILD CHANGED: EVERYONE SIGNS AGAIN", UI.ORANGE)
+		refresh()
+	var n: int = Game.signed_count()
+	if n != last_signed:
+		last_signed = n
+		refresh()
+	Game.team_tick(top.is_empty(), Game.all_signed())
+	var mine_signed: bool = true
+	for r: String in Net.my_roles():
+		mine_signed = mine_signed and bool(Game.signed.get(r, false))
+	var want: String = "SIGNED" if mine_signed else "SIGN"
+	if b_sign.text != want:
+		b_sign.text = want
+		if mine_signed:
+			UI.color_button(b_sign, UI.GREEN)
+		else:
+			for st: String in ["normal", "hover", "pressed", "hover_pressed", "disabled", "focus"]:
+				b_sign.remove_theme_stylebox_override(st)
+			for c: String in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color", "font_hover_pressed_color"]:
+				b_sign.remove_theme_color_override(c)
+
+func _open_poll() -> void:
+	hand = ""
+	help = false
+	poll = {"i": -1, "t": 0.0, "phase": "call"}
+	Audio.play("ui_open")
+	refresh()
+
+func _stop_poll_all() -> void:
+	if Net.is_online() and Net.is_host() and not poll.is_empty():
+		var s: Dictionary = Game.snap()
+		s["poll"] = "stop"
+		Net.send("build", s)
