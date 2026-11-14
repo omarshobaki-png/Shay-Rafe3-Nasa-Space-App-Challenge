@@ -179,14 +179,14 @@ wireTabs("[data-stage]", "stage", (key) => {
   reveal(el("stage-content"));
 });
 const ROLE_DETAILS = {
-  planner:
-    "Pick the rocket and flight path, then keep the mission within budget and on schedule.",
-  engineer:
-    "Balance mass, power, and fuel. An extra instrument only helps if the spacecraft can carry and power it.",
-  scientist:
-    "Choose the instruments and robots that meet your science goals: rovers, samples, or a ring drone.",
-  comms:
-    "Balance storage, antennas, and downlink capacity. A photo only becomes a result when you can get it home.",
+  build:
+    "Pick a rocket and flight path, then fill the bays: power, radio, instruments, landing gear, rovers and fuel. Each lamp turns green only with NASA's margin.",
+  launch:
+    "Lift off, throttle back through max-Q, drop the empty stage and reach orbit at 7.8 km/s. Too heavy for the rocket, and you never get there.",
+  cruise:
+    "Months or years pass on a real flight path. Solar storms from NASA's records and decisions based on real missions hit the ship on the way.",
+  explore:
+    "Hold the entry corridor, brake and land in real gravity, then drive the rover to drill rocks and take photos, or fly a drone through the giant planets' rings.",
 };
 document.querySelectorAll("[data-role]").forEach((button) =>
   button.addEventListener("click", () => {
