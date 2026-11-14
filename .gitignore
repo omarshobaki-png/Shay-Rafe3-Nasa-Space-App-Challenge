@@ -20,3 +20,6 @@ Thumbs.db
 builds/
 # test logs (server/test-v5.js writes here)
 tmp/
+
+# Session handoff notes (private, kept local only)
+docs/briefings/
